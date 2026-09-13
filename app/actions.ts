@@ -4,11 +4,17 @@ import { getMyself } from '@/lib/jira/client'
 import { attachToSprint, transitionIssue, updateDates, updateStoryPoints } from '@/lib/jira/issues'
 import { createWorklog, loggedMinutesOnDate } from '@/lib/jira/worklog'
 import { SETTING_KEYS, getSetting, getWorkSchedule } from '@/lib/settings'
-import { DEFAULT_TZ, formatClock, placeWorklog } from '@/lib/time'
+import { type WorklogSlice, DEFAULT_TZ, formatDuration, formatSlices, sliceWorklog } from '@/lib/time'
 
 export interface ActionResult {
   ok: boolean
   message: string
+  /**
+   * Something reached Jira despite `ok` being false — a write made of several
+   * calls that failed partway. The caller must refresh anyway, or the screen
+   * keeps showing a total that is already stale.
+   */
+  partial?: boolean
 }
 
 /**
@@ -43,23 +49,53 @@ export async function logWorkAction(input: {
     // never by the client. Entries used to be stamped 09:00 every time, so a
     // full day arrived in Jira as six overlapping blocks all starting together.
     const already = await loggedMinutesOnDate(input.date, me.accountId, tz, input.issueKey)
-    const placed = placeWorklog(already, input.hours * 60, getWorkSchedule())
+    // Usually one piece. Work spanning the break becomes two, because a single
+    // Jira worklog runs solid through lunch — see `sliceWorklog`.
+    const slices = sliceWorklog(already, input.hours * 60, getWorkSchedule())
 
-    await createWorklog({
-      issueKey: input.issueKey,
-      hours: input.hours,
-      date: input.date,
-      comment: input.comment,
-      startMinute: placed.start,
-      tz,
-    })
+    // Sequential, and tracking what landed: this is one POST per piece, so a
+    // failure on the second leaves the first already recorded in Jira. Calling
+    // that a plain failure would invite a retry that logs the first piece twice.
+    const done: WorklogSlice[] = []
+    try {
+      for (const slice of slices) {
+        await createWorklog({
+          issueKey: input.issueKey,
+          hours: slice.minutes / 60,
+          date: input.date,
+          comment: input.comment,
+          startMinute: slice.start,
+          tz,
+        })
+        done.push(slice)
+      }
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : 'Không log được'
+      if (!done.length) return { ok: false, message: reason }
+
+      // Both figures, named separately. "Log thất bại" would be a lie — part of
+      // it is in Jira — and "đã log 1h" alone leaves the user to work out what
+      // is still missing. The retry amount is spelled out because the obvious
+      // move, logging the original figure again, is the one that double-counts.
+      const failed = slices.slice(done.length)
+      const landed = done.reduce((n, s) => n + s.minutes, 0) * 60
+      const lost = failed.reduce((n, s) => n + s.minutes, 0) * 60
+
+      return {
+        ok: false,
+        partial: true,
+        message:
+          `${formatDuration(landed)} (${formatSlices(done)}) đã được log, ` +
+          `nhưng xảy ra lỗi khi log ${formatDuration(lost)} (${formatSlices(failed)}): ${reason} ` +
+          `— log lại ${formatDuration(lost)} thôi, đừng log lại ${input.hours}h.`,
+      }
+    }
+
     // No revalidatePath here: the board is fully dynamic, so there is nothing
     // cached to expire. The caller refreshes the router instead.
     return {
       ok: true,
-      message:
-        `Đã log ${input.hours}h cho ${input.issueKey} · ` +
-        `${formatClock(placed.start)}–${formatClock(placed.end)}`,
+      message: `Đã log ${input.hours}h cho ${input.issueKey} · ${formatSlices(slices)}`,
     }
   } catch (error) {
     return {

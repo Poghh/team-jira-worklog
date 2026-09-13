@@ -156,6 +156,60 @@ export function placeWorklog(
   }
 }
 
+/** One record as Jira will hold it: a start on the clock, and a length. */
+export interface WorklogSlice {
+  /** Local start time as minutes from midnight — 13:00 is 780. */
+  start: number
+  minutes: number
+}
+
+/**
+ * The entry cut into the pieces Jira can actually store.
+ *
+ * Jira knows nothing about a break: a worklog is a start plus a duration and it
+ * runs solid from there. So a 2h entry beginning at 11:00 occupies 11:00–13:00
+ * in Jira and lands squarely on lunch — while this app, which lays entries along
+ * a ribbon of *working* minutes with the break cut out, calls that same entry
+ * 11:00–14:00. No single record can mean both things.
+ *
+ * Cutting at the break makes them agree: 11:00–12:00 and 13:00–14:00, two
+ * records summing to the 2h asked for, neither one overlapping lunch. Anything
+ * that does not reach the break comes back as one piece, so the ordinary case is
+ * untouched.
+ *
+ * At most two pieces, because {@link WorkSchedule} models a single break.
+ */
+export function sliceWorklog(
+  alreadyLoggedMinutes: number,
+  entryMinutes: number,
+  schedule: WorkSchedule = DEFAULT_SCHEDULE,
+): WorklogSlice[] {
+  const start = workMinuteToClock(alreadyLoggedMinutes, schedule, 'start')
+  const before = minutesBeforeBreak(schedule)
+
+  // `>` rather than `>=` on the far end: work finishing exactly at the break
+  // stops there, and must not trail a zero-length second piece.
+  const crosses =
+    before !== null &&
+    alreadyLoggedMinutes < before &&
+    alreadyLoggedMinutes + entryMinutes > before
+
+  if (!crosses) return [{ start, minutes: entryMinutes }]
+
+  const untilBreak = before! - alreadyLoggedMinutes
+  return [
+    { start, minutes: untilBreak },
+    { start: schedule.breakEnd!, minutes: entryMinutes - untilBreak },
+  ]
+}
+
+/** `11:00–12:00 + 13:00–14:00` — how the pieces read back to the user. */
+export function formatSlices(slices: WorklogSlice[]): string {
+  return slices
+    .map((s) => `${formatClock(s.start)}–${formatClock(s.start + s.minutes)}`)
+    .join(' + ')
+}
+
 /**
  * Builds the `started` value for a worklog.
  *
