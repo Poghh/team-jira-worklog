@@ -33,6 +33,8 @@ export const SETTING_KEYS = {
   teamLabel: 'team_label',
   teamPrefix: 'team_prefix',
   teamSprintFilter: 'team_sprint_filter',
+  /** Show the sprint point rollup on the task board. */
+  showSprintPoints: 'show_sprint_points',
   pointBudget1: 'point_budget_1',
   pointBudget2: 'point_budget_2',
   pointBudget3: 'point_budget_3',
@@ -67,6 +69,16 @@ const DEFAULTS: Record<string, string> = {
   [SETTING_KEYS.teamLabel]: '',
   [SETTING_KEYS.teamPrefix]: '',
   [SETTING_KEYS.teamSprintFilter]: '',
+  /**
+   * Off by default.
+   *
+   * It costs a Jira query per render, and a board whose team does not fill in
+   * story points would spend it to be told there are none. A panel is worth
+   * having only once somebody asks for it, so the default is the one that
+   * costs nothing; read as `=== 'true'` everywhere, so an install that never
+   * seeded the key stays off rather than falling open.
+   */
+  [SETTING_KEYS.showSprintPoints]: 'false',
   // Point budgets are advisory only — they drive a soft warning, never a block.
   [SETTING_KEYS.pointBudget1]: '1-2h',
   [SETTING_KEYS.pointBudget2]: '4h',

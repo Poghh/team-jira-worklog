@@ -97,6 +97,10 @@ async function boardPage(props: PageProps<'/'>) {
   const rangeFrom = sprintStart ?? weekDays[0]
   const rangeTo = sprintEnd ?? weekDays[6]
 
+  // Read before the fetch below, which is gated on it. Explicitly `=== 'true'`:
+  // off is the default, and an unseeded key must not read as on.
+  const showPoints = getSetting(SETTING_KEYS.showSprintPoints) === 'true'
+
   const board = noSprintMatch ? [] : await getBoard({ sprintId, status, search, reconcileIds })
 
   // A project without these fields must not offer a date chip that can only
@@ -119,10 +123,11 @@ async function boardPage(props: PageProps<'/'>) {
       visibleIds,
     ),
     noSprintMatch ? Promise.resolve([]) : getSprintTasks(sprintId, status),
-    // Only with a sprint picked. "Point in this sprint" has no answer across
-    // every sprint at once, and the panel that shows it is already conditional
-    // on the same thing — so browsing "Mọi sprint" costs nothing extra.
-    sprintId === null || noSprintMatch
+    // Only with a sprint picked, and only when the panel is on. "Point in this
+    // sprint" has no answer across every sprint at once, and a panel nobody
+    // shows must not be paying for its own query — switching it off in
+    // Settings has to remove the request, not just the markup.
+    !showPoints || sprintId === null || noSprintMatch
       ? Promise.resolve([])
       : getSprintPoints(sprintId).catch(() => []),
   ])
@@ -351,7 +356,7 @@ async function boardPage(props: PageProps<'/'>) {
           entries={todaysEntries.map((e) => ({ key: e.issueKey, seconds: e.timeSpentSeconds }))}
         />
 
-        {selectedSprint && (
+        {showPoints && selectedSprint && (
           <PointsPanel
             sprintName={selectedSprint.name}
             summary={summarisePoints(pointRows)}

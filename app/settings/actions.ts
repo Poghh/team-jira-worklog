@@ -26,10 +26,20 @@ export async function saveSettings(_prev: SaveResult | null, formData: FormData)
     entries[key] = raw.trim()
   }
 
-  // An unchecked checkbox submits nothing, so absence has to mean false.
-  entries[SETTING_KEYS.weekendCountsToQuota] = formData.has(SETTING_KEYS.weekendCountsToQuota)
-    ? 'true'
-    : 'false'
+  /**
+   * An unchecked checkbox submits nothing, so absence has to mean false.
+   *
+   * A list rather than a line per setting: the loop above only ever sees keys
+   * the browser sent, so a checkbox left out of this list can be turned on and
+   * never turned off again — it saves fine, and unchecking it silently keeps
+   * the old value. That is invisible until somebody tries to switch a feature
+   * off and it comes back on the next render.
+   */
+  const CHECKBOXES = [
+    SETTING_KEYS.weekendCountsToQuota,
+    SETTING_KEYS.showSprintPoints,
+  ]
+  for (const key of CHECKBOXES) entries[key] = formData.has(key) ? 'true' : 'false'
 
   try {
     setSettings(entries)
