@@ -1,7 +1,7 @@
 import Link from 'next/link'
 import { connection } from 'next/server'
 
-import { JiraError, getMyself } from '@/lib/jira/client'
+import { JiraError, getMyself, jiraBlockedBy } from '@/lib/jira/client'
 import {
   type FoundIssue,
   type OwnerFilter,
@@ -16,6 +16,7 @@ import { SETTING_KEYS, getSetting } from '@/lib/settings'
 import { NavProvider } from '../board/navigation'
 import { FindControls } from './controls'
 import { ResultList } from './results'
+import { JiraDown } from '../jira-down'
 
 type Tab = 'sprint' | 'project' | 'jql'
 
@@ -43,8 +44,18 @@ export default async function FindPage(props: PageProps<'/find'>) {
   const scope = one(sp.scope) === 'backlog' ? 'backlog' : 'all'
   const jql = one(sp.jql) ?? ''
 
-  const me = await getMyself()
-  const { sprints, current } = await getSprints()
+  let me
+  let sprints
+  let current
+  try {
+    me = await getMyself()
+    ;({ sprints, current } = await getSprints())
+  } catch (e) {
+    // The search below already reports its own failures inline, but these two
+    // run before there is any page to report into.
+    if (!jiraBlockedBy(e)) throw e
+    return <JiraDown error={e} retryHref="/find" />
+  }
   const sprintId = one(sp.sprint) ? Number(one(sp.sprint)) : (current?.id ?? null)
   const presets = await listPresets()
 

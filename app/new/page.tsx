@@ -9,8 +9,20 @@ import { getDraft, listDrafts, listPrefixes } from '@/lib/drafts'
 import { listTaskTemplates } from '@/lib/task-templates'
 
 import { Composer } from './composer'
+import { jiraBlockedBy } from '@/lib/jira/client'
+import { JiraDown } from '../jira-down'
 
+/** Same Jira boundary as the board and the report — see {@link JiraDown}. */
 export default async function NewTaskPage(props: PageProps<'/new'>) {
+  try {
+    return await newTaskPage(props)
+  } catch (error) {
+    if (!jiraBlockedBy(error)) throw error
+    return <JiraDown error={error} retryHref="/new" />
+  }
+}
+
+async function newTaskPage(props: PageProps<'/new'>) {
   await connection()
 
   if (!getSetting(SETTING_KEYS.jiraApiToken)) {

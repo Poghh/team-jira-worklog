@@ -3,6 +3,8 @@
 import { getMyself } from '@/lib/jira/client'
 import { attachToSprint, transitionIssue, updateDates, updateStoryPoints } from '@/lib/jira/issues'
 import { createWorklog, loggedMinutesOnDate } from '@/lib/jira/worklog'
+import { listDaysOff } from '@/lib/days-off'
+import { scheduleForDate } from '@/lib/quota'
 import { SETTING_KEYS, getSetting, getWorkSchedule } from '@/lib/settings'
 import { type WorklogSlice, DEFAULT_TZ, formatDuration, formatSlices, sliceWorklog } from '@/lib/time'
 
@@ -51,7 +53,16 @@ export async function logWorkAction(input: {
     const already = await loggedMinutesOnDate(input.date, me.accountId, tz, input.issueKey)
     // Usually one piece. Work spanning the break becomes two, because a single
     // Jira worklog runs solid through lunch — see `sliceWorklog`.
-    const slices = sliceWorklog(already, input.hours * 60, getWorkSchedule())
+    // Half a day of leave moves where the other half sits on the clock: an
+    // afternoon worked after a morning off starts at 13:00, not 09:00. Read
+    // here rather than taken from the client — the same rule as `already`
+    // above, and for the same reason.
+    const schedule = scheduleForDate(
+      input.date,
+      getWorkSchedule(),
+      listDaysOff(input.date, input.date),
+    )
+    const slices = sliceWorklog(already, input.hours * 60, schedule)
 
     // Sequential, and tracking what landed: this is one POST per piece, so a
     // failure on the second leaves the first already recorded in Jira. Calling

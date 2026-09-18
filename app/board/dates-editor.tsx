@@ -32,6 +32,7 @@ export function DatesEditor({
   dueDate,
   sprintEnd,
   isDone = false,
+  loggingPastDue = null,
   readOnly = false,
   readOnlyReason,
 }: {
@@ -42,6 +43,20 @@ export function DatesEditor({
   sprintEnd?: string | null
   /** A finished issue is never "overdue", however old its due date. */
   isDone?: boolean
+  /**
+   * The day this finished task was last logged to, when it falls after its
+   * due date.
+   *
+   * A separate thing from `overdue`, which is measured against the real today
+   * and is about a deadline being missed. This is about an entry that exists:
+   * the dates say the work ended, and there is a worklog after them. Marked on
+   * the chip because the chip already carries the two dates the clash is
+   * between — the one place where saying it needs no new element.
+   *
+   * Read off the task, not off the day being viewed: the mistake has to be
+   * visible without already knowing which day it happened on.
+   */
+  loggingPastDue?: string | null
   /**
    * Someone else's task. The dates still colour — a deadline is worth seeing
    * whoever owns it — but the popover never opens.
@@ -139,7 +154,9 @@ export function DatesEditor({
           type="button"
           disabled={pending}
           title={
-            overdue
+            loggingPastDue
+              ? `${issueKey} đã Done, làm xong ${start} → ${due}.\nNhưng có giờ log vào ${loggingPastDue}, nằm sau due date.\n\nBấm để dời due date, hoặc kiểm lại entry.`
+              : overdue
               ? `Quá hạn ${daysLate} ngày — due ${due}, task chưa Done`
               : dueToday
                 ? `Đến hạn hôm nay (${due}) — task chưa Done`
@@ -149,7 +166,12 @@ export function DatesEditor({
           }
           className={
             'inline-flex h-6 items-center gap-1 rounded-[5px] border px-1.5 font-mono text-[10.5px] disabled:opacity-60 ' +
-            (overdue
+            (loggingPastDue
+              // Amber, not red: nothing is broken and nothing is late — two
+              // facts simply disagree, and which one is wrong is the user's to
+              // say. Red is reserved for a deadline actually missed.
+              ? 'border-warn bg-warn-soft font-semibold text-warn'
+              : overdue
               ? 'border-crit bg-crit-soft text-crit'
               : dueToday
                 // Same amber as a missing date — both mean "this needs you

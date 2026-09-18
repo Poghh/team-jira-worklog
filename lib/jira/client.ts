@@ -33,7 +33,60 @@ function authHeader({ email, apiToken }: JiraCreds) {
 }
 
 /** Turns Jira's several error shapes into one readable sentence. */
+/**
+ * Atlassian's IP allowlist refusal, in its own words.
+ *
+ * Matched on the sentence rather than on the status, because 403 is also what
+ * an ordinary permissions problem returns and the two need opposite actions —
+ * one is "turn the VPN on", the other is "ask for access to the project".
+ * Both the English original and our own rewrite of it are listed, so a message
+ * that has already been through {@link describeError} still classifies.
+ */
+const ALLOWLIST_RE = /ip allowlist|ip address is not listed|jira chặn ip/i
+
+/**
+ * A connection that never reached Jira at all.
+ *
+ * These come out of `fetch` as a bare `TypeError: fetch failed` with the real
+ * reason on `cause.code`, which is why both the wrapper's text and the raw
+ * codes are matched.
+ */
+const OFFLINE_RE =
+  /fetch failed|ENOTFOUND|ECONNREFUSED|ECONNRESET|ETIMEDOUT|EAI_AGAIN|UND_ERR|socket hang up/i
+
+/** Why Jira was unreachable, when the reason is the network and not the request. */
+export type JiraBlock = "allowlist" | "offline";
+
+/**
+ * Whether this failure means "the tunnel is down" rather than "the request was
+ * wrong".
+ *
+ * The two look nothing alike to the user and need the same answer from us —
+ * turn the VPN on — so they are classified together and everything else is
+ * deliberately left out. A page that cannot tell them apart ends up either
+ * telling somebody to check their VPN when their token has expired, or showing
+ * a raw stack trace for the one failure that happens every day.
+ */
+export function jiraBlockedBy(error: unknown): JiraBlock | null {
+  if (!(error instanceof Error)) return null;
+  const body =
+    error instanceof JiraError && error.body !== undefined
+      ? typeof error.body === "string"
+        ? error.body
+        : JSON.stringify(error.body)
+      : "";
+  const text = `${error.message} ${body}`;
+  if (ALLOWLIST_RE.test(text)) return "allowlist";
+  if (OFFLINE_RE.test(text)) return "offline";
+  return null;
+}
+
 function describeError(status: number, body: unknown): string {
+  // Before the generic unwrapping below, which would hand back Atlassian's own
+  // English sentence — accurate, and no help at all to somebody who simply
+  // forgot to connect.
+  if (ALLOWLIST_RE.test(typeof body === "string" ? body : JSON.stringify(body ?? "")))
+    return "Jira chặn IP này — bật VPN lên rồi thử lại";
   if (body && typeof body === 'object') {
     const b = body as Record<string, unknown>
     const messages = Array.isArray(b.errorMessages) ? (b.errorMessages as string[]) : []
@@ -81,6 +134,43 @@ export function clearJiraCache() {
   readCache.clear()
 }
 
+/**
+ * How long to wait before each retry. Two entries = three attempts in all.
+ *
+ * Kept short because these run inside a page render: a board asks Jira for one
+ * worklog per issue, so the user is waiting on the slowest of forty requests.
+ */
+const RETRY_DELAYS_MS = [250, 1_000]
+
+/**
+ * Retry a read that failed for a reason likely to pass on its own.
+ *
+ * Atlassian answers `/issue/{key}/worklog` with an empty-bodied 500 now and
+ * then — the same URL, the same credentials, succeeding on the next call. One
+ * such blip used to take the whole board down, because the page asks for every
+ * issue's worklog at once and a single rejection fails the lot.
+ *
+ * Reads only, and that restriction is the important part: this app writes
+ * worklogs, and a POST that actually succeeded before the connection broke
+ * would be logged twice by a retry — turning a display error into wrong hours
+ * in someone else's Jira. A failed write stays failed and is shown to the user.
+ *
+ * 5xx and 429 are retried; a 4xx is the request's own fault and will fail the
+ * same way forever. A thrown fetch — DNS, a dropped socket — is retried too.
+ */
+async function readWithRetry(send: () => Promise<Response>): Promise<Response> {
+  for (let i = 0; ; i++) {
+    const last = i >= RETRY_DELAYS_MS.length
+    try {
+      const res = await send()
+      if (last || res.ok || (res.status < 500 && res.status !== 429)) return res
+    } catch (err) {
+      if (last) throw err
+    }
+    await new Promise((r) => setTimeout(r, RETRY_DELAYS_MS[i]))
+  }
+}
+
 export async function jiraFetch<T = unknown>(path: string, options: JiraFetchOptions = {}): Promise<T> {
   const { body, creds: given, headers, fresh, ...rest } = options
   const creds = given ?? readCreds()
@@ -94,16 +184,39 @@ export async function jiraFetch<T = unknown>(path: string, options: JiraFetchOpt
     if (hit && Date.now() - hit.at < JIRA_TTL_MS) return hit.data as T
   }
 
-  const res = await fetch(url, {
-    ...rest,
-    cache: 'no-store',
-    headers: {
-      Authorization: authHeader(creds),
-      Accept: 'application/json',
-      ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}),
-      ...headers,
-    },
-    ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+  const send = () =>
+    fetch(url, {
+      ...rest,
+      cache: 'no-store',
+      headers: {
+        Authorization: authHeader(creds),
+        Accept: 'application/json',
+        ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}),
+        ...headers,
+      },
+      ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+    })
+
+  /**
+   * A fetch that never got an answer, given the same shape as one that did.
+   *
+   * Without this a dropped VPN surfaces as a bare `TypeError: fetch failed`
+   * from somewhere inside undici — nothing identifying it as Jira, and nothing
+   * any caller can classify. The underlying code is kept in the message
+   * because that is what {@link jiraBlockedBy} reads.
+   */
+  const res = await (isRead ? readWithRetry(send) : send()).catch((err) => {
+    // Two levels down: undici hangs the real reason off `cause`, and when a
+    // host resolves to both an IPv4 and an IPv6 address that fails, `cause` is
+    // an AggregateError holding one error per attempt. Reading only the first
+    // level gave every connection failure the same useless "fetch failed".
+    const c = (err as { cause?: { code?: string; errors?: Array<{ code?: string }> } })?.cause
+    const code = c?.code ?? c?.errors?.find((e) => e?.code)?.code
+    throw new JiraError(
+      `Không nối được tới Jira (${code ?? (err instanceof Error ? err.message : 'fetch failed')})`,
+      0,
+      url,
+    )
   })
 
   // A successful write can change what any read returns — invalidate everything.

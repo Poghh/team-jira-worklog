@@ -1,23 +1,39 @@
 import Link from 'next/link'
 import { connection } from 'next/server'
 
-import { getMyself } from '@/lib/jira/client'
+import { getMyself, jiraBlockedBy } from '@/lib/jira/client'
 import { getInProgressSubtasks } from '@/lib/jira/issues'
 import { getSprints } from '@/lib/jira/sprints'
 import { getWorklogs, sumByDate } from '@/lib/jira/worklog'
 import { type ReportIssue, renderReport } from '@/lib/report'
 import { listDaysOff } from '@/lib/days-off'
 import { type QuotaRules, quotaForDate } from '@/lib/quota'
-import { SETTING_KEYS, getSetting } from '@/lib/settings'
+import { SETTING_KEYS, getSetting, getWorkSchedule } from '@/lib/settings'
 import { getTemplate, listTemplates } from '@/lib/templates'
 import { DEFAULT_TZ, addDays, formatDateVi, formatDuration, isWeekend, todayIn, weekOf } from '@/lib/time'
 
+import { JiraDown } from '../jira-down'
 import { NavProvider } from '../board/navigation'
 import { ReportDatePicker } from './date-picker'
 import { ReportOutput } from './output'
 import { WeekTable } from './week-table'
 
+/**
+ * Everything on this page comes from Jira, so a dropped VPN has nothing left to
+ * render — which is why the whole body sits behind one boundary rather than
+ * each fetch guarding itself. Only a connection failure is caught: anything
+ * else is a real bug and has to keep looking like one.
+ */
 export default async function ReportPage(props: PageProps<'/report'>) {
+  try {
+    return await reportPage(props)
+  } catch (error) {
+    if (!jiraBlockedBy(error)) throw error
+    return <JiraDown error={error} retryHref="/report" />
+  }
+}
+
+async function reportPage(props: PageProps<'/report'>) {
   await connection()
 
   if (!getSetting(SETTING_KEYS.jiraApiToken)) {
@@ -107,6 +123,9 @@ export default async function ReportPage(props: PageProps<'/report'>) {
   const byDate = sumByDate(weekEntries)
   const rules: QuotaRules = {
     dailyHours: Number(getSetting(SETTING_KEYS.dailyQuotaHours) ?? '8') || 8,
+    // A half day is measured off the clock rather than halved — this workplace
+    // runs 09:00–18:00 around lunch, so its halves are three hours and five.
+    schedule: getWorkSchedule(),
     weekendCounts: getSetting(SETTING_KEYS.weekendCountsToQuota) === 'true',
     daysOff: listDaysOff(days[0], days[6]),
   }

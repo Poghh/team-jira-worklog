@@ -1,5 +1,7 @@
-import { type QuotaRules, quotaForDate } from '@/lib/quota'
+import { DAY_OFF_LABEL, type QuotaRules, halfDayHours, quotaForDate } from '@/lib/quota'
 import { formatDuration } from '@/lib/time'
+
+import { DayBar } from './day-bar'
 
 const VI_DAYS = ['CN', 'T2', 'T3', 'T4', 'T5', 'T6', 'T7']
 
@@ -21,6 +23,10 @@ export function WeekPanel({
   rules: QuotaRules
 }) {
   const total = days.reduce((n, d) => n + (hoursByDate[d] ?? 0), 0)
+  // Where lunch falls across the bar — the halves are 3h and 5h here, not 4/4.
+  const halves = halfDayHours(rules.schedule)
+  const span = halves.morning + halves.afternoon
+  const split = span > 0 ? halves.morning / span : 0.5
 
   const shortDays = days.filter((d) => {
     const quota = quotaForDate(d, rules)
@@ -58,9 +64,17 @@ export function WeekPanel({
                 >
                   {dayLabel(d)}
                 </span>
-                <div className="h-[5px] overflow-hidden rounded-[3px] bg-surface-2">
-                  <div className={'h-full ' + tone} style={{ width: `${pct}%` }} />
-                </div>
+                <DayBar
+                  pct={pct}
+                  tone={tone}
+                  dayOff={rules.daysOff[d] ?? null}
+                  split={split}
+                  title={
+                    rules.daysOff[d]
+                      ? `${DAY_OFF_LABEL[rules.daysOff[d]]} — phần gạch chéo là buổi không tính giờ`
+                      : undefined
+                  }
+                />
                 <span
                   className={
                     'text-right font-mono text-[11.5px] tabular ' + (hours ? '' : 'text-ink-3')

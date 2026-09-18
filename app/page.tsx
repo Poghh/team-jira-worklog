@@ -1,17 +1,18 @@
 import Link from 'next/link'
 import { connection } from 'next/server'
 
-import { JiraError, getMyself } from '@/lib/jira/client'
-import { getBoard, getSprintTasks } from '@/lib/jira/issues'
+import { getMyself, jiraBlockedBy } from '@/lib/jira/client'
+import { getBoard, getSprintPoints, getSprintTasks } from '@/lib/jira/issues'
 import { getProjectMeta } from '@/lib/jira/meta'
-import type { SprintTask } from '@/lib/jira/types'
+import { type SprintTask, summarisePoints } from '@/lib/jira/types'
 import { getSprints } from '@/lib/jira/sprints'
 import { getWorklogs, sumByDate, sumByIssue } from '@/lib/jira/worklog'
 import { listDaysOff } from '@/lib/days-off'
 import { type QuotaRules, quotaForDate } from '@/lib/quota'
-import { SETTING_KEYS, getSetting, getTeamScope } from '@/lib/settings'
+import { SETTING_KEYS, getSetting, getTeamScope, getWorkSchedule } from '@/lib/settings'
 import { DEFAULT_TZ, formatDateVi, isWeekend, todayIn, weekOf } from '@/lib/time'
 
+import { JiraDown } from './jira-down'
 import { LinkPending } from './link-pending'
 import { BoardFilters } from './board/filters'
 import { NavDimmer, NavProvider } from './board/navigation'
@@ -20,10 +21,27 @@ import { DatePicker } from './board/date-picker'
 import { EpicHeader, groupByEpic } from './board/epic-section'
 import { ParentGroup } from './board/parent-group'
 import { PendingTasks } from './board/pending-tasks'
+import { PointsPanel } from './board/points-panel'
 import { SprintPanel } from './board/sprint-panel'
 import { WeekPanel } from './board/week-panel'
 
+/**
+ * Same boundary as the report page: every panel here is a view of Jira, so a
+ * dropped VPN leaves nothing to draw. The inner function keeps its own catch
+ * around the first two calls — that one can name the page it failed on before
+ * anything has been fetched — and this one covers the rest of the body, which
+ * used to throw straight through to a stack trace.
+ */
 export default async function BoardPage(props: PageProps<'/'>) {
+  try {
+    return await boardPage(props)
+  } catch (error) {
+    if (!jiraBlockedBy(error)) throw error
+    return <JiraDown error={error} retryHref="/" />
+  }
+}
+
+async function boardPage(props: PageProps<'/'>) {
   await connection()
 
   if (!getSetting(SETTING_KEYS.jiraApiToken)) return <NotConfigured />
@@ -38,7 +56,7 @@ export default async function BoardPage(props: PageProps<'/'>) {
   try {
     ;[me, sprintsResult] = await Promise.all([getMyself(), getSprints()])
   } catch (error) {
-    return <ConnectionProblem error={error} />
+    return <JiraDown error={error} retryHref="/" />
   }
 
   const tz = me.timeZone ?? DEFAULT_TZ
@@ -90,7 +108,7 @@ export default async function BoardPage(props: PageProps<'/'>) {
   // to be reflected rather than lost to Jira's eventually-consistent search.
   const visibleIds = board.flatMap((g) => g.subtasks.map((s) => s.id)).slice(0, 50)
 
-  const [entries, sprintTasks] = await Promise.all([
+  const [entries, sprintTasks, pointRows] = await Promise.all([
     getWorklogs(
       // The selected day can sit outside the sprint window; widen so its own
       // logged hours still show on the capacity bar.
@@ -101,14 +119,31 @@ export default async function BoardPage(props: PageProps<'/'>) {
       visibleIds,
     ),
     noSprintMatch ? Promise.resolve([]) : getSprintTasks(sprintId, status),
+    // Only with a sprint picked. "Point in this sprint" has no answer across
+    // every sprint at once, and the panel that shows it is already conditional
+    // on the same thing — so browsing "Mọi sprint" costs nothing extra.
+    sprintId === null || noSprintMatch
+      ? Promise.resolve([])
+      : getSprintPoints(sprintId).catch(() => []),
   ])
   const week = { days: weekDays, entries }
 
   const byDate = sumByDate(week.entries)
   const byIssueToday = sumByIssue(week.entries.filter((e) => e.date === date))
 
+  // Latest worklog day per issue, across the whole window already fetched —
+  // the sprint, widened to take in the selected day. Costs no extra request.
+  const lastLogByIssue = new Map<string, string>()
+  for (const e of week.entries) {
+    const prev = lastLogByIssue.get(e.issueKey)
+    if (!prev || e.date > prev) lastLogByIssue.set(e.issueKey, e.date)
+  }
+
   for (const group of board) {
-    for (const st of group.subtasks) st.loggedTodaySeconds = byIssueToday.get(st.key) ?? 0
+    for (const st of group.subtasks) {
+      st.loggedTodaySeconds = byIssueToday.get(st.key) ?? 0
+      st.lastLogDate = lastLogByIssue.get(st.key) ?? null
+    }
   }
 
   const epicOptions = [
@@ -158,6 +193,9 @@ export default async function BoardPage(props: PageProps<'/'>) {
   // into each of them and could drift apart.
   const rules: QuotaRules = {
     dailyHours: Number(getSetting(SETTING_KEYS.dailyQuotaHours) ?? '8') || 8,
+    // A half day is measured off the clock rather than halved — this workplace
+    // runs 09:00–18:00 around lunch, so its halves are three hours and five.
+    schedule: getWorkSchedule(),
     weekendCounts: getSetting(SETTING_KEYS.weekendCountsToQuota) === 'true',
     daysOff: listDaysOff(rangeFrom < weekDays[0] ? rangeFrom : weekDays[0], rangeTo > weekDays[6] ? rangeTo : weekDays[6]),
   }
@@ -313,6 +351,13 @@ export default async function BoardPage(props: PageProps<'/'>) {
           entries={todaysEntries.map((e) => ({ key: e.issueKey, seconds: e.timeSpentSeconds }))}
         />
 
+        {selectedSprint && (
+          <PointsPanel
+            sprintName={selectedSprint.name}
+            summary={summarisePoints(pointRows)}
+          />
+        )}
+
         {selectedSprint && sprintStart && sprintEnd ? (
           <SprintPanel
             sprintName={selectedSprint.name}
@@ -430,29 +475,6 @@ function NotConfigured() {
           </span>
         </Link>
       </div>
-    </div>
-  )
-}
-
-function ConnectionProblem({ error }: { error: unknown }) {
-  const message = error instanceof Error ? error.message : String(error)
-  const status = error instanceof JiraError ? error.status : undefined
-
-  return (
-    <div className="rounded-[9px] border border-crit/40 bg-crit-soft p-[17px]">
-      <div className="mb-1 font-mono text-[10.5px] uppercase tracking-[0.09em] text-crit">
-        Không kết nối được Jira{status ? ` · HTTP ${status}` : ''}
-      </div>
-      <p className="text-[13px] text-ink">{message}</p>
-      <Link
-        href="/settings"
-        className="mt-3 inline-block rounded-md border border-line-strong bg-surface px-[9px] py-1 text-[12.5px] hover:bg-surface-2"
-      >
-        <span className="inline-flex items-center gap-1.5">
-          Kiểm tra Settings
-          <LinkPending />
-        </span>
-      </Link>
     </div>
   )
 }

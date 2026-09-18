@@ -1,7 +1,13 @@
-'use client'
+"use client";
 
-import { useRouter } from 'next/navigation'
-import { createContext, useContext, useTransition } from 'react'
+import { useRouter } from "next/navigation";
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useMemo,
+  useTransition,
+} from "react";
 
 /**
  * Shared navigation state for the board.
@@ -12,27 +18,33 @@ import { createContext, useContext, useTransition } from 'react'
  * explanation. This puts one flag where every part of the board can read it.
  */
 const NavContext = createContext<{
-  navigate: (href: string) => void
+  navigate: (href: string) => void;
   /** Re-fetches the route through the same shared pending flag. */
-  refresh: () => void
-  pending: boolean
+  refresh: () => void;
+  pending: boolean;
 }>({
   navigate: () => {},
   refresh: () => {},
   pending: false,
-})
+});
 
 export function useNav() {
-  return useContext(NavContext)
+  return useContext(NavContext);
 }
 
 export function NavProvider({ children }: { children: React.ReactNode }) {
-  const router = useRouter()
-  const [pending, startTransition] = useTransition()
+  const router = useRouter();
+  const [pending, startTransition] = useTransition();
 
-  function navigate(href: string) {
-    startTransition(() => router.push(href))
-  }
+  // Memoised because consumers keep these: an interval keyed on `refresh`
+  // identity was being torn down and restarted on every transition, so a
+  // periodic refresh could never reach its own deadline.
+  const navigate = useCallback(
+    (href: string) => {
+      startTransition(() => router.push(href));
+    },
+    [router],
+  );
 
   /**
    * Used after a write. Routing it through the shared transition means the
@@ -40,16 +52,21 @@ export function NavProvider({ children }: { children: React.ReactNode }) {
    * side panels sit on stale numbers for the two or three seconds the refetch
    * takes, which reads as "the save did not work".
    */
-  function refresh() {
-    startTransition(() => router.refresh())
-  }
+  const refresh = useCallback(() => {
+    startTransition(() => router.refresh());
+  }, [router]);
+
+  const value = useMemo(
+    () => ({ navigate, refresh, pending }),
+    [navigate, refresh, pending],
+  );
 
   return (
-    <NavContext.Provider value={{ navigate, refresh, pending }}>
+    <NavContext.Provider value={value}>
       {pending && <TopProgress />}
       {children}
     </NavContext.Provider>
-  )
+  );
 }
 
 /** Indeterminate bar pinned to the top — the request length is unknown. */
@@ -73,7 +90,7 @@ function TopProgress() {
         }
       `}</style>
     </>
-  )
+  );
 }
 
 /**
@@ -82,15 +99,21 @@ function TopProgress() {
  * `label` puts a word on top of the fade. Fading alone is ambiguous — after
  * logging hours, dimmed-but-unchanged numbers look the same as a failed save.
  */
-export function NavDimmer({ children, label }: { children: React.ReactNode; label?: string }) {
-  const { pending } = useNav()
+export function NavDimmer({
+  children,
+  label,
+}: {
+  children: React.ReactNode;
+  label?: string;
+}) {
+  const { pending } = useNav();
   return (
     <div className="relative">
       <div
         aria-busy={pending}
         className={
-          'transition-opacity duration-150 ' +
-          (pending ? 'pointer-events-none opacity-40' : 'opacity-100')
+          "transition-opacity duration-150 " +
+          (pending ? "pointer-events-none opacity-40" : "opacity-100")
         }
       >
         {children}
@@ -105,17 +128,17 @@ export function NavDimmer({ children, label }: { children: React.ReactNode; labe
         </div>
       )}
     </div>
-  )
+  );
 }
 
 /** Inline "đang tải" chip for the filter bar. */
 export function NavSpinner() {
-  const { pending } = useNav()
-  if (!pending) return null
+  const { pending } = useNav();
+  if (!pending) return null;
   return (
     <span className="flex items-center gap-1.5 font-mono text-[11.5px] text-ink-3">
       <span className="inline-block size-3 animate-spin rounded-full border-[1.5px] border-line-strong border-t-accent" />
       đang tải…
     </span>
-  )
+  );
 }
