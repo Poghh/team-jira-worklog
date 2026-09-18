@@ -25,6 +25,7 @@ GOOGLE_API_KEY=
 GEMINI_MODEL=gemini-3.5-flash
 JIRA_PROJECT_KEY=ABC
 JIRA_BOARD_ID=1
+GITHUB_TOKEN=                          ← chỉ cần nếu bật module "Nhánh & ghi chú"
 ```
 
 Rồi chạy:
@@ -44,6 +45,128 @@ Mở http://localhost:3000 → vào **Settings** → bấm **Test connection**. 
 npm run build
 npm start
 ```
+
+## Kiểm tra
+
+```bash
+npm test
+```
+
+Chạy các quy tắc thuần của bảng Nhánh & ghi chú — cột nào cho nhánh nào, đọc
+mã ticket từ tên nhánh và từ ghi chú bản build, múi giờ của build number, link
+Jira trỏ sang site khác. Không cần mạng và không đụng vào `data/app.db`.
+
+Kèm theo là luật gọi lại của Jira client, kiểm bằng một HTTP server dựng tại
+chỗ trên cổng 8791: read gặp 5xx thì thử lại, gặp 4xx thì thôi, và **write thì
+không bao giờ thử lại** — một POST worklog gọi lại là số giờ bị ghi hai lần.
+
+### Bảng Nhánh & ghi chú lấy dữ liệu lúc nào
+
+| Chu kỳ | Gọi gì | Nguồn |
+|---|---|---|
+| 3 phút, và mỗi lần tab được xem lại | render lại server component | Jira — trạng thái ticket |
+| 12 phút, và mỗi lần tab được xem lại | `refreshPrsAction` | GitHub — PR của các nhánh **đã có card** |
+| 30 phút, và mỗi lần tab được xem lại | `checkBuildsAction` | App Store Connect — bản build |
+| **6 phút** khi có bản build đã upload mà chưa giao cho tester | `checkBuildsAction` | như trên — xem bên dưới |
+| chỉ khi bấm ↻ Quét GitHub | `quickScanAction` | GitHub — dò nhánh mới + đo containment |
+| chỉ khi bấm ↻ Bản build | `checkBuildsAction(fresh)` | App Store Connect — bỏ qua cả cache 5 phút |
+
+Một bug có thể phải sửa ở **cả hai repo** — SDK Rust và app iOS — và hai nửa đi
+với nhịp riêng: PR bên SDK merge từ hai tuần trước trong khi nửa iOS còn đang
+viết. 9 trên 51 ticket đang ở dạng đó. Card vì vậy giữ một **danh sách phía**
+(`sides`), mỗi repo một phía với nhánh, PR và trạng thái môi trường riêng.
+
+Cột của card đi theo **phía đi xa nhất**, và **bản build là bằng chứng mạnh
+nhất**: một bản build của môi trường nào chỉ tồn tại được khi code đã lên môi
+trường đó, nên nó nói về cả card. Không dùng "phía chậm nhất" — nhánh ở đây
+không bị xoá cho tới khi release, nên một repo giữ nhánh bỏ đi (PR đã đóng,
+commit không bao giờ vào) rất lâu sau khi thay đổi đã đi ké nhánh khác; đọc nó
+thành "nửa này còn dở" là đọc rác thành việc đang làm.
+
+Bản build không chia theo phía: build là của app iOS và nó mang theo bản SDK đã
+pin, nên một bản build cho cả card.
+
+Chỉ các cột **`đã build`** đòi ticket ở trạng thái test. Merge chưa phải là ship
+— ở mọi môi trường, không riêng môi trường đầu — nên cột `đã merge` không cảnh
+báo, nếu không nó sẽ báo lệch cho ticket đang chạy đúng quy trình.
+
+Card nhiều repo nhận **mép trái chia màu** và một chip cho mỗi repo ở header, để
+phân biệt ngay khi lướt bảng.
+
+Sửa được bằng tay, mỗi thứ theo đúng chiều của nó — và mỗi thứ **một chỗ duy
+nhất**, không có ô nào làm trùng việc ô nào: **nhánh** ghim theo từng repo (cùng một tên nhánh có ở cả hai repo, app ghép theo commit mới nhất nên
+ghép sai được), **pull request** ghim theo từng (repo, môi trường), **bản build**
+điền theo từng môi trường. Xoá trống là trả lại cho app tự chọn.
+
+Pull request của card có thể **ghim theo từng môi trường** trong ô Sửa card. Cần
+vì việc của team này vào bằng nhánh `resolve`: GitHub gắn bản merge cho nhánh
+resolve, nên trong `associatedPullRequests` của nhánh feature chỉ còn lần thử
+đầu đã bị đóng và app chọn nhầm nó. Ghim chỉ giữ **số** — trạng thái vẫn do
+GitHub trả lời, hỏi bằng `fetchPrsByNumber`, nên một PR ghim vẫn tự chuyển
+sang merged. Xoá trống để trả lại cho app tự chọn.
+
+**Không gọi được Jira khác với Jira không có ticket.** `getIssueStatuses` từng
+nuốt mọi lỗi thành kết quả rỗng, rồi ghi từng key vào bộ nhớ `missing` — nên
+mất VPN một lần là bảng ghi "Jira không thấy" lên mọi card (một khẳng định sai
+về Jira của khách) và **thôi hỏi Jira về những key đó suốt 30 phút**, kể cả sau
+khi mạng đã về. Giờ chỉ HTTP 400 — Jira trả lời rằng key không tồn tại — mới
+được ghi là `missing`; lỗi kết nối thì ném lên, bảng ghi "chưa gọi được Jira"
+và hiện nút **↻ Thử lại Jira**.
+
+Mỗi môi trường trỏ tới một app trên App Store Connect, và tên app là **text tự
+do** — nó buộc phải khớp chính xác tên bên Apple. Gõ sai, hoặc thêm môi trường
+vào pipeline mà chưa thêm app tương ứng vào module iOS publish, thì trước đây
+môi trường đó **hỏng im lặng**: không bản build nào, không lời nào, không phân
+biệt được với "chưa có bản build". Giờ ô cấu hình tự kiểm ngay (`✓ có
+credential` / `✕ chưa có trong iOS publish`) và mỗi lần kiểm build cũng báo tên
+môi trường bị bỏ qua kèm lý do.
+
+Bản build về theo lịch của Apple chứ không theo lúc merge, và người ta thường
+biết có bản mới **từ chat bot trước khi bảng kịp biết**. Nút **↻ Bản build** hỏi
+ngay, bỏ qua cả cache 5 phút — nhịp nền vẫn giữ nguyên. Một lần kiểm ở trạng
+thái bình thường tốn ~4 request trên giới hạn 3600/giờ, nên nút này gần như
+miễn phí; cái đắt là nhịp nền nhân với số tab đang mở, và nó không đổi.
+
+Nhịp kiểm bản build tự thích nghi. Nửa giờ là nhịp thường và giữ nguyên — bản
+build không ra đủ dày để hỏi nhiều hơn. Nhưng khoảng giữa "đã upload" và "đã
+giao cho tester" thì ngắn, và đó đúng là lúc bảng nói sai: ghi chú liệt kê
+ticket được viết lúc public, nên trước đó bản build hiện ra mà không có nội
+dung và không card nào được gắn. Thấy trạng thái khác `IN_BETA_TESTING` thì
+hỏi lại sau 6 phút thay vì đợi hết nửa giờ. Sáu chứ không phải năm, vì danh
+sách build được cache 5 phút — hỏi mỗi 5 phút chỉ đọc lại đúng bản cache.
+
+`refreshPrsAction` là nửa rẻ của một lần quét: hỏi đích danh các ref đã có card
+(một request GraphQL mỗi repo, ~2s cho 12 nhánh) thay vì đi bộ qua mọi nhánh của
+repo. Nó **không** dò nhánh mới, không xoá card, không đo containment và không
+đụng `syncedAt`. Cột vẫn nhúc nhích được vì `stageFor` đọc cả PR, nhưng nó không
+thấy được một lần merge đã đáp xuống môi trường nào — đó là containment, phần bị
+bỏ ra. Nên PR merge sẽ hiện là merged ngay, còn card đợi lần quét đầy đủ mới
+chuyển cột.
+
+### Log giờ lệch với due date
+
+Một task đánh Done mang theo due date nói việc kết thúc lúc nào; một worklog đề
+ngày sau đó nói việc vẫn đang chạy. Hai thứ không thể cùng đúng — thường là due
+date chưa được dời, đôi khi là trạng thái đóng sớm, cũng có khi bạn đang đứng
+nhầm ngày trên bảng. Trước đây không có gì trên màn hình nói chúng đang cãi nhau.
+
+Cảnh báo chỉ áp cho task **đã Done**. Log vượt due date của task còn đang làm là
+chuyện trễ hạn bình thường ở đây; báo cả ca đó sẽ chôn mất ca thật sự mâu thuẫn.
+
+Tô vàng **cả dòng** khi ngày đó **thật sự đã có giờ log**, cộng vạch vàng dọc
+bên trái và chip ngày cùng tông để chỉ ra lý do. Vàng chứ không đỏ: đỏ dành cho
+deadline thật sự bị trễ, còn đây chỉ là hai sự thật đang cãi nhau và cái nào sai
+thì bạn mới biết.
+
+Điều kiện là **đã log**, không phải *đang đứng ở ngày đó*. Chọn một ngày ngoài
+khoảng là cách người ta nhìn lại tuần trước hoặc nhìn tới ngày chưa điền — tô
+màu cho việc đó biến lịch sprint thành cỗ máy sinh cảnh báo: bấm ngày quá khứ
+nào cũng thấy nửa bảng sáng lên vì những chuyện không hề xảy ra. Đo trên bảng
+thật: đứng ở 11/09 sau due date của mười task Done → **0 dòng vàng**; đứng ở
+09/09 nơi `VT-698` (Done, due 08/09) có 8h log thật → **1 dòng**.
+
+Nút Log không tô viền, chỉ nhắc trong tooltip trước khi bấm; bấm xong thì hiện
+thêm một dòng nhắc, đúng một lần.
 
 ## Các màn hình
 

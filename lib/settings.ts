@@ -18,6 +18,7 @@ export const SETTING_KEYS = {
   jiraProjectKey: 'jira_project_key',
   jiraBoardId: 'jira_board_id',
   googleApiKey: 'google_api_key',
+  githubToken: 'github_token',
   geminiModel: 'gemini_model',
   geminiFallbackModels: 'gemini_fallback_models',
   dailyQuotaHours: 'daily_quota_hours',
@@ -32,6 +33,8 @@ export const SETTING_KEYS = {
   teamLabel: 'team_label',
   teamPrefix: 'team_prefix',
   teamSprintFilter: 'team_sprint_filter',
+  /** Show the sprint point rollup on the task board. */
+  showSprintPoints: 'show_sprint_points',
   pointBudget1: 'point_budget_1',
   pointBudget2: 'point_budget_2',
   pointBudget3: 'point_budget_3',
@@ -66,6 +69,16 @@ const DEFAULTS: Record<string, string> = {
   [SETTING_KEYS.teamLabel]: '',
   [SETTING_KEYS.teamPrefix]: '',
   [SETTING_KEYS.teamSprintFilter]: '',
+  /**
+   * Off by default.
+   *
+   * It costs a Jira query per render, and a board whose team does not fill in
+   * story points would spend it to be told there are none. A panel is worth
+   * having only once somebody asks for it, so the default is the one that
+   * costs nothing; read as `=== 'true'` everywhere, so an install that never
+   * seeded the key stays off rather than falling open.
+   */
+  [SETTING_KEYS.showSprintPoints]: 'false',
   // Point budgets are advisory only — they drive a soft warning, never a block.
   [SETTING_KEYS.pointBudget1]: '1-2h',
   [SETTING_KEYS.pointBudget2]: '4h',
@@ -80,6 +93,7 @@ const ENV_SEED: Partial<Record<string, string>> = {
   [SETTING_KEYS.jiraProjectKey]: 'JIRA_PROJECT_KEY',
   [SETTING_KEYS.jiraBoardId]: 'JIRA_BOARD_ID',
   [SETTING_KEYS.googleApiKey]: 'GOOGLE_API_KEY',
+  [SETTING_KEYS.githubToken]: 'GITHUB_TOKEN',
   [SETTING_KEYS.geminiModel]: 'GEMINI_MODEL',
   [SETTING_KEYS.teamLabel]: 'JIRA_TEAM_LABEL',
   [SETTING_KEYS.teamPrefix]: 'JIRA_TEAM_PREFIX',
@@ -201,7 +215,11 @@ export function setSettings(entries: Record<string, string>) {
 /** Redacts secrets so settings can be sent to a client component safely. */
 export function getSettingsForClient() {
   const all = getSettings()
-  const secretKeys: string[] = [SETTING_KEYS.jiraApiToken, SETTING_KEYS.googleApiKey]
+  const secretKeys: string[] = [
+    SETTING_KEYS.jiraApiToken,
+    SETTING_KEYS.googleApiKey,
+    SETTING_KEYS.githubToken,
+  ]
   const out: Record<string, string> = {}
   for (const [k, v] of Object.entries(all)) {
     out[k] = secretKeys.includes(k) ? (v ? '••••••••' + v.slice(-4) : '') : v

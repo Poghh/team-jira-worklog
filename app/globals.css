@@ -25,14 +25,41 @@
   --accent-ink: #06514b;
   --warn: #b8791b;
   --warn-soft: #f7e9cf;
+  --orange: #cf5f0c;
+  --orange-soft: #fbe3d1;
   --crit: #b4442f;
   --crit-soft: #f7dfd9;
   --ot: #7a5ea8;
   --ot-soft: #e8e1f4;
+  /*
+   * A card whose fix spans more than one repository.
+   *
+   * Its own colour rather than one of the repositories'. Reusing a repo
+   * colour for "two repos" is the same sign meaning two things, and it
+   * breaks outright the moment a third repository is watched. Magenta
+   * because it is the furthest thing left in this palette: nearest
+   * neighbours are `ot` at ΔE 44 and `crit` at ΔE 46, both comfortably
+   * past telling apart.
+   */
+  --dual: #c0357a;
+  /*
+   * A note the user wrote on a card and has not ticked off.
+   *
+   * Its own colour because every other one on that card is spoken for:
+   * orange and ink are the repositories, green is a merged request and a
+   * build, amber is the drift warning, magenta is a card spanning two
+   * repositories, and teal, amber, blue and green again are the four Jira
+   * status pills. Olive is the one gap left in the palette's hues —
+   * between amber and green — and it measures ΔE 38 from green, its
+   * nearest neighbour, where the pale tints of those two sit ΔE 6 apart.
+   */
+  --note: #6f8c14;
+  --note-soft: #eaf1d2;
   --good: #2f7d4f;
   --good-soft: #dcede2;
   --blue: #669df1;
   --blue-soft: #e3edfd;
+  --blue-ink: #2b62bd;
   --epic: #c97cf4;
   --epic-ink: #7b2cb5;
   --epic-soft: #f5e7fd;
@@ -54,14 +81,20 @@
     --accent-ink: #7fe0d5;
     --warn: #dca648;
     --warn-soft: #3a2e15;
+    --orange: #f4923c;
+    --orange-soft: #3a2513;
     --crit: #e07a62;
     --crit-soft: #3b211a;
     --ot: #a98fd4;
     --ot-soft: #2a2338;
+    --dual: #e0559a;
+    --note: #a9c93f;
+    --note-soft: #2b3310;
     --good: #61b583;
     --good-soft: #17301f;
     --blue: #669df1;
     --blue-soft: #16233a;
+    --blue-ink: #669df1;
     --epic: #c97cf4;
     --epic-ink: #e0afff;
     --epic-soft: #2c1e3b;
@@ -83,14 +116,20 @@
   --accent-ink: #06514b;
   --warn: #b8791b;
   --warn-soft: #f7e9cf;
+  --orange: #cf5f0c;
+  --orange-soft: #fbe3d1;
   --crit: #b4442f;
   --crit-soft: #f7dfd9;
   --ot: #7a5ea8;
   --ot-soft: #e8e1f4;
+  --dual: #c0357a;
+  --note: #6f8c14;
+  --note-soft: #eaf1d2;
   --good: #2f7d4f;
   --good-soft: #dcede2;
   --blue: #669df1;
   --blue-soft: #e3edfd;
+  --blue-ink: #2b62bd;
   --epic: #c97cf4;
   --epic-ink: #7b2cb5;
   --epic-soft: #f5e7fd;
@@ -111,17 +150,137 @@
   --accent-ink: #7fe0d5;
   --warn: #dca648;
   --warn-soft: #3a2e15;
+  --orange: #f4923c;
+  --orange-soft: #3a2513;
   --crit: #e07a62;
   --crit-soft: #3b211a;
   --ot: #a98fd4;
   --ot-soft: #2a2338;
+  --dual: #e0559a;
+  --note: #a9c93f;
+  --note-soft: #2b3310;
   --good: #61b583;
   --good-soft: #17301f;
   --blue: #669df1;
   --blue-soft: #16233a;
+  --blue-ink: #669df1;
   --epic: #c97cf4;
   --epic-ink: #e0afff;
   --epic-soft: #2c1e3b;
+}
+
+/*
+ * A page that needs the whole window says so, and `main` steps out of its own
+ * 1340px cap. Done with :has() rather than a prop threaded through the layout
+ * so the layout stays unaware of which pages are wide — the kanban is the only
+ * one today, and it should not cost every other page a new prop to say so.
+ */
+main:has(.wide-page) {
+  max-width: none;
+  /*
+   * The page sits in a grid column sized `1fr`, which resolves to
+   * `minmax(auto, 1fr)` — so a wide board pushed the column past the viewport
+   * and the whole page scrolled sideways, carrying the toolbar off with it.
+   * Flooring the column at zero hands the overflow back to the board, which
+   * scrolls its own columns and leaves the header where it can be reached.
+   */
+  min-width: 0;
+  /*
+   * Tighter side padding than the reading pages get. Six pixels of gutter buys
+   * nothing on a board that is already scrolling sideways, and every pixel
+   * given back is pixels a kanban column can use.
+   */
+  padding-inline: 1rem;
+}
+
+/*
+ * A card whose branch no longer exists is torn in two, and the halves fall
+ * apart and tilt away from each other.
+ *
+ * Two halves need two elements — one element cannot rotate its left and right
+ * sides in opposite directions — so a torn card renders its body twice inside a
+ * shell. The left copy is the real, interactive card; the right copy is inert
+ * decoration (`aria-hidden`, `pointer-events: none`). Each is masked to its own
+ * half with a ragged inner edge, then rotated and pushed outward.
+ *
+ * Because everything on the right copy is unclickable, the card's ✎ and ✕ move
+ * over to the left half when it is torn — see `branchGone` in NoteCard. That is
+ * the whole functional cost of the effect, and it is paid deliberately.
+ *
+ * The zigzags run half a period out of phase. In phase, both peak at the same
+ * y, touch, and leave bridges of card between the holes — perforated, not torn.
+ * 5px, not 10: the tile is 20 tall but its zigzag repeats every 10, so half a
+ * tile lands back in phase and changes nothing.
+ *
+ * Geometry comes from SVG because a 45° gradient in a non-square tile shears
+ * into slanted stripes instead of even teeth.
+ */
+:root {
+  --tear-l: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='20' viewBox='0 0 10 20'%3E%3Cpath d='M0 0H4L10 5L4 10L10 15L4 20H0Z' fill='%23000'/%3E%3C/svg%3E");
+  --tear-r: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='20' viewBox='0 0 10 20'%3E%3Cpath d='M10 0H6L0 5L6 10L0 15L6 20H10Z' fill='%23000'/%3E%3C/svg%3E");
+}
+
+.torn-shell {
+  position: relative;
+}
+
+.torn-half {
+  /* Both halves drop a shadow on the torn edge. The board and the card differ
+     by almost nothing (#f7f8f8 vs #ffffff), so the gap carries no contrast of
+     its own and the edges have to be drawn. */
+  filter: drop-shadow(0 1px 2px rgb(0 0 0 / 0.28));
+}
+
+.torn-left {
+  -webkit-mask-image: linear-gradient(#000, #000), var(--tear-l);
+  mask-image: linear-gradient(#000, #000), var(--tear-l);
+  -webkit-mask-size:
+    calc(50% - 7px) 100%,
+    10px 20px;
+  mask-size:
+    calc(50% - 7px) 100%,
+    10px 20px;
+  -webkit-mask-position:
+    left,
+    calc(50% - 5px) 0;
+  mask-position:
+    left,
+    calc(50% - 5px) 0;
+  -webkit-mask-repeat: no-repeat, repeat-y;
+  mask-repeat: no-repeat, repeat-y;
+  transform-origin: left center;
+  transform: translateX(-5px) rotate(-1.6deg);
+}
+
+.torn-right {
+  position: absolute;
+  inset: 0;
+  /* Clipped, not merely masked: a mask hides pixels but still swallows clicks,
+     so an overlay masked to the right half would eat every click meant for the
+     left one. `clip-path` removes it from hit-testing too, which lets each half
+     take the clicks over its own territory — the ✎ and ✕ keep working where
+     they have always been.
+     Screen readers and the keyboard reach those buttons through the left copy,
+     whose DOM is complete; only its pixels are masked away. */
+  clip-path: inset(0 0 0 calc(50% - 12px));
+  -webkit-mask-image: linear-gradient(#000, #000), var(--tear-r);
+  mask-image: linear-gradient(#000, #000), var(--tear-r);
+  -webkit-mask-size:
+    calc(50% - 7px) 100%,
+    10px 20px;
+  mask-size:
+    calc(50% - 7px) 100%,
+    10px 20px;
+  -webkit-mask-position:
+    right,
+    calc(50% + 5px) 5px;
+  mask-position:
+    right,
+    calc(50% + 5px) 5px;
+  -webkit-mask-repeat: no-repeat, repeat-y;
+  mask-repeat: no-repeat, repeat-y;
+  transform-origin: right center;
+  transform: translateX(5px) rotate(1.6deg);
 }
 
 @theme inline {
@@ -139,14 +298,26 @@
   --color-accent-ink: var(--accent-ink);
   --color-warn: var(--warn);
   --color-warn-soft: var(--warn-soft);
+  /* A true orange, distinct from the amber `warn` sits next to it: the branches
+     board colours one repo orange and another red, and amber-vs-red is not a
+     distinction anyone can make at chip size. */
+  --color-orange: var(--orange);
+  --color-orange-soft: var(--orange-soft);
   --color-crit: var(--crit);
   --color-crit-soft: var(--crit-soft);
+  --color-dual: var(--dual);
+  --color-note: var(--note);
+  --color-note-soft: var(--note-soft);
   --color-ot: var(--ot);
   --color-ot-soft: var(--ot-soft);
   --color-good: var(--good);
   --color-good-soft: var(--good-soft);
   --color-blue: var(--blue);
   --color-blue-soft: var(--blue-soft);
+  /* `--blue` is a light blue, unreadable as a solid chip fill on a light
+     background (2.6:1). This is the same colour where that is fine — dark on
+     light, light on dark — so `bg-blue-ink text-ground` reads in both themes. */
+  --color-blue-ink: var(--blue-ink);
   --color-epic: var(--epic);
   --color-epic-ink: var(--epic-ink);
   --color-epic-soft: var(--epic-soft);
@@ -173,9 +344,9 @@ body {
  * `:not(:disabled)` keeps the arrow on controls that would do nothing, and
  * `[aria-disabled]` covers the ones disabled without the attribute.
  */
-button:not(:disabled):not([aria-disabled='true']),
-[role='button']:not(:disabled):not([aria-disabled='true']),
-label:has(> input[type='checkbox']),
+button:not(:disabled):not([aria-disabled="true"]),
+[role="button"]:not(:disabled):not([aria-disabled="true"]),
+label:has(> input[type="checkbox"]),
 select:not(:disabled),
 summary {
   cursor: pointer;

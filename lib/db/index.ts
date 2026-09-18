@@ -1,15 +1,15 @@
-import 'server-only'
+import "server-only";
 
-import fs from 'node:fs'
-import path from 'node:path'
+import fs from "node:fs";
+import path from "node:path";
 
-import Database from 'better-sqlite3'
-import { drizzle } from 'drizzle-orm/better-sqlite3'
+import Database from "better-sqlite3";
+import { drizzle } from "drizzle-orm/better-sqlite3";
 
-import * as schema from './schema'
+import * as schema from "./schema";
 
-const DB_DIR = path.join(process.cwd(), 'data')
-const DB_PATH = path.join(DB_DIR, 'app.db')
+const DB_DIR = path.join(process.cwd(), "data");
+const DB_PATH = path.join(DB_DIR, "app.db");
 
 /**
  * Tables are created here rather than through drizzle-kit migrations: this is a
@@ -151,41 +151,53 @@ CREATE TABLE IF NOT EXISTS release_tasks (
   created_at   INTEGER NOT NULL DEFAULT (strftime('%s','now')),
   updated_at   INTEGER NOT NULL DEFAULT (strftime('%s','now'))
 );
-`
+`;
 
 /**
  * Adds a column to an existing table when it is missing. `CREATE TABLE IF NOT
  * EXISTS` never alters a table that already exists, so a new column on an old
  * table needs this. Idempotent — checked against the live schema each boot.
  */
-function ensureColumn(sqlite: Database.Database, table: string, column: string, ddl: string) {
-  const cols = (sqlite.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>).map(
-    (c) => c.name,
-  )
-  if (cols.includes(column)) return
+function ensureColumn(
+  sqlite: Database.Database,
+  table: string,
+  column: string,
+  ddl: string,
+) {
+  const cols = (
+    sqlite.prepare(`PRAGMA table_info(${table})`).all() as Array<{
+      name: string;
+    }>
+  ).map((c) => c.name);
+  if (cols.includes(column)) return;
 
   try {
-    sqlite.exec(`ALTER TABLE ${table} ADD COLUMN ${ddl}`)
+    sqlite.exec(`ALTER TABLE ${table} ADD COLUMN ${ddl}`);
   } catch (error) {
     // `next build` collects page data across several worker processes, each
     // opening this database at once. They all read the same "column missing"
     // and all try to add it; the losers get "duplicate column name", which
     // means the column now exists — exactly the goal.
-    if (!/duplicate column name/i.test(String(error))) throw error
+    if (!/duplicate column name/i.test(String(error))) throw error;
   }
 }
 
 function open() {
-  fs.mkdirSync(DB_DIR, { recursive: true })
-  const sqlite = new Database(DB_PATH)
-  sqlite.pragma('journal_mode = WAL')
-  sqlite.pragma('foreign_keys = ON')
-  sqlite.exec(CREATE_TABLES)
-  ensureColumn(sqlite, 'release_tasks', 'no_branch', 'no_branch INTEGER NOT NULL DEFAULT 0')
-  ensureColumn(sqlite, 'release_tasks', 'ref_id', 'ref_id INTEGER')
-  ensureColumn(sqlite, 'drafts', 'start_date', 'start_date TEXT')
-  ensureColumn(sqlite, 'drafts', 'due_date', 'due_date TEXT')
-  return drizzle(sqlite, { schema })
+  fs.mkdirSync(DB_DIR, { recursive: true });
+  const sqlite = new Database(DB_PATH);
+  sqlite.pragma("journal_mode = WAL");
+  sqlite.pragma("foreign_keys = ON");
+  sqlite.exec(CREATE_TABLES);
+  ensureColumn(
+    sqlite,
+    "release_tasks",
+    "no_branch",
+    "no_branch INTEGER NOT NULL DEFAULT 0",
+  );
+  ensureColumn(sqlite, "release_tasks", "ref_id", "ref_id INTEGER");
+  ensureColumn(sqlite, "drafts", "start_date", "start_date TEXT");
+  ensureColumn(sqlite, "drafts", "due_date", "due_date TEXT");
+  return drizzle(sqlite, { schema });
 }
 
 /**
@@ -193,10 +205,12 @@ function open() {
  * new SQLite handle each time. Stash the instance on globalThis so reloads reuse
  * one connection.
  */
-const globalForDb = globalThis as unknown as { __jiraLogworkDb?: ReturnType<typeof open> }
+const globalForDb = globalThis as unknown as {
+  __jiraLogworkDb?: ReturnType<typeof open>;
+};
 
-export const db = globalForDb.__jiraLogworkDb ?? open()
+export const db = globalForDb.__jiraLogworkDb ?? open();
 
-if (process.env.NODE_ENV !== 'production') globalForDb.__jiraLogworkDb = db
+if (process.env.NODE_ENV !== "production") globalForDb.__jiraLogworkDb = db;
 
-export { schema }
+export { schema };

@@ -19,6 +19,7 @@ const K = {
   jiraProjectKey: 'jira_project_key',
   jiraBoardId: 'jira_board_id',
   googleApiKey: 'google_api_key',
+  githubToken: 'github_token',
   geminiModel: 'gemini_model',
   geminiFallbackModels: 'gemini_fallback_models',
   dailyQuotaHours: 'daily_quota_hours',
@@ -33,6 +34,7 @@ const K = {
   teamLabel: 'team_label',
   teamPrefix: 'team_prefix',
   teamSprintFilter: 'team_sprint_filter',
+  showSprintPoints: 'show_sprint_points',
   pointBudget1: 'point_budget_1',
   pointBudget2: 'point_budget_2',
   pointBudget3: 'point_budget_3',
@@ -84,6 +86,19 @@ export function SettingsForm({ initial }: { initial: Record<string, string> }) {
           />
           <ConnectionTest label="Test Gemini" run={testGeminiConnection} />
         </Card>
+
+        {/* Used only by the "Nhánh & ghi chú" module, but kept here with the
+            other credentials: a token filed somewhere else is a token nobody
+            remembers to rotate. */}
+        <Card title="GitHub">
+          <Field
+            label="Personal access token"
+            name={K.githubToken}
+            defaultValue={initial[K.githubToken]}
+            type="password"
+            hint="Scope repo. Seed lần đầu từ GITHUB_TOKEN trong .env.local. Dùng để quét nhánh trong module Nhánh & ghi chú."
+          />
+        </Card>
       </div>
 
       <div className="flex flex-col gap-4">
@@ -122,7 +137,21 @@ export function SettingsForm({ initial }: { initial: Record<string, string> }) {
         </Card>
 
         <Card title="Quy đổi point → giờ">
-          <div className="grid grid-cols-[34px_minmax(0,1fr)] items-center gap-x-3 gap-y-2">
+          <label className="flex items-center gap-2 text-[13px] text-ink-2">
+            <input
+              type="checkbox"
+              name={K.showSprintPoints}
+              defaultChecked={initial[K.showSprintPoints] === 'true'}
+              className="accent-accent"
+            />
+            Hiện bảng tổng hợp point của sprint
+          </label>
+          <p className="text-[11.5px] leading-relaxed text-ink-3">
+            Mặc định tắt. Panel bên phải task board: bao nhiêu point đã xong,
+            chia theo trạng thái, và giờ mỗi point. Tắt thì bỏ hẳn — không vẽ
+            panel và cũng không chạy truy vấn Jira nào cho nó.
+          </p>
+          <div className="mt-1 grid grid-cols-[34px_minmax(0,1fr)] items-center gap-x-3 gap-y-2">
             {[
               [K.pointBudget1, '1'],
               [K.pointBudget2, '2'],

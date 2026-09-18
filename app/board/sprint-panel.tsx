@@ -1,9 +1,17 @@
 import Link from 'next/link'
 
-import { DAY_OFF_SHORT, type DayOffKind, type QuotaRules, quotaForDate } from '@/lib/quota'
+import {
+  DAY_OFF_LABEL,
+  DAY_OFF_SHORT,
+  type DayOffKind,
+  type QuotaRules,
+  halfDayHours,
+  quotaForDate,
+} from '@/lib/quota'
 import { addDays, formatDuration } from '@/lib/time'
 
 import { LinkPending } from '../link-pending'
+import { DayBar } from './day-bar'
 import { DayOffButton } from './day-off-button'
 
 const VI_DAYS = ['CN', 'T2', 'T3', 'T4', 'T5', 'T6', 'T7']
@@ -59,6 +67,16 @@ export function SprintPanel({
   const upcoming = all.filter((d) => d > today)
 
   const quotaFor = (d: string) => quotaForDate(d, rules)
+  /**
+   * Where lunch falls across the bar, as a fraction of the working day.
+   *
+   * Passed down rather than assumed to be the middle: on a 09:00–18:00 day the
+   * morning is three hours of eight, so a half-day bar drawn at 50/50 would
+   * show the wrong half as the larger one.
+   */
+  const halves = halfDayHours(rules.schedule)
+  const span = halves.morning + halves.afternoon
+  const split = span > 0 ? halves.morning / span : 0.5
 
   const workdays = elapsed.filter((d) => quotaFor(d) > 0)
   const short = workdays.filter((d) => (secondsByDate[d] ?? 0) < quotaFor(d) * 3600)
@@ -104,6 +122,7 @@ export function SprintPanel({
               seconds={secondsByDate[d] ?? 0}
               quota={quotaFor(d)}
               dayOff={rules.daysOff[d] ?? null}
+              split={split}
               selected={d === selectedDate}
               isToday={d === today}
             />
@@ -122,6 +141,7 @@ export function SprintPanel({
                   seconds={secondsByDate[d] ?? 0}
                   quota={quotaFor(d)}
                   dayOff={rules.daysOff[d] ?? null}
+                  split={split}
                   selected={d === selectedDate}
                   future
                 />
@@ -174,6 +194,7 @@ function DayRow({
   seconds,
   quota,
   dayOff,
+  split,
   selected,
   isToday,
   future,
@@ -183,6 +204,8 @@ function DayRow({
   seconds: number
   quota: number
   dayOff: DayOffKind | null
+  /** Where the morning ends as a fraction of the day — see {@link DayBar}. */
+  split: number
   selected: boolean
   isToday?: boolean
   future?: boolean
@@ -215,9 +238,17 @@ function DayRow({
         {isToday && !selected && <span className="ml-0.5 text-accent">•</span>}
       </span>
 
-      <span className="h-[5px] overflow-hidden rounded-[3px] bg-surface-2">
-        <span className={'block h-full ' + tone} style={{ width: `${pct}%` }} />
-      </span>
+      <DayBar
+        pct={pct}
+        tone={tone}
+        dayOff={dayOff}
+        split={split}
+        title={
+          dayOff
+            ? `${DAY_OFF_LABEL[dayOff]} — phần gạch chéo là buổi không tính giờ`
+            : undefined
+        }
+      />
 
       <span
         className={
