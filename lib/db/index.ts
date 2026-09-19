@@ -136,6 +136,41 @@ CREATE TABLE IF NOT EXISTS ios_publish_log (
   created_at   INTEGER NOT NULL DEFAULT (strftime('%s','now'))
 );
 
+CREATE TABLE IF NOT EXISTS sdk_release_run (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  version      TEXT NOT NULL DEFAULT '',
+  branch       TEXT NOT NULL DEFAULT '',
+  commit_sha   TEXT NOT NULL DEFAULT '',
+  suffix       TEXT NOT NULL DEFAULT '',
+  ordinal      INTEGER NOT NULL DEFAULT 0,
+  local_only   INTEGER NOT NULL DEFAULT 0,
+  state        TEXT NOT NULL DEFAULT 'running',
+  pid          INTEGER NOT NULL DEFAULT 0,
+  pgid         INTEGER NOT NULL DEFAULT 0,
+  log_path     TEXT NOT NULL DEFAULT '',
+  exit_code    INTEGER,
+  phase        TEXT NOT NULL DEFAULT '',
+  message      TEXT NOT NULL DEFAULT '',
+  verified     TEXT NOT NULL DEFAULT '',
+  -- The machine's boot time when the row was written. A pid from before the
+  -- last reboot may have been handed to an unrelated process since, and
+  -- kill(pid, 0) would cheerfully report it alive — so a run that predates the
+  -- current boot is "lost" without asking the pid anything.
+  boot_at      INTEGER NOT NULL DEFAULT 0,
+  started_at   INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+  ended_at     INTEGER
+);
+CREATE INDEX IF NOT EXISTS sdk_release_run_state_idx ON sdk_release_run (state);
+-- One release at a time, as a fact of the database rather than a check that can
+-- lose a race. Two runs would fight over the same 468 GB cargo target directory
+-- and interleave two "git add Package.swift Sources" sequences in the same
+-- clone. Partial, so finished rows do not collide with each other.
+--
+-- Same gotcha as task_notes_issue_idx: an upsert against a partial index has to
+-- repeat the predicate, so every write here is a plain UPDATE by id.
+CREATE UNIQUE INDEX IF NOT EXISTS sdk_release_run_one_live
+  ON sdk_release_run (state) WHERE state = 'running';
+
 CREATE TABLE IF NOT EXISTS release_tasks (
   id           INTEGER PRIMARY KEY AUTOINCREMENT,
   task_id      TEXT NOT NULL DEFAULT '',
@@ -197,6 +232,15 @@ function open() {
   ensureColumn(sqlite, "release_tasks", "ref_id", "ref_id INTEGER");
   ensureColumn(sqlite, "drafts", "start_date", "start_date TEXT");
   ensureColumn(sqlite, "drafts", "due_date", "due_date TEXT");
+  // `origin/main` of the swift repo as it stood when the run started. The
+  // watcher compares against it to notice somebody else releasing mid-build,
+  // which is the one failure that costs the whole forty minutes.
+  ensureColumn(
+    sqlite,
+    "sdk_release_run",
+    "main_sha",
+    "main_sha TEXT NOT NULL DEFAULT ''",
+  );
   return drizzle(sqlite, { schema });
 }
 
