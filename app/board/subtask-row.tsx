@@ -12,6 +12,7 @@ import {
   loggedButTodo,
   statusTone,
 } from "@/lib/jira/types";
+import type { StageConfig, TaskNoteRow } from "@/lib/modules/branches/model";
 import type { DayOffKind } from "@/lib/quota";
 import {
   DEFAULT_SCHEDULE,
@@ -24,6 +25,7 @@ import {
 } from "@/lib/time";
 
 import { Spinner } from "../spinner";
+import { BranchLine, BranchNote } from "./branch-note";
 import { DatesEditor } from "./dates-editor";
 import { HygieneBadge } from "./hygiene-badge";
 import { IssueDetail } from "./issue-detail";
@@ -55,6 +57,12 @@ export function SubtaskRow({
   dayLoggedMinutes = 0,
   schedule = DEFAULT_SCHEDULE,
   dayOff = null,
+  note = null,
+  noteStages = [],
+  noteEnvs = [],
+  noteRepos = [],
+  noteRepoLabels = {},
+  noteRepoColors = {},
 }: {
   subtask: BoardSubtask;
   date: string;
@@ -78,6 +86,15 @@ export function SubtaskRow({
    * it does, since a start of 13:00 with no explanation looks like a bug.
    */
   dayOff?: DayOffKind | null;
+  /** Branch + notes for this issue. Null when none, or when the module is off. */
+  note?: TaskNoteRow | null;
+  /** Columns offered in the note editor. Empty when the module is off. */
+  noteStages?: StageConfig[];
+  /** Deployment pipeline, so the row can show how far this branch's code got. */
+  noteEnvs?: StageConfig[];
+  noteRepos?: string[];
+  noteRepoLabels?: Record<string, string>;
+  noteRepoColors?: Record<string, string>;
 }) {
   const [hours, setHours] = useState(step);
   const [comment, setComment] = useState("");
@@ -227,6 +244,13 @@ export function SubtaskRow({
               </span>
             )}
           </span>
+          <BranchLine
+            note={note}
+            envs={noteEnvs}
+            repos={noteRepos}
+            repoLabels={noteRepoLabels}
+            repoColors={noteRepoColors}
+          />
         </span>
 
         <span className="flex items-center gap-1.5 whitespace-nowrap">
@@ -273,6 +297,15 @@ export function SubtaskRow({
             budgets={budgets}
             spentSeconds={total}
           />
+
+          {noteStages.length > 0 && (
+            <BranchNote
+              issueKey={subtask.key}
+              summary={subtask.summary}
+              note={note}
+              stages={noteStages}
+            />
+          )}
 
           <span
             className="min-w-[62px] text-right font-mono text-[11px] text-ink-3"
