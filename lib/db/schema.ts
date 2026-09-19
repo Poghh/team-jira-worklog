@@ -232,6 +232,56 @@ export const releaseTasks = sqliteTable("release_tasks", {
   updatedAt: integer("updated_at").notNull().default(now),
 });
 
+/**
+ * `sdk-release` module — one row per attempt to release the iOS SDK.
+ *
+ * Written before the process exists and updated by reaping rather than by the
+ * process itself: the build outlives the request that started it, and often the
+ * dev server too, so nothing in this app can be relied on to be listening when
+ * it ends. `state` is therefore reconstructed from the pid, the boot time and a
+ * status file — see `lib/modules/sdk-release/runner.ts`.
+ */
+export const sdkReleaseRun = sqliteTable(
+  "sdk_release_run",
+  {
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    /** The string handed to `swift run release --version`. */
+    version: text("version").notNull().default(""),
+    /** Branch the SDK repo was standing on — the tool reads HEAD, not a flag. */
+    branch: text("branch").notNull().default(""),
+    commitSha: text("commit_sha").notNull().default(""),
+    suffix: text("suffix").notNull().default(""),
+    ordinal: integer("ordinal").notNull().default(0),
+    /** `--local-only`: builds in full, mocks GitHub, still commits locally. */
+    localOnly: integer("local_only", { mode: "boolean" }).notNull().default(false),
+    /** running | ok | failed | cancelled | lost — `RunState` in the model. */
+    state: text("state").notNull().default("running"),
+    pid: integer("pid").notNull().default(0),
+    /** Process group, so cancelling takes `swift → cargo → rustc` down whole. */
+    pgid: integer("pgid").notNull().default(0),
+    logPath: text("log_path").notNull().default(""),
+    exitCode: integer("exit_code"),
+    /** Furthest phase seen in the log — decides what "cancel" means right now. */
+    phase: text("phase").notNull().default(""),
+    message: text("message").notNull().default(""),
+    /**
+     * What the remote actually shows afterwards, as JSON.
+     *
+     * The exit code is not the question the user has. A run can exit non-zero
+     * having already pushed, and a `lost` run may have done anything at all —
+     * so the outcome is checked against GitHub rather than inferred.
+     */
+    verified: text("verified").notNull().default(""),
+    /** `origin/main` of the swift repo when the run started — the watcher's baseline. */
+    mainSha: text("main_sha").notNull().default(""),
+    /** Boot time when the row was written; see the raw DDL for why. */
+    bootAt: integer("boot_at").notNull().default(0),
+    startedAt: integer("started_at").notNull().default(now),
+    endedAt: integer("ended_at"),
+  },
+  (t) => [index("sdk_release_run_state_idx").on(t.state)],
+);
+
 export type Setting = typeof settings.$inferSelect;
 export type Prefix = typeof prefixes.$inferSelect;
 export type Draft = typeof drafts.$inferSelect;
@@ -244,3 +294,4 @@ export type ProgressReport = typeof progressReports.$inferSelect;
 export type ProgressItem = typeof progressItems.$inferSelect;
 export type IosPublishLog = typeof iosPublishLog.$inferSelect;
 export type ReleaseTask = typeof releaseTasks.$inferSelect;
+export type SdkReleaseRun = typeof sdkReleaseRun.$inferSelect;

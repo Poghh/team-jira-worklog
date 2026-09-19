@@ -6,7 +6,7 @@
  * both read it directly). Adding a module is adding an entry plus its route
  * under `app/m/<id>/`; nav, Settings and the route guard all derive from here.
  */
-export type ModuleId = 'progress' | 'ios-publish' | 'releases'
+export type ModuleId = 'progress' | 'ios-publish' | 'releases' | 'sdk-release'
 
 export interface ModuleManifest {
   id: ModuleId
@@ -44,6 +44,17 @@ export const MODULES: ModuleManifest[] = [
     status: 'ready',
     tables: ['ios_publish_log'],
     configHint: 'cần issuer · key · .p8',
+  },
+  {
+    id: 'sdk-release',
+    name: 'Release SDK',
+    icon: '📦',
+    description:
+      'Chạy lệnh release iOS SDK ngay trong app: gợi ý tên version từ nhánh và lịch sử release, fetch + chuyển nhánh + fast-forward main, rồi theo dõi log tới lúc xong. Trong lúc build có canh remote — ai đó release trước thì dừng sớm thay vì mất 40 phút; hỏng rồi thì chỉ ra từng bước dọn.',
+    nav: { href: '/m/sdk-release', label: 'Release SDK' },
+    status: 'ready',
+    tables: ['sdk_release_run'],
+    configHint: 'cần đường dẫn 2 repo · ~/.netrc',
   },
   {
     id: 'releases',
