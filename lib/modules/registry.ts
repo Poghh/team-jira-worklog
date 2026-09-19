@@ -6,7 +6,7 @@
  * both read it directly). Adding a module is adding an entry plus its route
  * under `app/m/<id>/`; nav, Settings and the route guard all derive from here.
  */
-export type ModuleId = 'progress' | 'ios-publish' | 'releases' | 'sdk-release'
+export type ModuleId = 'progress' | 'ios-publish' | 'releases' | 'branches' | 'sdk-release'
 
 export interface ModuleManifest {
   id: ModuleId
@@ -55,6 +55,16 @@ export const MODULES: ModuleManifest[] = [
     status: 'ready',
     tables: ['sdk_release_run'],
     configHint: 'cần đường dẫn 2 repo · ~/.netrc',
+  },
+  {
+    id: 'branches',
+    name: 'Nhánh & ghi chú',
+    icon: '⑂',
+    description:
+      'Nhánh của từng task đang ở đâu và có lưu ý gì — kanban theo vòng đời nhánh, ghi chú gắn thẳng vào issue Jira và hiện luôn trên task board. Cảnh báo khi nhánh đi trước mà ticket đứng yên.',
+    nav: { href: '/m/branches', label: 'Nhánh & ghi chú' },
+    status: 'ready',
+    tables: ['task_notes'],
   },
   {
     id: 'releases',
