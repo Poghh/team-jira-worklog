@@ -5,6 +5,10 @@ import {
   statusTone,
 } from "@/lib/jira/types";
 import type { BoardParent } from "@/lib/jira/types";
+import { getGitHubConfig, getStages } from "@/lib/modules/branches/config";
+import { envSteps } from "@/lib/modules/branches/model";
+import { taskNotesByIssue } from "@/lib/modules/branches/store";
+import { isModuleEnabled } from "@/lib/modules/state";
 import { listDaysOff } from "@/lib/days-off";
 import { type DayOffKind, scheduleForDate } from "@/lib/quota";
 import {
@@ -87,6 +91,17 @@ export function ParentGroup({
   const dayOff: DayOffKind | undefined = daysOffToday[date];
   const schedule = scheduleForDate(date, getWorkSchedule(), daysOffToday);
   const isOrphan = group.key === "__orphan__";
+
+  // Branch notes, when the module is on. Read here rather than threaded down
+  // from the page: these are local SQLite reads, and every other per-group
+  // setting on this screen is fetched the same way.
+  const notesOn = isModuleEnabled("branches");
+  const notes = notesOn
+    ? taskNotesByIssue(group.subtasks.map((s) => s.key))
+    : {};
+  const stages = notesOn ? getStages() : [];
+  const envs = notesOn ? envSteps(stages) : [];
+  const gh = notesOn ? getGitHubConfig() : null;
 
   /**
    * A parent someone else owns is shown but not touched: the subtask under it is
@@ -236,6 +251,12 @@ export function ParentGroup({
             dayLoggedMinutes={Math.round(dayLoggedSeconds / 60)}
             schedule={schedule}
             dayOff={dayOff ?? null}
+            note={notes[subtask.key] ?? null}
+            noteStages={stages}
+            noteEnvs={envs}
+            noteRepos={gh?.repos ?? []}
+            noteRepoLabels={gh?.repoLabels ?? {}}
+            noteRepoColors={gh?.repoColors ?? {}}
           />
         ))}
 

@@ -19,7 +19,6 @@ const K = {
   jiraProjectKey: 'jira_project_key',
   jiraBoardId: 'jira_board_id',
   googleApiKey: 'google_api_key',
-  githubToken: 'github_token',
   geminiModel: 'gemini_model',
   geminiFallbackModels: 'gemini_fallback_models',
   dailyQuotaHours: 'daily_quota_hours',
@@ -87,18 +86,6 @@ export function SettingsForm({ initial }: { initial: Record<string, string> }) {
           <ConnectionTest label="Test Gemini" run={testGeminiConnection} />
         </Card>
 
-        {/* Used only by the "Nhánh & ghi chú" module, but kept here with the
-            other credentials: a token filed somewhere else is a token nobody
-            remembers to rotate. */}
-        <Card title="GitHub">
-          <Field
-            label="Personal access token"
-            name={K.githubToken}
-            defaultValue={initial[K.githubToken]}
-            type="password"
-            hint="Scope repo. Seed lần đầu từ GITHUB_TOKEN trong .env.local. Dùng để quét nhánh trong module Nhánh & ghi chú."
-          />
-        </Card>
       </div>
 
       <div className="flex flex-col gap-4">

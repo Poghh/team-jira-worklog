@@ -4,6 +4,7 @@ import Link, { useLinkStatus } from 'next/link'
 import { usePathname, useRouter } from 'next/navigation'
 import { useEffect, useTransition } from 'react'
 
+import { useBuildWatch } from './build-watch'
 import { refreshDataAction } from './refresh-actions'
 
 // Core stays fixed; Settings sits at the end. Enabled modules slot in between,
@@ -52,7 +53,13 @@ export function Nav({
               Modules
             </div>
             {modules.map((item) => (
-              <NavLink key={item.href} href={item.href} label={item.label} active={isActive(item.href)} />
+              <NavLink
+                key={item.href}
+                href={item.href}
+                label={item.label}
+                active={isActive(item.href)}
+                badge={<ModuleBadge href={item.href} />}
+              />
             ))}
           </>
         )}
@@ -64,7 +71,18 @@ export function Nav({
   )
 }
 
-function NavLink({ href, label, active }: { href: string; label: string; active: boolean }) {
+function NavLink({
+  href,
+  label,
+  active,
+  badge,
+}: {
+  href: string
+  label: string
+  active: boolean
+  /** A module's own unread marker, drawn before the pending spinner. */
+  badge?: React.ReactNode
+}) {
   const router = useRouter()
   return (
     <Link
@@ -84,8 +102,37 @@ function NavLink({ href, label, active }: { href: string; label: string; active:
       }
     >
       {label}
-      <LinkSpinner />
+      <span className="flex items-center gap-1.5">
+        {badge}
+        <LinkSpinner />
+      </span>
     </Link>
+  )
+}
+
+/**
+ * How far a module is allowed to reach outside its own page.
+ *
+ * A dot on its own nav entry, and that is the whole budget. The build strip
+ * used to render above every screen in the app, which put one module's news on
+ * top of everybody else's work; this says the same thing in the one place that
+ * is already about that module, and says nothing at all when the module is off
+ * or its watch is switched off.
+ */
+function ModuleBadge({ href }: { href: string }) {
+  const builds = useBuildWatch()
+  if (href !== '/m/branches' || !builds?.news.length) return null
+  return (
+    <span
+      title={
+        builds.news.length === 1
+          ? `Có bản build mới cho ${builds.news[0].branch}`
+          : `${builds.news.length} môi trường vừa có bản build`
+      }
+      className="grid min-w-[15px] place-items-center rounded-full bg-good px-1 font-mono text-[9.5px] font-semibold leading-[15px] text-white"
+    >
+      {builds.news.length}
+    </span>
   )
 }
 

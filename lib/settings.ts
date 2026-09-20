@@ -18,7 +18,6 @@ export const SETTING_KEYS = {
   jiraProjectKey: 'jira_project_key',
   jiraBoardId: 'jira_board_id',
   googleApiKey: 'google_api_key',
-  githubToken: 'github_token',
   geminiModel: 'gemini_model',
   geminiFallbackModels: 'gemini_fallback_models',
   dailyQuotaHours: 'daily_quota_hours',
@@ -93,7 +92,6 @@ const ENV_SEED: Partial<Record<string, string>> = {
   [SETTING_KEYS.jiraProjectKey]: 'JIRA_PROJECT_KEY',
   [SETTING_KEYS.jiraBoardId]: 'JIRA_BOARD_ID',
   [SETTING_KEYS.googleApiKey]: 'GOOGLE_API_KEY',
-  [SETTING_KEYS.githubToken]: 'GITHUB_TOKEN',
   [SETTING_KEYS.geminiModel]: 'GEMINI_MODEL',
   [SETTING_KEYS.teamLabel]: 'JIRA_TEAM_LABEL',
   [SETTING_KEYS.teamPrefix]: 'JIRA_TEAM_PREFIX',
@@ -218,7 +216,6 @@ export function getSettingsForClient() {
   const secretKeys: string[] = [
     SETTING_KEYS.jiraApiToken,
     SETTING_KEYS.googleApiKey,
-    SETTING_KEYS.githubToken,
   ]
   const out: Record<string, string> = {}
   for (const [k, v] of Object.entries(all)) {
