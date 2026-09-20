@@ -55,8 +55,9 @@ export function GitHubPanel({
   baseUrl: string;
 }) {
   const [logins, setLogins] = useState(toText(view.identity.logins));
-  const [emails, setEmails] = useState(toText(view.identity.emails));
-  const [prefixes, setPrefixes] = useState(toText(view.identity.prefixes));
+  /** '' means untouched — see `setGitHubConfig`. Never pre-filled: the
+      browser is not sent the token, only whether there is one. */
+  const [token, setToken] = useState("");
   const [projects, setProjects] = useState(toText(view.projectKeys));
   const [useEvents, setUseEvents] = useState(view.useEvents);
   const [localPaths, setLocalPaths] = useState(view.localPaths.join("\n"));
@@ -107,8 +108,6 @@ export function GitHubPanel({
         repos: nextRepos,
         identity: {
           logins: toList(logins),
-          emails: toList(emails),
-          prefixes: toList(prefixes),
         },
         projectKeys: toList(nextProjects),
         useEvents,
@@ -139,9 +138,6 @@ export function GitHubPanel({
       if (!res.ok) return;
       if (res.login && !toList(logins).includes(res.login)) {
         setLogins((v) => toText([...toList(v), res.login!]));
-      }
-      if (res.email && !toList(emails).includes(res.email)) {
-        setEmails((v) => toText([...toList(v), res.email!]));
       }
       setOrgs(res.orgs ?? []);
       if (res.orgs?.length && !owner) setOwner(res.orgs[0]);
@@ -188,85 +184,50 @@ export function GitHubPanel({
         </p>
       )}
 
-      {/* ── connection ─────────────────────────────────────────────────────── */}
-      <section className={CARD}>
-        <div className={CTITLE}>Kết nối</div>
-        {hasToken ? (
-          <p className="mt-1.5 text-[12.5px] text-ink-2">
-            Đã có token GitHub. Sửa nó ở{" "}
-            <a
-              href="/settings"
-              className="text-accent-ink underline underline-offset-2"
-            >
-              Settings › GitHub
-            </a>{" "}
-            — cùng chỗ với Jira token, không nằm riêng ở đây.
-          </p>
-        ) : (
-          <p className="mt-1.5 text-[12.5px] text-ink-2">
-            Chưa có token. Thêm <span className="font-mono">GITHUB_TOKEN</span>{" "}
-            vào <span className="font-mono">.env.local</span> (PAT scope{" "}
-            <span className="font-mono">repo</span>) rồi khởi động lại, hoặc dán
-            thẳng vào{" "}
-            <a
-              href="/settings"
-              className="text-accent-ink underline underline-offset-2"
-            >
-              Settings › GitHub
-            </a>
-            .
-          </p>
-        )}
-
-        <div className="mt-2.5">
-          <button
-            type="button"
-            onClick={detect}
-            disabled={busy || !hasToken}
-            className={BTN}
-          >
-            Dò danh tính từ token
-          </button>
-        </div>
-      </section>
-
       {/* ── identity ───────────────────────────────────────────────────────── */}
       <section className={CARD}>
-        <div className={CTITLE}>Nhánh nào là của tôi</div>
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <span className={CTITLE}>Nhánh nào là của tôi</span>
+          {/* Nút này điền đúng ô bên dưới, nên nó đứng ở đây chứ không
+              ở một card "Kết nối" riêng — card đó chỉ còn mỗi việc nhắc token
+              nằm ở Settings, mà Settings mới là nơi token thật sự sống. */}
+          <button type="button" onClick={detect} disabled={busy || !hasToken} className={BTN}>
+            Dò từ token
+          </button>
+        </div>
         <p className="mt-1.5 text-[12.5px] text-ink-3">
-          Một nhánh được coi là của bạn nếu commit cuối do bạn tạo, <i>hoặc</i>{" "}
-          tên nhánh bắt đầu bằng một tiền tố của bạn. Ba ô vì không ô nào đủ một
-          mình: commit từ máy chưa khai email thì không có login, còn nhánh bị
-          người review push đè thì không còn dấu vết nào của bạn ngoài tiền tố.
+          Một nhánh được coi là của bạn nếu commit cuối do bạn tạo. Nhánh bạn
+          push mà commit cuối là của người khác thì dựa vào ô bên dưới.
         </p>
-        <div className="mt-2.5 grid gap-2.5 sm:grid-cols-3">
-          <div>
-            <label className={LABEL}>Login GitHub</label>
-            <input
-              value={logins}
-              onChange={(e) => setLogins(e.target.value)}
-              placeholder="windxfeng"
-              className={INPUT}
-            />
-          </div>
-          <div>
-            <label className={LABEL}>Email commit</label>
-            <input
-              value={emails}
-              onChange={(e) => setEmails(e.target.value)}
-              placeholder="wind@takai.ltd"
-              className={INPUT}
-            />
-          </div>
-          <div>
-            <label className={LABEL}>Tiền tố nhánh</label>
-            <input
-              value={prefixes}
-              onChange={(e) => setPrefixes(e.target.value)}
-              placeholder="hir/"
-              className={INPUT}
-            />
-          </div>
+        <div className="mt-2.5">
+          <label className={LABEL}>
+            Personal access token{" "}
+            <span className="font-normal text-ink-3">
+              {hasToken ? "· đã có, để trống nếu không đổi" : "· scope repo"}
+            </span>
+          </label>
+          <input
+            value={token}
+            onChange={(e) => setToken(e.target.value)}
+            type="password"
+            placeholder={hasToken ? "••••••••" : "ghp_…"}
+            className={INPUT + " sm:max-w-sm"}
+          />
+          <p className="mt-1 text-[11.5px] text-ink-3">
+            Chỉ module này dùng GitHub. Lần đầu lấy từ{" "}
+            <span className="font-mono">GITHUB_TOKEN</span> trong{" "}
+            <span className="font-mono">.env.local</span> nếu có.
+          </p>
+        </div>
+
+        <div className="mt-2.5">
+          <label className={LABEL}>Login GitHub</label>
+          <input
+            value={logins}
+            onChange={(e) => setLogins(e.target.value)}
+            placeholder="windxfeng"
+            className={INPUT + " sm:max-w-sm"}
+          />
         </div>
         <label className="mt-2.5 flex cursor-pointer items-start gap-2 rounded-md border border-line bg-ground px-2.5 py-2">
           <input
@@ -283,7 +244,7 @@ export function GitHubPanel({
               nào của bạn: nếu tách nhánh từ{" "}
               <span className="font-mono">develop</span> rồi push ngay, commit ở
               đầu nhánh vẫn là của người khác. GitHub chỉ giữ khoảng 300 sự kiện
-              gần nhất, nên đây là bổ sung cho ba ô trên chứ không thay thế.
+              gần nhất, nên đây là bổ sung cho ô trên chứ không thay thế.
             </span>
           </span>
         </label>
@@ -1154,8 +1115,6 @@ export function EnvLadder({
 const MINE_LABEL: Record<string, string> = {
   push: "bạn tạo/push",
   login: "commit cuối là bạn",
-  email: "email commit",
-  prefix: "tiền tố nhánh",
 };
 
 export const PR_CLS: Record<string, string> = {

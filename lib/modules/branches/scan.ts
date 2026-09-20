@@ -140,13 +140,13 @@ export async function scanGitHub(): Promise<ScanResult> {
   const token = cfg.token;
   if (!token) {
     throw new Error(
-      "Chưa có token GitHub — điền GITHUB_TOKEN vào .env.local, hoặc dán vào Settings › GitHub.",
+      "Chưa có token GitHub — dán vào ô ở tab GitHub của module này.",
     );
   }
   if (!cfg.repos.length) throw new Error("Chưa chọn repo nào để quét");
 
-  const { logins, emails, prefixes } = cfg.identity;
-  if (!logins.length && !emails.length && !prefixes.length) {
+  const { logins } = cfg.identity;
+  if (!logins.length) {
     // Without this the scan succeeds and finds nothing, which reads like "you
     // have no branches" rather than "you have not said who you are".
     throw new Error(
@@ -314,9 +314,32 @@ export async function scanGitHub(): Promise<ScanResult> {
   // exactly the one not worth putting on the board.
   // Indexed by *every* key a card claims: a branch fixing two tickets must find
   // the same card whichever of them the scan looks up.
+  /**
+   * A grouping key for a branch that names no ticket.
+   *
+   * The module is branches and notes; the Jira link is the secondary thing. A
+   * branch with no ticket in its name is still a branch somebody is working
+   * on, so it gets a card — it just gets one keyed by itself.
+   *
+   * `⑂` can never begin a Jira key, so the two kinds of key cannot collide,
+   * and everything downstream keeps treating the key as an opaque string. What
+   * changes is only what gets *stored*: `issue_key` stays empty for these,
+   * which is what the partial unique index and `saveTaskNote` already expect.
+   */
+  const branchKey = (repo: string, name: string) => `⑂${repo}#${name}`;
+  const isBranchKey = (k: string) => k.startsWith("⑂");
+
   const byKey = new Map<string, (typeof allCards)[number]>();
   for (const c of allCards)
     for (const k of c.issueKeys) if (!byKey.has(k)) byKey.set(k, c);
+  // Ticketless cards are found by the branch they point at, since they have no
+  // key to be found by. Without this every scan would mint a second card for
+  // the same branch.
+  for (const c of allCards)
+    if (!c.issueKey)
+      for (const side of c.sides)
+        if (side.repo && side.branch.trim())
+          byKey.set(branchKey(side.repo, side.branch.trim()), c);
 
   /**
    * `issueKey` → `repo` → the branch of that repository.
@@ -364,13 +387,14 @@ export async function scanGitHub(): Promise<ScanResult> {
 
   for (const b of mine) {
     const all = extractIssueKeys(b.name, cfg.projectKeys);
-    const key = all[0] ?? "";
-    if (!key) {
+    // Still counted and still listed — "no ticket in the name" is worth
+    // reporting — but no longer a reason to drop the branch on the floor.
+    if (!all.length) {
       unmatched++;
       unmatchedNames.push(b.name);
       if (unmatchedSamples.length < 8) unmatchedSamples.push(b.name);
-      continue;
     }
+    const key = all[0] ?? branchKey(b.repo, b.name);
     const card = byKey.get(key);
     if (
       card?.githubPinned &&
@@ -443,8 +467,9 @@ export async function scanGitHub(): Promise<ScanResult> {
   const keys = [...best.keys()].filter((k) => !ownedByBranch.has(k));
   // Titles for cards about to be created. Best-effort: a Jira outage should
   // degrade the card to a bare key, not fail the whole scan.
-  const summaries = keys.length
-    ? await getIssueStatuses(keys).catch(
+  const realKeys = keys.filter((k) => !isBranchKey(k));
+  const summaries = realKeys.length
+    ? await getIssueStatuses(realKeys).catch(
         () => ({}) as Record<string, { summary: string }>,
       )
     : {};
@@ -533,8 +558,12 @@ export async function scanGitHub(): Promise<ScanResult> {
     }
   }
 
-  const rows: PlanRow[] = keys.map((issueKey) => {
-    const card = byKey.get(issueKey) ?? null;
+  const rows: PlanRow[] = keys.map((groupKey) => {
+    // The grouping key and the stored ticket are the same string for a branch
+    // that names one, and deliberately different for a branch that does not.
+    const issueKey = isBranchKey(groupKey) ? "" : groupKey;
+    const cardKeys = isBranchKey(groupKey) ? [] : (keysOf.get(groupKey) ?? [groupKey]);
+    const card = byKey.get(groupKey) ?? null;
 
     /**
      * One side per repository the ticket touches, each judged on its own.
@@ -553,7 +582,7 @@ export async function scanGitHub(): Promise<ScanResult> {
      * repository is the card's, and the scan pairs by newest tip, which is
      * exactly the guess they were correcting.
      */
-    const seen = new Map(sidesOf(issueKey).map((b) => [b.repo, b]));
+    const seen = new Map(sidesOf(groupKey).map((b) => [b.repo, b]));
     for (const x of card?.sides ?? []) {
       if (!x.pinned) continue;
       const hit = byRepoBranchAll.get(`${x.repo}#${x.branch}`);
@@ -587,7 +616,7 @@ export async function scanGitHub(): Promise<ScanResult> {
         ...(stored?.pinned ? { pinned: true as const } : {}),
         prs,
         envState: envJson(envs),
-        landedVia: via.get(`${branch.repo}#${issueKey}`) ?? "",
+        landedVia: via.get(`${branch.repo}#${groupKey}`) ?? "",
         // The scan just read this branch, so it is there. Whether a card's
         // branch has gone is decided further down, per card.
         branchGone: false,
@@ -635,13 +664,12 @@ export async function scanGitHub(): Promise<ScanResult> {
         issueKey,
         action: "create",
         noteId: null,
-        issueKeys: keysOf.get(issueKey) ?? [issueKey],
+        issueKeys: cardKeys,
         currentBranch: "",
         currentStage: "",
         stage: stage || stageNames[0] || "",
         title:
-          summaries[issueKey]?.summary ||
-          titleFromBranch(branch.name, issueKey),
+          summaries[issueKey]?.summary || titleFromBranch(branch.name, issueKey),
         envState: head.envs,
         landedVia: head.side.landedVia,
         sides,
@@ -652,7 +680,7 @@ export async function scanGitHub(): Promise<ScanResult> {
     // A pinned card that resolved to something else means the branch it was
     // pinned to is gone or renamed — never a silent re-point.
     const pinBroken =
-      card.githubPinned && !pinnedHit.has(`${issueKey}#${card.repo}`);
+      card.githubPinned && !pinnedHit.has(`${groupKey}#${card.repo}`);
     // Every measured field lives on a side now, so one comparison covers the
     // lot — including a request opened against the next environment, which
     // changes nothing else on the card and used to go unnoticed.
@@ -660,8 +688,7 @@ export async function scanGitHub(): Promise<ScanResult> {
       sameBranch &&
       card.repo === branch.repo &&
       serializeCardSides(card.sides) === serializeCardSides(sides) &&
-      JSON.stringify(card.issueKeys) ===
-        JSON.stringify(mergedKeys(card, keysOf.get(issueKey) ?? [issueKey])) &&
+      JSON.stringify(card.issueKeys) === JSON.stringify(mergedKeys(card, cardKeys)) &&
       !stage;
 
     return {
@@ -673,7 +700,7 @@ export async function scanGitHub(): Promise<ScanResult> {
           ? "conflict"
           : "fill",
       noteId: card.id,
-      issueKeys: mergedKeys(card, keysOf.get(issueKey) ?? [issueKey]),
+      issueKeys: mergedKeys(card, cardKeys),
       currentBranch: card.branch,
       currentStage: card.stage,
       stage,
@@ -759,12 +786,21 @@ export async function scanGitHub(): Promise<ScanResult> {
   // freshly created duplicate. Searched across every branch, not just the ones
   // the identity rules claimed: pointing a card at a colleague's branch is a
   // legitimate thing to do.
-  const claimed = new Set(rows.map((r) => r.issueKey));
+  // Two sets because a card is now identified two ways. Keying this by
+  // `issueKey` alone stopped working the moment ticketless cards existed: they
+  // all share the empty string, so one of them in `rows` would have excluded
+  // every other one from this loop.
+  const claimed = new Set(rows.flatMap((r) => (r.issueKey ? [r.issueKey] : [])));
+  const claimedBranch = new Set(
+    rows.map((r) => `${r.branch.repo}#${r.branch.name}`),
+  );
   const byRepoBranch = new Map(branches.map((b) => [`${b.repo}#${b.name}`, b]));
 
   for (const card of allCards) {
     if (!card.repo || !card.branch.trim()) continue;
-    if (claimed.has(card.issueKey)) continue;
+    const here = `${card.repo}#${card.branch.trim()}`;
+    if (card.issueKey ? claimed.has(card.issueKey) : claimedBranch.has(here))
+      continue;
 
     const found = byRepoBranch.get(`${card.repo}#${card.branch.trim()}`);
     if (!found) continue;

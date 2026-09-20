@@ -624,7 +624,11 @@ eq(parseGitHubLink('https://github.com/o/r/pull/12'), { repo: 'o/r', prNumber: 1
 eq(parseGitHubLink('o/r'), { repo: 'o/r' }, 'bare owner/name')
 eq(parseEnvState('rubbish'), {}, 'a bad env blob is empty, not a crash')
 eq(mineBy({ repo: 'o/r', name: 'x', committedAt: 0, login: 'me', email: '', prs: [], pr: null },
-          { logins: ['ME'], emails: [], prefixes: [] }), 'login', 'identity by login, case-insensitive')
+          { logins: ['ME'] }), 'login', 'identity by login, case-insensitive')
+// Tên nhánh không còn là bằng chứng sở hữu: một tiền tố như `hir/` là thói quen
+// đặt tên, và luật cũ nhận vơ mọi nhánh dưới tiền tố đó kể cả của người khác.
+eq(mineBy({ repo: 'o/r', name: 'hir/task/x', committedAt: 0, login: 'ai-do', email: '', prs: [], pr: null },
+          { logins: ['ME'] }), null, 'tiền tố nhánh không còn nhận vơ nhánh của người khác')
 
 /* ── local state, which is about this machine and nothing else ──────────── */
 
