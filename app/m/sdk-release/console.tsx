@@ -8,11 +8,18 @@ import {
   type RecoveryPlan,
   type RunState,
   type SdkRelease,
+  parseUnifiedDiff,
   phaseOf,
+  searchBranches,
 } from "@/lib/modules/sdk-release/model";
 import type { SdkConfigView } from "@/lib/modules/sdk-release/config";
 import type { Check } from "@/lib/modules/sdk-release/preflight";
-import type { BranchChoice } from "@/lib/modules/sdk-release/repo";
+import type {
+  BranchChoice,
+  CommitFile,
+  CommitFiles,
+  FileDiff,
+} from "@/lib/modules/sdk-release/repo";
 import type { RunView } from "@/lib/modules/sdk-release/runner";
 import type { RunRow } from "@/lib/modules/sdk-release/store";
 
@@ -20,6 +27,7 @@ import {
   type Readiness,
   cancelRunAction,
   checkReadinessAction,
+  commitDiffAction,
   checkoutAction,
   diagnoseRunAction,
   pollRunAction,
@@ -112,6 +120,8 @@ export function SdkRelease({ view, runs }: { view: SdkConfigView; runs: RunRow[]
   const [pick, setPick] = useState("");
   const [version, setVersion] = useState("");
   const [confirming, setConfirming] = useState(false);
+  /** Màn xem thay đổi của commit sắp build — phủ kín, mở từ thẻ nhánh. */
+  const [diffOpen, setDiffOpen] = useState(false);
   const [typed, setTyped] = useState("");
   const [run, setRun] = useState<RunView | null>(null);
   const [tab, setTab] = useState<"run" | "config">(
@@ -371,6 +381,10 @@ export function SdkRelease({ view, runs }: { view: SdkConfigView; runs: RunRow[]
                         {ready.headAuthor ? ` · ${ready.headAuthor}` : ""}
                         {ready.headAt ? ` · ${ago(ready.headAt)}` : ""}
                       </p>
+                      <ChangedFiles
+                        files={ready.headFiles}
+                        onOpen={() => setDiffOpen(true)}
+                      />
                     </div>
 
                     <BranchPicker
@@ -561,6 +575,15 @@ export function SdkRelease({ view, runs }: { view: SdkConfigView; runs: RunRow[]
         )}
       </div>
 
+      {diffOpen && ready && (
+        <DiffScreen
+          files={ready.headFiles}
+          subject={ready.headSubject}
+          sha={ready.headSha}
+          onClose={() => setDiffOpen(false)}
+        />
+      )}
+
       {confirming && ready && (
         <ConfirmDialog
           version={version}
@@ -625,6 +648,258 @@ function Mark({ text, needle }: { text: string; needle: string }) {
 }
 
 /**
+ * `A` thêm · `M` sửa · `D` xoá · `R` đổi tên — bốn chữ git dùng.
+ *
+ * `M` để trung tính vì nó là loại đông nhất: tô nó lên thì cả danh sách sáng
+ * đều và không chữ nào còn nổi. Màu dành cho ba loại hiếm hơn.
+ */
+const FILE_TONE: Record<string, string> = {
+  A: "text-accent",
+  M: "text-ink-3",
+  D: "text-crit",
+  R: "text-warn",
+};
+
+/** `+12 −3`, hoặc `nhị phân` khi git không đếm được dòng. */
+function Counts({ f }: { f: CommitFile }) {
+  if (f.binary) return <span className="text-ink-3">nhị phân</span>;
+  return (
+    <>
+      {f.added > 0 && <span className="text-accent">+{f.added}</span>}
+      {f.removed > 0 && <span className="text-crit">−{f.removed}</span>}
+      {f.added === 0 && f.removed === 0 && <span className="text-ink-3">—</span>}
+    </>
+  );
+}
+
+/**
+ * Tóm tắt trong rail, và cửa vào màn xem thay đổi.
+ *
+ * Trong rail chỉ để con số: sha và title nói commit nào, không nói nó có việc
+ * của bạn hay không — mà rail rộng 340px thì không đọc nổi một diff.
+ */
+function ChangedFiles({
+  files,
+  onOpen,
+}: {
+  files: CommitFiles;
+  onOpen: () => void;
+}) {
+  if (!files.total)
+    return (
+      <p className="mt-1.5 text-[11px] text-ink-3">Commit này không đổi file nào.</p>
+    );
+
+  return (
+    <div className="mt-1.5">
+      <button
+        type="button"
+        onClick={onOpen}
+        className="text-[11px] text-accent-ink underline underline-offset-2"
+      >
+        {files.total} file thay đổi
+        {files.added > 0 || files.removed > 0 ? (
+          <span className="ml-1.5 inline-flex gap-1 font-mono no-underline">
+            <span className="text-accent">+{files.added}</span>
+            <span className="text-crit">−{files.removed}</span>
+          </span>
+        ) : null}
+      </button>
+      {/* Câu này phải có mặt, không nhét vào tooltip: trên một commit merge,
+          "3 file" mà không nói so với cái gì thì là một con số không đọc được. */}
+      {files.merge && (
+        <p className="text-[10.5px] leading-snug text-ink-3">
+          commit merge — so với nhánh gốc của nó
+        </p>
+      )}
+    </div>
+  );
+}
+
+/** Nền của từng loại dòng trong diff. */
+const LINE_BG: Record<string, string> = {
+  add: "bg-accent-soft",
+  del: "bg-crit-soft",
+  hunk: "bg-surface-2 text-ink-3",
+  ctx: "",
+};
+
+/**
+ * Màn xem thay đổi của commit sắp được build.
+ *
+ * Phủ kín màn hình chứ không nhét vào rail: mục đích của nó là đọc code, và
+ * code cần chiều ngang. Danh sách file bên trái, diff bên phải, đúng thứ tự
+ * người ta vốn quen.
+ */
+function DiffScreen({
+  files,
+  subject,
+  sha,
+  onClose,
+}: {
+  files: CommitFiles;
+  subject: string;
+  sha: string;
+  onClose: () => void;
+}) {
+  const [pick, setPick] = useState(files.files[0]?.path ?? "");
+  const [diff, setDiff] = useState<FileDiff | null>(null);
+  const [err, setErr] = useState("");
+  const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    if (!pick) return;
+    let alive = true;
+    setLoading(true);
+    setErr("");
+    void commitDiffAction({ path: pick })
+      .then((res) => {
+        if (!alive) return;
+        if (!res.ok) setErr(res.message);
+        setDiff(res.diff ?? null);
+      })
+      .catch((e: unknown) => {
+        if (alive) setErr(e instanceof Error ? e.message : "Không đọc được");
+      })
+      .finally(() => {
+        if (alive) setLoading(false);
+      });
+    return () => {
+      alive = false;
+    };
+  }, [pick]);
+
+  // Escape đóng màn — cùng phím với mọi lớp phủ khác trong app.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
+  const lines = diff ? parseUnifiedDiff(diff.text) : [];
+  const current = files.files.find((f) => f.path === pick);
+
+  return (
+    <div className="fixed inset-0 z-50 flex flex-col bg-ground">
+      <header className="flex shrink-0 flex-wrap items-center gap-x-3 gap-y-1 border-b border-line px-4 py-2.5">
+        <div className="min-w-0 flex-1">
+          <p title={subject} className="truncate text-[13px] font-semibold text-ink">
+            {subject}
+          </p>
+          <p className="text-[11px] text-ink-3">
+            <span className="font-mono">{sha.slice(0, 8)}</span> · {files.total} file
+            {files.merge ? " · commit merge, so với nhánh gốc" : ""}
+          </p>
+        </div>
+        <span className="shrink-0 font-mono text-[12px]">
+          <span className="text-accent">+{files.added}</span>{" "}
+          <span className="text-crit">−{files.removed}</span>
+        </span>
+        <button
+          type="button"
+          onClick={onClose}
+          className="shrink-0 rounded-md border border-line px-2.5 py-1 text-[12px] text-ink-2 hover:bg-surface-2"
+        >
+          Đóng (Esc)
+        </button>
+      </header>
+
+      <div className="flex min-h-0 flex-1 flex-col lg:flex-row">
+        <nav className="shrink-0 overflow-y-auto border-line max-lg:max-h-48 max-lg:border-b lg:w-[380px] lg:border-r">
+          {files.files.map((f) => (
+            <button
+              key={f.path}
+              type="button"
+              onClick={() => setPick(f.path)}
+              className={
+                "flex w-full items-baseline gap-2 border-b border-line px-3 py-1.5 text-left " +
+                (f.path === pick ? "bg-accent-soft" : "hover:bg-surface-2")
+              }
+            >
+              <span className={`w-3 shrink-0 font-mono text-[11px] ${FILE_TONE[f.status] ?? "text-ink-3"}`}>
+                {f.status}
+              </span>
+              {/* Tên file xuống dòng riêng, không nối đuôi thư mục: gộp một
+                  dòng thì `break-all` cắt ngay giữa tên — "…/src/c" rồi
+                  "lient.rs" — làm hỏng đúng phần đáng đọc nhất. */}
+              <span className="min-w-0 flex-1">
+                <span className="block break-all font-mono text-[11.5px] font-semibold text-ink">
+                  {f.path.slice(f.path.lastIndexOf("/") + 1)}
+                </span>
+                {f.path.includes("/") && (
+                  <span className="block break-all font-mono text-[10px] leading-snug text-ink-3">
+                    {f.path.slice(0, f.path.lastIndexOf("/"))}
+                  </span>
+                )}
+              </span>
+              <span className="flex shrink-0 gap-1 font-mono text-[10.5px]">
+                <Counts f={f} />
+              </span>
+            </button>
+          ))}
+          {files.total > files.files.length && (
+            <p className="px-3 py-2 text-[11px] text-ink-3">
+              … còn {files.total - files.files.length} file nữa, không liệt kê
+            </p>
+          )}
+        </nav>
+
+        <section className="min-w-0 flex-1 overflow-auto">
+          <p className="sticky top-0 z-10 border-b border-line bg-surface-2 px-3 py-1.5 font-mono text-[11.5px] text-ink-2">
+            {pick || "—"}
+          </p>
+          {err && <p className="px-3 py-2 text-[12px] text-crit">{err}</p>}
+          {loading && !err && (
+            <p className="px-3 py-2 text-[12px] text-ink-3">Đang đọc…</p>
+          )}
+          {!loading && !err && current?.binary && (
+            <p className="px-3 py-2 text-[12px] text-ink-3">
+              File nhị phân — không có diff dạng chữ.
+            </p>
+          )}
+          {!loading && !err && !current?.binary && lines.length === 0 && (
+            <p className="px-3 py-2 text-[12px] text-ink-3">
+              Không có thay đổi dạng chữ trong file này.
+            </p>
+          )}
+          {!loading && !err && lines.length > 0 && (
+            <table className="w-full border-collapse font-mono text-[11.5px]">
+              <tbody>
+                {lines.map((l, i) => (
+                  <tr key={i} className={LINE_BG[l.kind]}>
+                    {/* Hai cột số dòng: đó là thứ biến một đống +/- thành một
+                        đoạn code đọc được, và nó phải không chọn được khi copy. */}
+                    <td className="w-11 select-none border-r border-line px-1.5 text-right align-top text-ink-3">
+                      {l.old ?? ""}
+                    </td>
+                    <td className="w-11 select-none border-r border-line px-1.5 text-right align-top text-ink-3">
+                      {l.new ?? ""}
+                    </td>
+                    <td className="w-4 select-none px-1 align-top text-ink-3">
+                      {l.kind === "add" ? "+" : l.kind === "del" ? "−" : ""}
+                    </td>
+                    <td className="whitespace-pre-wrap break-all px-1 align-top text-ink">
+                      {l.text}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+          {diff?.truncated && (
+            <p className="px-3 py-2 text-[12px] text-warn">
+              Diff quá dài, đã cắt bớt phần cuối.
+            </p>
+          )}
+        </section>
+      </div>
+    </div>
+  );
+}
+
+/**
  * Pick a branch by typing, with the list only there while you are typing.
  *
  * A standing list of 57 branches is 57 lines of furniture for a field that is
@@ -633,8 +908,11 @@ function Mark({ text, needle }: { text: string; needle: string }) {
  * overlay that never moves the card, filtered as you type, driven from the
  * keyboard — arrows to move, Enter to take, Escape to leave.
  *
- * The filter is a plain substring match over the whole name, which is what lets
- * `526` find `ctalk/bugfix/VT-526` without knowing the prefix.
+ * Matching is a substring over the whole name, which is what lets `526` find
+ * `ctalk/bugfix/VT-526` without knowing the prefix — but the order is
+ * {@link searchBranches}, not the order the repository happened to list them
+ * in. Only ten rows show, and a plain filter put the branch actually named
+ * `develop` eighth.
  */
 function BranchPicker({
   branches,
@@ -653,9 +931,9 @@ function BranchPicker({
   const listRef = useRef<HTMLDivElement>(null);
 
   const needle = q.trim().toLowerCase();
-  const matches = needle
-    ? branches.filter((b) => b.name.toLowerCase().includes(needle))
-    : branches;
+  // Xếp theo độ sát, không chỉ lọc: danh sách chỉ hiện 10 dòng, mà lọc trần
+  // từng đẩy nhánh tên đúng `develop` xuống thứ 8 trên clone SDK.
+  const matches = searchBranches(branches, needle);
   // Capped, not scrolled to the end: past a dozen the answer is to type one
   // more character, and the count says so rather than inviting a scroll.
   const LIMIT = 10;
@@ -744,7 +1022,10 @@ function BranchPicker({
                   (b.name === selected ? "font-semibold text-accent-ink" : "")
                 }
               >
-                <span className="truncate font-mono">
+                {/* Tên nhánh ở đây dài tới 60 ký tự và bị cắt bằng `…`, mà
+                    chính cái đuôi bị cắt mới là phần phân biệt hai nhánh cùng
+                    tiền tố. Trỏ vào là đọc được đủ. */}
+                <span title={b.name} className="truncate font-mono">
                   <Mark text={b.name} needle={needle} />
                 </span>
                 {b.name === head && (
@@ -1064,6 +1345,7 @@ function RecoveryCard({ plan }: { plan: RecoveryPlan }) {
                     href={step.url}
                     target="_blank"
                     rel="noreferrer"
+                    title={step.url}
                     className="mt-1 block truncate font-mono text-[11px] text-accent-ink underline underline-offset-2"
                   >
                     {step.url}

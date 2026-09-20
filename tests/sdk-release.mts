@@ -15,6 +15,11 @@ import {
   nextOrdinal,
   nextVersion,
   parseBumpMessage,
+  parseNameStatus,
+  parseNumstat,
+  rankBranch,
+  searchBranches,
+  parseUnifiedDiff,
   recoveryPlan,
   parseReleaseTag,
   releasesForBranch,
@@ -318,6 +323,105 @@ eq(/có người push lên main trước bạn/.test(after({ preTagged: true, un
    true, 'and it says why, when it knows why')
 eq(/origin\/main đã đổi/.test(after({ remoteMoved: true }).detail), true,
    'a clean stop still warns that the remote moved under it')
+
+/* ── file thay đổi của commit sắp build ─────────────────────────────────── */
+// Dòng đổi tên có ba cột, mọi dòng khác hai — và đó là dòng không dựng lại
+// được bằng tay trong một clone thật, nên nó phải nằm ở đây.
+eq(parseNameStatus('M\tsrc/client.rs'), [{ status: 'M', path: 'src/client.rs' }],
+   'dòng thường: hai cột')
+eq(parseNameStatus('R100\tsrc/old.rs\tsrc/new.rs'),
+   [{ status: 'R', path: 'src/new.rs', from: 'src/old.rs' }],
+   'đổi tên: giữ cả đường dẫn cũ, và status rút về một chữ')
+eq(parseNameStatus('C75\ta.rs\tb.rs')[0]?.from, 'a.rs', 'copy cũng ba cột')
+eq(parseNameStatus('A\ta.rs\nD\tb.rs\n\nM\tc.rs').map((f) => f.status).join(''),
+   'ADM', 'bỏ qua dòng trống, giữ nguyên thứ tự')
+eq(parseNameStatus(''), [], 'không có gì thì trả mảng rỗng, không phải một phần tử rác')
+// Đường dẫn có khoảng trắng: git không quote khi dùng \t làm phân cách.
+eq(parseNameStatus('M\tsrc/my file.rs')[0]?.path, 'src/my file.rs',
+   'đường dẫn có khoảng trắng vẫn nguyên vẹn')
+
+/* ── đếm dòng thêm/bớt ──────────────────────────────────────────────────── */
+const ns = parseNumstat('3\t0\tsrc/client.rs\n24\t1\tsrc/ctk.rs')
+eq(ns.get('src/client.rs'), { added: 3, removed: 0, binary: false }, 'numstat thường')
+eq(ns.get('src/ctk.rs')?.removed, 1, 'đếm cả dòng bớt')
+// File nhị phân git ghi `-`, không phải 0 — hai thứ khác nhau.
+eq(parseNumstat('-\t-\tlogo.png').get('logo.png'), { added: 0, removed: 0, binary: true },
+   'file nhị phân đánh dấu riêng, không đọc thành "đổi 0 dòng"')
+// Đổi tên có hai dạng, và cả hai phải ra *tên mới* để khớp với --name-status.
+eq([...parseNumstat('1\t1\told.rs => new.rs').keys()], ['new.rs'], 'đổi tên dạng phẳng')
+eq([...parseNumstat('1\t1\tsrc/{old => new}/a.rs').keys()], ['src/new/a.rs'], 'đổi tên dạng gộp')
+
+/* ── đọc unified diff thành dòng có số ──────────────────────────────────── */
+const D = parseUnifiedDiff(
+  'diff --git a/x.rs b/x.rs\nindex 1..2 100644\n--- a/x.rs\n+++ b/x.rs\n' +
+    '@@ -10,3 +10,4 @@ fn main() {\n a\n+b\n c\n' +
+    '@@ -80,2 +81,1 @@\n-d\n e\n\\ No newline at end of file\n',
+)
+eq(D.filter((l) => l.kind === 'hunk').length, 2, 'hai hunk')
+// Phần đầu (diff --git, index, ---, +++) không phải nội dung file.
+eq(D.some((l) => l.text.startsWith('diff --git') || l.text.startsWith('index ')), false,
+   'bỏ phần đầu của diff')
+eq(D.filter((l) => l.kind !== 'hunk').map((l) => [l.old, l.new, l.text]), [
+  [10, 10, 'a'],
+  [null, 11, 'b'],
+  [11, 12, 'c'],
+  [80, null, 'd'],
+  [81, 81, 'e'],
+], 'số dòng bám theo đầu hunk, và nhảy cóc giữa hai hunk là bình thường')
+// Dòng này nói về dòng ngay trên nó, không phải một dòng của file: đếm nó vào
+// là lệch số dòng của tất cả phần còn lại.
+eq(D.some((l) => l.text.startsWith('\\')), false, '"No newline at end of file" không phải một dòng')
+eq(parseUnifiedDiff(''), [], 'diff rỗng -> không có dòng nào')
+eq(parseUnifiedDiff('diff --git a/b b/b\nBinary files a/b and b/b differ\n'), [],
+   'diff nhị phân không có hunk nên không ra dòng rác')
+
+/* ── tìm nhánh: khớp sát nhất phải lên đầu ──────────────────────────────── */
+// Lấy nguyên từ clone SDK, gồm đúng những cái từng đẩy câu trả lời xuống dưới.
+const B = [
+  'ctalk/develop',
+  'ctalk/feature/resolve_ctalkdevelop_upgrade_26.09.09_phase1',
+  'ctalk/task/VT_706_permalink_base_urls',
+  'cxp/develop',
+  'cxp/feature/backup-develop',
+  'cxp/feature/update_framework/feature_upgrade_framework_sync_latest_master',
+  'delete_soon_develop',
+  'develop',
+  'hir/bugfix/vt-111-show-avatar-when-remote-camera-off-develop-resolve',
+  'master',
+].map((name) => ({ name }))
+
+const first = (q: string) => searchBranches(B, q)[0]?.name
+// Đây là lỗi người dùng báo: gõ đúng tên một nhánh mà nó không lên đầu.
+eq(first('develop'), 'develop', 'gõ đúng tên nhánh thì nhánh đó lên đầu')
+eq(first('master'), 'master', 'kể cả khi có nhánh dài hơn cũng chứa chuỗi đó')
+// Danh sách chỉ hiện 10 dòng, nên "có trong kết quả" là chưa đủ.
+eq(searchBranches(B, 'develop').findIndex((b) => b.name === 'develop'), 0,
+   'khớp cả tên đứng thứ nhất, không phải chỉ "có mặt đâu đó"')
+
+eq(rankBranch('develop', 'develop') < rankBranch('ctalk/develop', 'develop'), true,
+   'khớp cả tên hơn khớp đoạn cuối')
+eq(rankBranch('ctalk/develop', 'develop') < rankBranch('delete_soon_develop', 'develop'), true,
+   'nhánh MANG tên đó hơn nhánh chỉ nhắc tới nó')
+eq(rankBranch('ctalk/bugfix/VT-526', 'vt') < rankBranch('ctalk/task/merge_VT_4', 'vt'), true,
+   'đầu đoạn hơn giữa đoạn')
+// Gõ số hiệu ticket là cách tìm nhanh nhất, và nó nằm giữa tên.
+eq(rankBranch('ctalk/task/VT_706_permalink_base_urls', '706') < 6, true,
+   'đầu một từ bên trong đoạn vẫn hơn khớp chuỗi bất kỳ')
+// Cùng bậc thì từ khớp sớm hơn thắng, không phải tên ngắn hơn thắng: gõ số
+// hiệu ticket thì nhánh CỦA ticket đó phải lên trước nhánh chỉ nhắc tới nó.
+eq(searchBranches(
+  [{ name: 'ctalk/task/merge_VT_4_and_VT_706' }, { name: 'ctalk/task/VT_706_permalink_base_urls' }],
+  '706',
+)[0]?.name, 'ctalk/task/VT_706_permalink_base_urls', 'từ khớp sớm hơn thắng tên ngắn hơn')
+eq(rankBranch('ctalk/feature/resolve_ctalkdevelop_x', 'develop'), 6,
+   'dính giữa một từ là bậc cuối')
+
+eq(searchBranches(B, '').length, B.length, 'không gõ gì thì giữ nguyên cả danh sách')
+eq(searchBranches(B, 'khongcogi'), [], 'không khớp thì rỗng')
+// Cùng bậc thì tên ngắn lên trước, và thứ tự phải ổn định chứ không đổi giữa
+// hai lần gõ cùng một chữ.
+eq(searchBranches(B, 'develop').slice(0, 3).map((b) => b.name),
+   ['develop', 'cxp/develop', 'ctalk/develop'], 'cùng bậc: ngắn trước, rồi theo bảng chữ cái')
 
 console.log(bad ? `\n${bad} of ${n} FAILED` : `\nall ${n} ok`)
 if (bad) process.exit(1)

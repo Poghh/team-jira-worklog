@@ -6,7 +6,13 @@ import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 
-import { type SdkRelease, parseBumpMessage } from "./model";
+import {
+  type ChangedFile,
+  type SdkRelease,
+  parseBumpMessage,
+  parseNameStatus,
+  parseNumstat,
+} from "./model";
 
 const run = promisify(execFile);
 
@@ -128,6 +134,125 @@ export async function readHead(dir: string): Promise<RepoHead> {
       .map((l) => l.slice(3).trim())
       .filter(Boolean),
   };
+}
+
+export type { ChangedFile };
+
+export interface CommitFile extends ChangedFile {
+  added: number;
+  removed: number;
+  /** Git không đếm dòng cho file nhị phân — khác hẳn với "đổi 0 dòng". */
+  binary: boolean;
+}
+
+export interface CommitFiles {
+  files: CommitFile[];
+  /** Tổng số file, kể cả phần bị cắt khỏi `files`. */
+  total: number;
+  /** HEAD là merge commit — danh sách là những gì nó mang vào. */
+  merge: boolean;
+  /** Tổng dòng thêm/bớt của cả commit, tính trên mọi file kể cả phần bị cắt. */
+  added: number;
+  removed: number;
+}
+
+/**
+ * Files the commit brings in, compared against its first parent.
+ *
+ * Not `diff-tree`, which is the obvious call and the wrong one: on a merge
+ * commit it prints nothing at all. Measured across the fourteen `ctalk/*`
+ * branches of this clone, three of them stand on a merge — so the obvious call
+ * would answer "0 file" on the exact branches carrying the most work
+ * (`upgrade_26.09.09_phase2`: 0 by `diff-tree`, 363 against the first parent).
+ * An empty list is the one answer this panel must never give wrongly: it exists
+ * so somebody can confirm their own code is in what is about to ship.
+ *
+ * Capped, because that 363 is real. `total` still counts them all.
+ */
+export async function commitFiles(
+  dir: string,
+  sha = "HEAD",
+  cap = 40,
+): Promise<CommitFiles> {
+  const parents = (await git(dir, ["rev-list", "--parents", "-n", "1", sha]))
+    .trim()
+    .split(/\s+/)
+    .slice(1);
+
+  const raw = parents.length
+    ? await git(dir, ["diff", "--name-status", "-M", `${sha}^1`, sha])
+    : // A root commit has no parent to compare against; everything in it is new.
+      await git(dir, ["show", "--name-status", "-M", "--format=", sha]);
+
+  // Hai lần đọc vì git không đưa cả hai trong một: `--name-status` nói *kiểu*
+  // thay đổi (thêm / xoá / đổi tên), `--numstat` nói *bao nhiêu dòng*. Thiếu vế
+  // đầu thì không phân biệt được file mới với file sửa; thiếu vế sau thì danh
+  // sách không có sức nặng nào.
+  const counts = parseNumstat(
+    parents.length
+      ? await git(dir, ["diff", "--numstat", "-M", `${sha}^1`, sha])
+      : await git(dir, ["show", "--numstat", "-M", "--format=", sha]),
+  );
+
+  const files: CommitFile[] = parseNameStatus(raw).map((f) => {
+    const c = counts.get(f.path);
+    return {
+      ...f,
+      added: c?.added ?? 0,
+      removed: c?.removed ?? 0,
+      binary: c?.binary ?? false,
+    };
+  });
+
+  let added = 0;
+  let removed = 0;
+  for (const f of files) {
+    added += f.added;
+    removed += f.removed;
+  }
+
+  return {
+    files: files.slice(0, cap),
+    total: files.length,
+    merge: parents.length > 1,
+    added,
+    removed,
+  };
+}
+
+/** Diff của **một** file trong commit, đã cắt bớt nếu quá dài. */
+export interface FileDiff {
+  text: string;
+  truncated: boolean;
+}
+
+/**
+ * Nội dung thay đổi của một file, dạng unified diff.
+ *
+ * Đọc từng file một chứ không lấy cả commit: một commit ở repo này có thể chạm
+ * 363 file, và `Cargo.lock` một mình đã đủ làm nghẽn cả màn hình. Người đọc bấm
+ * vào file nào thì đọc file ấy.
+ */
+export async function fileDiff(
+  dir: string,
+  sha: string,
+  path: string,
+  maxBytes = 400_000,
+): Promise<FileDiff> {
+  const parents = (await git(dir, ["rev-list", "--parents", "-n", "1", sha]))
+    .trim()
+    .split(/\s+/)
+    .slice(1);
+
+  // `--` tách đường dẫn khỏi revision: một file tên trùng tên nhánh sẽ làm git
+  // đoán sai nếu thiếu nó.
+  const text = parents.length
+    ? await git(dir, ["diff", "-M", `${sha}^1`, sha, "--", path])
+    : await git(dir, ["show", "-M", "--format=", sha, "--", path]);
+
+  return text.length > maxBytes
+    ? { text: text.slice(0, maxBytes), truncated: true }
+    : { text, truncated: false };
 }
 
 export interface BranchChoice {

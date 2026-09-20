@@ -21,10 +21,15 @@ import {
 import { type Check, runChecks } from "@/lib/modules/sdk-release/preflight";
 import {
   type BranchChoice,
+  type CommitFiles,
+  type FileDiff,
   aheadOfRemote,
   checkoutBranch,
+  commitFiles,
   fastForward,
   fetchBoth,
+  gitSays,
+  fileDiff,
   listBranches,
   listTags,
   readHead,
@@ -92,6 +97,15 @@ export interface Readiness {
   headAt: number;
   /** Uncommitted tracked files in the SDK clone; a checkout would carry these. */
   headDirty: number;
+  /**
+   * What the commit being built actually changes.
+   *
+   * The sha and the subject say which commit it is; they do not say whether it
+   * is the one carrying your work. On a branch standing on a merge — three of
+   * this clone's fourteen do — the subject is "Merge branch …" and tells you
+   * nothing at all.
+   */
+  headFiles: CommitFiles;
   branches: BranchChoice[];
   proposal: VersionProposal;
   checks: Check[];
@@ -116,6 +130,29 @@ export interface Readiness {
  * `fetch` optional and explicit, because it is the one thing here that writes —
  * refs only, never a working tree. The screen says so before offering it.
  */
+/**
+ * Nội dung thay đổi của một file trong commit sắp được build.
+ *
+ * Từng file một, theo yêu cầu — không đẩy sẵn cả commit xuống trình duyệt:
+ * commit lớn nhất đo được ở repo này chạm 363 file.
+ */
+export async function commitDiffAction(input: {
+  path: string;
+}): Promise<ActionResult & { diff?: FileDiff }> {
+  if (!enabled()) return { ok: false, message: "Module đang tắt" };
+  try {
+    const cfg = getSdkConfig();
+    if (!cfg.sdkPath) return { ok: false, message: "Chưa điền đường dẫn clone SDK" };
+    return {
+      ok: true,
+      message: "",
+      diff: await fileDiff(cfg.sdkPath, "HEAD", input.path),
+    };
+  } catch (error) {
+    return { ok: false, message: gitSays(error, "Không đọc được thay đổi") };
+  }
+}
+
 export async function checkReadinessAction(input: {
   /** Preview the version for a branch other than the one checked out. */
   branch?: string;
@@ -129,6 +166,11 @@ export async function checkReadinessAction(input: {
 
     await reapRuns();
     const head = await readHead(cfg.sdkPath);
+    // Of HEAD, not of the branch being previewed: the question is what the
+    // build will contain, and the build reads the working tree as it stands.
+    const headFiles = await commitFiles(cfg.sdkPath).catch(
+      () => ({ files: [], total: 0, merge: false, added: 0, removed: 0 }) as CommitFiles,
+    );
 
     let fetchNote = "";
     if (input.fetch) {
@@ -187,6 +229,7 @@ export async function checkReadinessAction(input: {
         headAuthor: head.author,
         headAt: head.at,
         headDirty: head.dirty.length,
+        headFiles,
         branches,
         proposal,
         checks,
