@@ -211,9 +211,9 @@ export async function deleteNoteAction(id: number): Promise<ActionResult> {
 
 /* ------------------------------- GitHub ---------------------------------- */
 
-/** Named once: the token is a core setting, so every path here points at the same place. */
+/** Named once, so every path here says the same thing about the same box. */
 const NO_TOKEN =
-  "Chưa có token GitHub — điền GITHUB_TOKEN vào .env.local, hoặc dán vào Settings › GitHub.";
+  "Chưa có token GitHub — dán vào ô ở tab GitHub của module này, hoặc điền GITHUB_TOKEN vào .env.local.";
 
 /** Reads GitHub and reports what it *would* change. Writes nothing. */
 export async function scanGitHubAction(): Promise<
@@ -361,6 +361,8 @@ export async function saveGitHubConfigAction(input: {
   buildApps: Record<string, string>;
   buildEnabled: boolean;
   buildNotify: boolean;
+  /** Only sent when the token box was actually edited. */
+  token?: string;
 }): Promise<ActionResult & { view?: GitHubConfigView }> {
   try {
     setGitHubConfig(input);

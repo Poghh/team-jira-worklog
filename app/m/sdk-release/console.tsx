@@ -653,8 +653,30 @@ function BranchPicker({
   const listRef = useRef<HTMLDivElement>(null);
 
   const needle = q.trim().toLowerCase();
+  /**
+   * Matches, best first — not alphabetical.
+   *
+   * The list is capped, and alphabetical order put the cap in front of the
+   * answer: typing `develop` on a clone with ten `ctalk/*` branches whose names
+   * contain "develop" pushed the branch actually called `develop` off the
+   * bottom. Exact match first, then a name that starts with what was typed,
+   * then the rest — so the thing you spelled out in full is never the thing
+   * that gets cut.
+   */
+  const rank = (name: string) => {
+    const n = name.toLowerCase();
+    if (n === needle) return 0;
+    if (n.startsWith(needle)) return 1;
+    // A segment boundary reads as a real match — `ctalk/develop` for `develop`
+    // — where a hit in the middle of a word usually does not.
+    if (n.split("/").some((seg) => seg === needle)) return 2;
+    if (n.split("/").some((seg) => seg.startsWith(needle))) return 3;
+    return 4;
+  };
   const matches = needle
-    ? branches.filter((b) => b.name.toLowerCase().includes(needle))
+    ? branches
+        .filter((b) => b.name.toLowerCase().includes(needle))
+        .sort((a, b) => rank(a.name) - rank(b.name) || a.name.localeCompare(b.name))
     : branches;
   // Capped, not scrolled to the end: past a dozen the answer is to type one
   // more character, and the count says so rather than inviting a scroll.

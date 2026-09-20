@@ -88,20 +88,29 @@ export interface RemoteBranch {
 /**
  * Who counts as me.
  *
- * Three ways rather than one because none is reliable alone: a commit made from
- * a machine with an unregistered git email has no `login`, an email is missing
- * whenever GitHub *does* resolve it to a user, and both fail for a branch whose
- * last commit came from a reviewer. The prefix covers the last case — several
- * teams here namespace branches with a personal prefix (`hir/task/...`).
+ * One box, after two others were removed for not earning their place.
+ *
+ * A commit email rule went first. It only ever mattered when GitHub could not
+ * resolve the author's email to an account, and measured against the 204
+ * branches actually being scanned it claimed **nothing**: every branch of the
+ * user's carried a `login`, and no branch anywhere carried their email. The 47
+ * branches with no `login` all belong to other people committing from machines
+ * with an unset `user.email`.
+ *
+ * A branch-name prefix rule went too: a prefix is a naming habit, not evidence
+ * of authorship, and it claimed every branch under `hir/` including the ones
+ * somebody else opened.
+ *
+ * What covers the case both were there for — a branch you pushed whose last
+ * commit is not yours — is the event feed, and it covers it with a fact rather
+ * than a resemblance.
  */
 export interface Identity {
   logins: string[];
-  emails: string[];
-  prefixes: string[];
 }
 
 /** Which rule claimed this branch — shown so the list is auditable. */
-export type MineBy = "push" | "login" | "email" | "prefix" | null;
+export type MineBy = "push" | "login" | null;
 
 /**
  * Whether this branch is the user's, and on what evidence.
@@ -120,10 +129,6 @@ export function mineBy(
   if (pushed?.has(`${branch.repo}#${branch.name}`)) return "push";
   if (branch.login && me.logins.some((l) => lower(l) === lower(branch.login)))
     return "login";
-  if (branch.email && me.emails.some((e) => lower(e) === lower(branch.email)))
-    return "email";
-  if (me.prefixes.some((p) => p && lower(branch.name).startsWith(lower(p))))
-    return "prefix";
   return null;
 }
 
@@ -983,14 +988,15 @@ export function advanceStage(
 export function titleFromBranch(branch: string, issueKey: string): string {
   const tail = branch.split("/").pop() ?? branch;
   const key = issueKey.split("-")[0];
-  return (
-    tail
-      // Drop every ticket reference, not just the matched one: a branch named
+  // No key means there is no ticket reference to strip, and stripping anyway
+  // would eat every number in the name — `upgrade_26.09.09_phase1` came out as
+  // `upgrade phase`.
+  const stripped = key
+    ? // Drop every ticket reference, not just the matched one: a branch named
       // for two tickets would otherwise keep the second as noise.
-      .replace(new RegExp(`${escapeRe(key)}[-_]?\\d+[-_]?`, "gi"), "")
-      .replace(/[-_]+/g, " ")
-      .trim() || tail
-  );
+      tail.replace(new RegExp(`${escapeRe(key)}[-_]?\\d+[-_]?`, "gi"), "")
+    : tail;
+  return stripped.replace(/[-_]+/g, " ").trim() || tail;
 }
 
 /* ----------------------------- environments ------------------------------ */

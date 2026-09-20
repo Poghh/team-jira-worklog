@@ -24,10 +24,9 @@ const PREFIX = "mod:branches:";
 const K = {
   stages: `${PREFIX}stages`,
   stagesShape: `${PREFIX}stages_shape`,
+  ghToken: `${PREFIX}gh_token`,
   ghRepos: `${PREFIX}gh_repos`,
   ghLogins: `${PREFIX}gh_logins`,
-  ghEmails: `${PREFIX}gh_emails`,
-  ghPrefixes: `${PREFIX}gh_prefixes`,
   ghProjects: `${PREFIX}gh_projects`,
   ghUseEvents: `${PREFIX}gh_use_events`,
   ghLocalPaths: `${PREFIX}gh_local_paths`,
@@ -49,6 +48,11 @@ const K = {
 
 function getRaw(key: string): string | undefined {
   return db.select().from(settings).where(eq(settings.key, key)).get()?.value;
+}
+
+/** Removes a row outright — used once, to retire the old core token key. */
+function dropRaw(key: string) {
+  db.delete(settings).where(eq(settings.key, key)).run();
 }
 
 function setRaw(key: string, value: string) {
@@ -260,12 +264,44 @@ function getList(key: string): string[] {
 }
 
 /**
- * The scan's settings.
+ * The token, owned by the module that is the only thing using it.
  *
- * The token is *not* one of this module's keys. Credentials all live in the
- * core settings table, seeded from `.env.local` on first run and edited on the
- * Settings screen — the same path as the Jira token and the Google key. Keeping
- * one of them somewhere else would mean one credential nobody thinks to rotate.
+ * It used to live in the core settings table, on the reasoning that every
+ * credential should sit in one place or nobody rotates it. That reasoning did
+ * not survive contact with the codebase: `ios-publish` keeps its App Store
+ * Connect issuer, key id and `.p8` private key entirely in
+ * `mod:ios-publish:profiles`, and the Settings screen has no App Store section
+ * at all. So the one-place rule was already not the rule, and this token was
+ * the exception pretending to be it.
+ *
+ * Read once, migrating whatever the old core key held — the value matters more
+ * than where it used to be filed. `.env.local` remains the first-run seed, the
+ * same one the core settings used.
+ */
+function readToken(): string {
+  // Read as a raw row, not through `SETTING_KEYS`: the core key is gone from
+  // that enum, and these lines are the only thing that still needs to know it
+  // ever existed.
+  const legacy = getRaw("github_token");
+  const own = getRaw(K.ghToken);
+
+  const value =
+    own !== undefined
+      ? own.trim()
+      : (legacy ?? "").trim() || (process.env.GITHUB_TOKEN ?? "").trim();
+  if (own === undefined) setRaw(K.ghToken, value);
+
+  // Retired whenever it is still there and this module holds the value —
+  // checked separately from the migration above, because a half-finished
+  // upgrade can leave the row behind and a stale copy of a credential is worth
+  // deleting whichever way it got left. An own key that is deliberately empty
+  // is not overwritten and the old row is not resurrected.
+  if (legacy !== undefined && value) dropRaw("github_token");
+  return value;
+}
+
+/**
+ * The scan's settings.
  *
  * `projectKeys` falls back to the app's own Jira project so a first scan finds
  * something without any setup at all. It is only a seed — this org's branches
@@ -278,13 +314,11 @@ export function getGitHubConfig(): GitHubConfig {
   const fallback = (getSetting(SETTING_KEYS.jiraProjectKey) ?? "").trim();
 
   return {
-    token: (getSetting(SETTING_KEYS.githubToken) ?? "").trim(),
+    token: readToken(),
     stages,
     repos: getList(K.ghRepos),
     identity: {
       logins: getList(K.ghLogins),
-      emails: getList(K.ghEmails),
-      prefixes: getList(K.ghPrefixes),
     },
     projectKeys: projects.length ? projects : fallback ? [fallback] : [],
     // Absent means never configured, which for a signal this useful should mean
@@ -381,6 +415,15 @@ export function toConfigView(cfg: GitHubConfig): GitHubConfigView {
 
 /** Writes the settings this module's own screen owns. The token is not one of them. */
 export function setGitHubConfig(input: {
+  /**
+   * Left out entirely when the screen is saving something else.
+   *
+   * The browser never receives the token — `toConfigView` sends `hasToken` and
+   * nothing more — so a save that echoed back what the form held would write an
+   * empty string over a working credential. `undefined` means "not editing it";
+   * an empty string is a deliberate clear.
+   */
+  token?: string;
   repos: string[];
   identity: Identity;
   projectKeys: string[];
@@ -397,12 +440,12 @@ export function setGitHubConfig(input: {
   const clean = (xs: string[]) =>
     JSON.stringify([...new Set(xs.map((s) => s.trim()).filter(Boolean))]);
 
+  if (input.token !== undefined) setRaw(K.ghToken, input.token.trim());
+
   setRaw(K.ghRepos, clean(input.repos));
   setRaw(K.ghLogins, clean(input.identity.logins));
-  setRaw(K.ghEmails, clean(input.identity.emails));
   // Prefixes are the one list where case and the trailing slash matter, but a
   // stray space would silently match nothing.
-  setRaw(K.ghPrefixes, clean(input.identity.prefixes));
   setRaw(K.ghProjects, clean(input.projectKeys.map((k) => k.toUpperCase())));
   setRaw(K.ghUseEvents, input.useEvents ? "true" : "false");
   // Written either way, which is what turns the derived defaults above into a
