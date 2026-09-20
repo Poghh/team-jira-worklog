@@ -35,6 +35,7 @@ import {
   type PrPin,
   branchesToDelete,
   cardLadder,
+  stageRule,
   envSteps,
   orderSides,
   jiraLinkFor,
@@ -2440,7 +2441,6 @@ function StagesManager({ stages }: { stages: StageConfig[] }) {
   );
   const [note, setNote] = useState<string | null>(null);
   const [pending, startTransition] = useTransition();
-
   const patch = (i: number, p: Partial<StageConfig>) =>
     setList((l) => l.map((s, n) => (n === i ? { ...s, ...p } : s)));
 
@@ -2468,10 +2468,11 @@ function StagesManager({ stages }: { stages: StageConfig[] }) {
     <section className={CARD}>
       <div className={CTITLE}>Cột của bảng = đường đi của code</div>
       <p className="mt-1 max-w-prose text-[12.5px] text-ink-3">
-        Một danh sách duy nhất, theo thứ tự. Cột nào điền <b>nhánh</b> thì là
-        một môi trường: card vào đó khi code đã nằm trọn trong nhánh ấy. Cột
-        không có nhánh thì xét theo PR. Quét luôn lấy môi trường xa nhất trước,
-        vì đó là sự thật trong repo, còn PR chỉ là ý định.
+        Một danh sách duy nhất, theo thứ tự. Mỗi cột có <b>một điều kiện</b>{" "}
+        quyết định card có vào đó hay không. Cột nào điền <b>nhánh</b> thì là
+        một môi trường, và điều kiện của nó hỏi về code; cột không có nhánh thì
+        chỉ còn PR để dựa vào. Quét luôn lấy môi trường xa nhất trước, vì đó là
+        sự thật trong repo, còn PR chỉ là ý định.
       </p>
 
       <div className="mt-3 flex flex-col gap-2">
@@ -2479,13 +2480,18 @@ function StagesManager({ stages }: { stages: StageConfig[] }) {
           <span className="w-[52px] shrink-0" />
           <span className="min-w-[130px] flex-1">Tên cột</span>
           <span className="min-w-[150px] flex-1">Nhánh môi trường</span>
-          <span className="w-[132px] shrink-0">Nếu không có nhánh</span>
-          <span className="w-[128px] shrink-0">Jira phải đạt</span>
+          {/* Ô này chưa bao giờ có tiêu đề, nên nó đọc như một cái hộp không rõ
+              hỏi gì — trong khi nó mới là ô quyết định chính. */}
+          <span className="w-[212px] shrink-0">Card vào cột này khi</span>
+          {/* Không cùng loại với ba ô bên trái, nên không được đọc như nhau:
+              ba ô kia quyết định card vào cột nào, ô này chỉ bật cảnh báo. */}
+          <span className="w-[128px] shrink-0 text-ink-3/70">⚠ Cảnh báo Jira</span>
           <span className="w-7 shrink-0" />
         </div>
 
         {list.map((s, i) => (
-          <div key={i} className="flex flex-wrap items-center gap-2">
+          <div key={i} className="flex flex-col gap-1">
+          <div className="flex flex-wrap items-center gap-2">
             <span className="flex w-[52px] shrink-0 items-center gap-px">
               <span className="w-4 text-center font-mono text-[11px] text-ink-3">
                 {i + 1}
@@ -2522,61 +2528,60 @@ function StagesManager({ stages }: { stages: StageConfig[] }) {
               title="Nhánh dài hạn đại diện cho môi trường này. Để trống nếu cột này nằm trước khi merge."
               className="min-w-[150px] flex-1 rounded-md border border-line bg-ground px-2.5 py-1 font-mono text-[12px]"
             />
+            {/*
+             * Một ô, một câu — không phải hai ô để người đọc tự nối.
+             *
+             * Bản trước đặt "điều kiện code" và "điều kiện PR" cạnh nhau, và ô
+             * PR trên hàng môi trường luôn rỗng vì vế PR đã nằm trong ô kia.
+             * Một ô rỗng thì đọc như chỗ bị bỏ quên, và không cách viết nào cứu
+             * được điều đó — nên ô ấy biến mất khỏi hàng, thay bằng một link chỉ
+             * hiện khi người dùng thật sự muốn chồng thêm điều kiện.
+             */}
             <select
-              value={s.reach}
-              onChange={(e) =>
-                patch(i, { reach: e.target.value as StageConfig["reach"] })
+              value={
+                s.reach === "gone"
+                  ? "gone"
+                  : s.branch.trim()
+                    ? s.reach
+                    : `phase:${s.phase}`
               }
-              title={
-                s.branch.trim()
-                  ? "Chờ merge = có PR đang mở nhắm vào nhánh này.\nĐã merge = code đã nằm trong nhánh.\nĐã build = đã có bản build chứa code đó lên TestFlight."
-                  : "Cột cuối: card vào đây khi nhánh đã bị xoá khỏi mọi repo của nó. Kéo tay vào đây thì card sẽ đòi bạn xoá nhánh."
-              }
-              className="w-[112px] shrink-0 rounded-md border border-line bg-ground px-2 py-1 text-[12px]"
+              onChange={(e) => {
+                const v = e.target.value;
+                if (v.startsWith("phase:"))
+                  patch(i, {
+                    reach: "queued",
+                    phase: v.slice(6) as StageConfig["phase"],
+                  });
+                else patch(i, { reach: v as StageConfig["reach"] });
+              }}
+              title="Điều kiện quyết định card có vào cột này hay không."
+              className="w-[212px] shrink-0 rounded-md border border-line bg-ground px-2 py-1 text-[12px]"
             >
-              {/* Two different questions behind one control: for an
-                  environment, how far into it the code is; for a step with no
-                  branch, whether it is the end of the line. Showing all five
-                  together would offer "đã build" on a column that names no
-                  branch to have built. */}
+              {/* Cột có nhánh thì câu hỏi là code đã đi tới đâu; cột không có
+                  nhánh thì chỉ còn PR để dựa vào, nên chính ô này là điều kiện
+                  PR — và không có ô thứ hai nào để phải giải thích. */}
               {s.branch.trim() ? (
                 <>
-                  <option value="queued">chờ merge</option>
-                  <option value="merged">đã merge</option>
-                  <option value="built">đã build</option>
+                  <option value="queued">có PR đang mở vào nhánh</option>
+                  <option value="merged">code đã nằm trong nhánh</option>
+                  <option value="built">đã có bản build</option>
                 </>
               ) : (
                 <>
-                  <option value="queued">— xét theo PR —</option>
-                  <option value="gone">đã xoá nhánh</option>
+                  <option value="phase:nopr">chưa mở PR</option>
+                  <option value="phase:open">PR đang mở</option>
+                  <option value="phase:">không khớp cột nào khác</option>
                 </>
               )}
+              <option value="gone">nhánh của card đã bị xoá</option>
             </select>
-            <select
-              value={s.phase}
-              onChange={(e) =>
-                patch(i, { phase: e.target.value as StageConfig["phase"] })
-              }
-              disabled={Boolean(s.branch.trim()) || s.reach === "gone"}
-              title={
-                s.branch.trim()
-                  ? "Cột này đã có nhánh nên xét theo code, không theo PR"
-                  : s.reach === "gone"
-                    ? "Cột cuối xét theo nhánh còn hay mất, không theo PR"
-                    : "PR ở trạng thái nào thì card rơi vào cột này"
-              }
-              className="w-[132px] shrink-0 rounded-md border border-line bg-ground px-2 py-1 text-[12px] disabled:opacity-40"
-            >
-              <option value="">— không xét PR —</option>
-              <option value="nopr">chưa có PR</option>
-              <option value="open">PR đang mở</option>
-            </select>
+
             <select
               value={s.expects}
               onChange={(e) =>
                 patch(i, { expects: e.target.value as StageConfig["expects"] })
               }
-              title="Tới cột này thì ticket Jira phải ở trạng thái nào"
+              title={"Chỉ bật cảnh báo, không quyết định card vào cột nào.\nTới cột này mà Jira chưa tới trạng thái đã chọn thì card hiện cảnh báo lệch."}
               className="w-[128px] shrink-0 rounded-md border border-line bg-ground px-2 py-1 text-[12px]"
             >
               {EXPECT_LABEL.map((o) => (
@@ -2593,6 +2598,11 @@ function StagesManager({ stages }: { stages: StageConfig[] }) {
             >
               ✕
             </button>
+          </div>
+          {/* Sinh từ đúng những trường engine đọc, nên không thể lệch với nó. */}
+          <p className="pl-[54px] text-[11.5px] leading-snug text-ink-3">
+            ↳ <span className="text-ink-2">{stageRule(s)}</span>
+          </p>
           </div>
         ))}
       </div>

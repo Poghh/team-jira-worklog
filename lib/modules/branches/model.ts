@@ -114,6 +114,43 @@ export const DEFAULT_STAGES: StageConfig[] = [
 ];
 
 /**
+ * What a column actually asks, as one sentence of plain Vietnamese.
+ *
+ * The editor shows three controls per row and none of them says what the row
+ * *does*; worse, two of them decide where a card lands and the third only
+ * raises a warning, which nothing on screen distinguishes. Rather than ask the
+ * reader to hold the rules in their head, the row says its own rule out loud —
+ * generated from the same fields the engine reads, so it cannot drift from it.
+ *
+ * Placement only. `expects` is deliberately left out: it never moves a card.
+ */
+export function stageRule(stage: StageConfig): string {
+  const b = stage.branch.trim();
+  if (stage.reach === "gone")
+    return "nhánh của card đã bị xoá khỏi mọi repo";
+
+  if (!b) {
+    if (stage.phase === "open") return "PR đang mở";
+    if (stage.phase === "nopr")
+      return "chưa mở PR — hoặc PR còn draft, hoặc đã đóng";
+    return "không khớp điều kiện của cột nào khác";
+  }
+
+  // `queued` already means "an open request aimed here", so naming the branch
+  // is the whole of it — see the `queued` set in `stageFor`.
+  const main =
+    stage.reach === "built"
+      ? `đã có bản build của ${b} mang code này`
+      : stage.reach === "merged"
+        ? `code đã nằm trong ${b}`
+        : `có PR đang mở nhắm vào ${b}`;
+
+  if (stage.phase === "open") return `${main}, và PR đang mở`;
+  if (stage.phase === "nopr") return `${main}, và chưa mở PR`;
+  return main;
+}
+
+/**
  * The steps a containment check can answer — one per environment.
  *
  * Only the `merged` half: both halves name the same branch, and letting both
@@ -771,9 +808,14 @@ export function ticketsDone(statuses: Array<string | null>): boolean {
  * Found by `reach` rather than by name, for the same reason every other rule
  * here avoids names: the user owns the wording and may well call it "xong" or
  * "đã release".
+ *
+ * `gone` alone, whatever else the column says. It used to require an empty
+ * branch as well, which left `gone` on a column that names one meaning nothing
+ * in particular — it fell through to "chờ merge" in `stageFor`. One reading
+ * everywhere: the card's branches are deleted.
  */
 export function cleanupStep(stages: StageConfig[]): StageConfig | null {
-  return stages.find((s) => s.reach === "gone" && !s.branch) ?? null;
+  return stages.find((s) => s.reach === "gone") ?? null;
 }
 
 /**

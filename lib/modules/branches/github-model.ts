@@ -149,7 +149,6 @@ export { extractIssueKeys } from "@/lib/jira/branch-keys";
  * general `LETTERS-DIGITS` shape, because that shape is far too common in
  * branch names to guess at: `feature/release-2026-08-31` would yield the key
  * "RELEASE-2026" and quietly create a card for a ticket that does not exist.
- * {@link candidateProjectKeys} exists to make listing them a one-click job.
  */
 export function extractIssueKey(branch: string, projectKeys: string[]): string {
   for (const raw of projectKeys) {
@@ -208,33 +207,6 @@ const NOT_A_PROJECT = new Set([
   "ios",
   "android",
 ]);
-
-/**
- * Project keys that plausibly appear in these branch names, most used first.
- *
- * Feeds the "detect" button on the config screen, so a false positive costs
- * nothing — the user picks from the list. Anything looking like a date is
- * dropped, since `release-2026-08-31` is the single most common false hit.
- */
-export function candidateProjectKeys(
-  branches: string[],
-): Array<{ key: string; count: number }> {
-  const seen = new Map<string, number>();
-  for (const b of branches) {
-    for (const m of b.matchAll(
-      /(?:^|[^a-z0-9])([a-z]{2,10})[-_](\d{1,6})(?![0-9])/gi,
-    )) {
-      const key = m[1].toUpperCase();
-      if (NOT_A_PROJECT.has(key.toLowerCase())) continue;
-      // A four-digit number in 19xx/20xx is a year, not an issue number.
-      if (/^(19|20)\d{2}$/.test(m[2])) continue;
-      seen.set(key, (seen.get(key) ?? 0) + 1);
-    }
-  }
-  return [...seen.entries()]
-    .map(([key, count]) => ({ key, count }))
-    .sort((a, b) => b.count - a.count || a.key.localeCompare(b.key));
-}
 
 /**
  * What a PR says about the branch, collapsed to the three states that change
@@ -843,9 +815,25 @@ export function stageFor(
    */
   const everMerged = prs.some((p) => p.state === "MERGED");
 
+  const phase = prPhase(pr);
+  /**
+   * Whether the request is in the state a column asks for.
+   *
+   * Empty asks for nothing, so it is true — that is what makes every field on a
+   * column a condition rather than a mode: fill one in and it has to hold, leave
+   * it blank and it is not looked at. The control for this used to be greyed out
+   * on any column naming a branch, which made a column's meaning depend on which
+   * boxes the screen would let you reach.
+   */
+  const phaseOk = (want: StageConfig["phase"]) =>
+    !want || (want === "open" ? phase === "open" : phase === "none");
+
   for (let i = stages.length - 1; i >= 0; i--) {
     const step = stages[i];
-    if (!step.branch) continue;
+    // `gone` is not about containment — it is about the branch being deleted,
+    // which {@link cardStage} decides from the sides. Reading it here would make
+    // it behave as "chờ merge", which is what it silently did.
+    if (!step.branch || step.reach === "gone") continue;
     // `merged` asks the repository; `queued` asks the pull requests.
     //
     // A pull request aimed straight at an environment branch belongs to that
@@ -867,7 +855,7 @@ export function stageFor(
           ? (everMerged && hasArrived(envState, step)) ||
             mergedInto.has(step.branch)
           : queued.has(step.branch);
-    if (reached) return step.name;
+    if (reached && phaseOk(step.phase)) return step.name;
   }
 
   // The terminal step also has no branch, but it is not a pre-merge step and a
@@ -875,7 +863,6 @@ export function stageFor(
   // otherwise read as "shipped and cleaned up", which is the far end of the
   // board. Only {@link cardStage} may put a card there.
   const pre = stages.filter((s) => !s.branch && s.reach !== "gone");
-  const phase = prPhase(pr);
   if (phase === "merged")
     return pre[pre.length - 1]?.name ?? stages[0]?.name ?? "";
 
@@ -942,7 +929,15 @@ export function cardStage(
    * rather than delivered work.
    */
   const end = cleanupStep(stages);
-  if (end) {
+  // The terminal column's own request condition, if it names one. Same rule as
+  // every other column: a field filled in has to hold.
+  const endPhaseOk =
+    !end?.phase ||
+    sides.some((side) => {
+      const p = prPhase(pickPr(side.prs.map(asPullRequest)));
+      return end.phase === "open" ? p === "open" : p === "none";
+    });
+  if (end && endPhaseOk) {
     if (finished === true) return end.name;
     const reachedEnv = Boolean(stages.find((s) => s.name === best)?.branch);
     // Only when nobody asked. A caller holding a live "In Progress" is not
