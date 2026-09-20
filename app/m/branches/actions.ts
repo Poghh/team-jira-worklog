@@ -25,6 +25,7 @@ import {
   fetchPrsByNumber,
   fetchRepos,
   fetchViewer,
+  detectBuildWorkflow,
 } from "@/lib/modules/branches/github";
 import {
   type GitHubConfigView,
@@ -348,10 +349,40 @@ export async function deleteNotesAction(
   }
 }
 
+/**
+ * Find the build workflow by reading the repo.
+ *
+ * The screen calls this instead of asking: there was a picker here, and the
+ * question it posed had one right answer the app could work out for itself.
+ * Read-only: it reports what it found and the screen saves it along with the
+ * rest of the form, so a value already typed in by a team whose build does not
+ * look like this one's is never overwritten by a lookup.
+ */
+export async function detectWorkflowAction(
+  repo: string,
+): Promise<ActionResult & { workflow?: string }> {
+  try {
+    const cfg = getGitHubConfig();
+    const which = repo.trim() || cfg.buildRepo;
+    if (!cfg.token || !which) return { ok: true, message: "", workflow: "" };
+
+    return {
+      ok: true,
+      message: "",
+      workflow: (await detectBuildWorkflow(cfg.token, which)) ?? "",
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      message: error instanceof Error ? error.message : "Không đọc được workflow",
+      workflow: "",
+    };
+  }
+}
+
 export async function saveGitHubConfigAction(input: {
   repos: string[];
   identity: Identity;
-  projectKeys: string[];
   useEvents: boolean;
   localPaths: string[];
   repoLabels: Record<string, string>;

@@ -27,7 +27,6 @@ const K = {
   ghToken: `${PREFIX}gh_token`,
   ghRepos: `${PREFIX}gh_repos`,
   ghLogins: `${PREFIX}gh_logins`,
-  ghProjects: `${PREFIX}gh_projects`,
   ghUseEvents: `${PREFIX}gh_use_events`,
   ghLocalPaths: `${PREFIX}gh_local_paths`,
   ghRepoLabels: `${PREFIX}gh_repo_labels`,
@@ -301,16 +300,37 @@ function readToken(): string {
 }
 
 /**
+ * Which repository runs the build workflow.
+ *
+ * Falls back to whichever repo the user labelled `iOS`, because that is the one
+ * that builds — the SDK has no build of its own. Not inferred from "has
+ * workflow runs": the SDK repo has plenty, they are just lint and scanner runs.
+ */
+function readBuildRepo(): string {
+  const own = (getRaw(K.ghBuildRepo) ?? "").trim();
+  if (own) return own;
+  const labels = readMap(getRaw(K.ghRepoLabels));
+  return (
+    Object.entries(labels).find(([, v]) => v.trim().toLowerCase() === "ios")?.[0] ??
+    ""
+  );
+}
+
+/**
  * The scan's settings.
  *
- * `projectKeys` falls back to the app's own Jira project so a first scan finds
- * something without any setup at all. It is only a seed — this org's branches
- * name VTL and VA as often as VT, and the config screen's detect button exists
- * to add those.
+ * `projectKeys` is the app's own Jira project, full stop — there is no second
+ * box for it any more.
+ *
+ * There used to be one, on the reasoning that a repository's branches can name
+ * more projects than the board you work on. True here: `VT` and `VTL` both
+ * appear. But the `VTL` branches all belong to another team's prefix and were
+ * never this user's cards, and a branch that names no configured key still gets
+ * a card now — it just gets one with no Jira link. So the box bought one thing,
+ * and that thing stopped being worth a box.
  */
 export function getGitHubConfig(): GitHubConfig {
   const stages = getStages();
-  const projects = getList(K.ghProjects);
   const fallback = (getSetting(SETTING_KEYS.jiraProjectKey) ?? "").trim();
 
   return {
@@ -320,14 +340,14 @@ export function getGitHubConfig(): GitHubConfig {
     identity: {
       logins: getList(K.ghLogins),
     },
-    projectKeys: projects.length ? projects : fallback ? [fallback] : [],
+    projectKeys: fallback ? [fallback] : [],
     // Absent means never configured, which for a signal this useful should mean
     // on rather than off.
     useEvents: (getRaw(K.ghUseEvents) ?? "true") === "true",
     localPaths: getList(K.ghLocalPaths),
     repoColors: readMap(getRaw(K.ghRepoColors)),
     buildWorkflow: (getRaw(K.ghBuildWorkflow) ?? "").trim(),
-    buildRepo: (getRaw(K.ghBuildRepo) ?? "").trim(),
+    buildRepo: readBuildRepo(),
     buildApps: readMap(getRaw(K.ghBuildApps)),
     buildEnabled: readBuildEnabled(),
     buildNotify: readBuildEnabled() && readBuildNotify(readMap(getRaw(K.ghBuildApps))),
@@ -426,7 +446,6 @@ export function setGitHubConfig(input: {
   token?: string;
   repos: string[];
   identity: Identity;
-  projectKeys: string[];
   useEvents: boolean;
   localPaths: string[];
   repoLabels: Record<string, string>;
@@ -446,7 +465,6 @@ export function setGitHubConfig(input: {
   setRaw(K.ghLogins, clean(input.identity.logins));
   // Prefixes are the one list where case and the trailing slash matter, but a
   // stray space would silently match nothing.
-  setRaw(K.ghProjects, clean(input.projectKeys.map((k) => k.toUpperCase())));
   setRaw(K.ghUseEvents, input.useEvents ? "true" : "false");
   // Written either way, which is what turns the derived defaults above into a
   // stored answer the moment the user expresses one.

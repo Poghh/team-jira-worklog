@@ -17,7 +17,6 @@ import {
   type PullRequest,
   type RemoteBranch,
   advanceStage,
-  candidateProjectKeys,
   extractIssueKey,
   extractIssueKeys,
   isRevertBranch,
@@ -89,14 +88,6 @@ export interface ScanResult {
   unmatched: number;
   /** Branch names behind `unmatched`, capped, so the cause is visible not inferred. */
   unmatchedSamples: string[];
-  /**
-   * Project keys the unmatched branches appear to name, most frequent first.
-   *
-   * Computed here rather than on a separate settings trip because the moment
-   * the user learns their keys are missing is the moment the scan comes back
-   * short — offering the fix in the same result turns a dead end into a click.
-   */
-  candidates: Array<{ key: string; count: number }>;
   /** Repos in the list that could not be read — renamed, deleted, or not visible. */
   skipped: string[];
   /** Repos with more branches than the per-repo ceiling — a scan that stopped early says so. */
@@ -150,7 +141,10 @@ export async function scanGitHub(): Promise<ScanResult> {
     // Without this the scan succeeds and finds nothing, which reads like "you
     // have no branches" rather than "you have not said who you are".
     throw new Error(
-      'Chưa khai báo danh tính GitHub — bấm "Dò" ở tab GitHub để điền tự động',
+      // Nút "Dò từ token" không còn: tab GitHub tự đọc login từ token khi mở.
+      // Tới được đây nghĩa là chính việc đọc đó hỏng — thường là token sai hoặc
+      // hết hạn — nên câu nhắc phải chỉ vào token, không chỉ vào một cái nút.
+      "Chưa khai báo danh tính GitHub — mở tab GitHub, kiểm tra token còn dùng được không",
     );
   }
 
@@ -361,7 +355,6 @@ export async function scanGitHub(): Promise<ScanResult> {
   // guess must not outrank an answer someone typed in deliberately.
   const pinnedHit = new Set<string>();
   const unmatchedSamples: string[] = [];
-  const unmatchedNames: string[] = [];
   let unmatched = 0;
 
   /** Every key a chosen branch names, so a card can carry all of them. */
@@ -391,7 +384,6 @@ export async function scanGitHub(): Promise<ScanResult> {
     // reporting — but no longer a reason to drop the branch on the floor.
     if (!all.length) {
       unmatched++;
-      unmatchedNames.push(b.name);
       if (unmatchedSamples.length < 8) unmatchedSamples.push(b.name);
     }
     const key = all[0] ?? branchKey(b.repo, b.name);
@@ -942,9 +934,6 @@ export async function scanGitHub(): Promise<ScanResult> {
     mineBy: byRule,
     unmatched,
     unmatchedSamples,
-    candidates: candidateProjectKeys(unmatchedNames).filter(
-      (c) => !cfg.projectKeys.some((k) => k.toUpperCase() === c.key),
-    ),
     skipped,
     truncated,
     localOnly: localOnlyCount,

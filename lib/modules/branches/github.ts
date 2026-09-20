@@ -736,6 +736,69 @@ export interface BuildRun {
  * runs, and a check suite does not carry the run's start time — which is the
  * only thing that ties a run to the App Store Connect build it produced.
  */
+/**
+ * Lines that mean "this workflow packages the app itself".
+ *
+ * Measured against the twelve active workflows of the iOS repo: matching on
+ * mentions of fastlane or `.ipa` leaves three candidates, because `release.yml`
+ * attaches the artefact and `unit_tests.yml` runs fastlane for tests. What
+ * separates the build from both is that it *produces* the archive rather than
+ * referring to one.
+ */
+const PACKAGES_APP =
+  /fastlane\s+deploy|xcodebuild\s+.*archive|exportArchive|out\/[\w.${}-]*\.ipa/im;
+
+/** A workflow that only delegates — `release.yml` calling `build.yml`. */
+const DELEGATES = /uses:\s*\.\/\.github\/workflows\//;
+
+/**
+ * The workflow that produces the installable build, found by reading the repo.
+ *
+ * There is no conventional filename to guess — `build.yml` is this team's
+ * choice, not a GitHub default — and no field in the API says which workflow
+ * ships something. But the YAML does say it, and reading it is decisive where
+ * counting runs was not: filtering by "has runs on an environment branch"
+ * matched eight of the twelve, `sonarqube.yml` more often than the build, while
+ * the rule above matches exactly one.
+ *
+ * `null` when no workflow matches or more than one does. The caller then asks,
+ * rather than picking the first and being quietly wrong.
+ */
+export async function detectBuildWorkflow(
+  token: string,
+  repo: string,
+): Promise<string | null> {
+  const [owner, name] = repo.split("/");
+  if (!owner || !name) return null;
+
+  const body = await rest<{
+    workflows?: Array<{ path?: string; state?: string }>;
+  }>(token, `/repos/${owner}/${name}/actions/workflows?per_page=100`);
+
+  const paths = (body.workflows ?? [])
+    .filter((w) => w.state === "active" && w.path)
+    .map((w) => w.path!);
+
+  const hits: string[] = [];
+  for (const path of paths) {
+    // The JSON contents endpoint rather than the raw media type, so this goes
+    // through the shared helper that carries the user-agent and turns an
+    // expired token into a spoken error instead of an empty answer.
+    let file: { content?: string; encoding?: string };
+    try {
+      file = await rest(token, `/repos/${owner}/${name}/contents/${path}`);
+    } catch {
+      continue;
+    }
+    if (file.encoding !== "base64" || !file.content) continue;
+    const yaml = Buffer.from(file.content, "base64").toString("utf8");
+    if (PACKAGES_APP.test(yaml) && !DELEGATES.test(yaml))
+      hits.push(path.replace(/^\.github\/workflows\//, ""));
+  }
+
+  return hits.length === 1 ? hits[0] : null;
+}
+
 export async function fetchBuildRuns(
   token: string,
   repo: string,

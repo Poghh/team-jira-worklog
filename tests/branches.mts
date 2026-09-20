@@ -22,6 +22,7 @@ import {
   ticketsDone,
   cardLadder,
   cleanupStep,
+  stageRule,
   orderSides,
   parseIssueKeys,
   parseJiraUrls,
@@ -97,6 +98,18 @@ eq(S.filter((s) => s.reach === 'built').map((s) => s.branch),
 eq(S.filter((s) => s.reach === 'built').every((s) => s.expects !== 'prog'), true,
    'a build column expects a testable status — that is what the column is for')
 
+/* ── mỗi cột tự nói ra luật của nó ──────────────────────────────────────── */
+const ruleOf = (n: string) => stageRule(S.find((s) => s.name === n)!)
+eq(ruleOf('đang code'), 'chưa mở PR — hoặc PR còn draft, hoặc đã đóng', 'cột không nhánh, chưa có PR')
+eq(ruleOf('review'), 'PR đang mở', 'cột không nhánh, PR đang mở')
+eq(ruleOf('develop'), 'có PR đang mở nhắm vào ctalk/develop', 'chờ merge = PR mở nhắm đúng nhánh này')
+eq(ruleOf('đã merge develop'), 'code đã nằm trong ctalk/develop', 'đã merge hỏi repo, không hỏi PR')
+eq(ruleOf('đã build develop'), 'đã có bản build của ctalk/develop mang code này', 'đã build hỏi bản build')
+eq(ruleOf('done'), 'nhánh của card đã bị xoá khỏi mọi repo', 'cột cuối')
+// Điều kiện PR chồng thêm thì câu phải nói ra cả hai vế.
+eq(stageRule({ name: 'x', expects: '', branch: 'staging', phase: 'open', reach: 'merged' }),
+   'code đã nằm trong staging, và PR đang mở', 'hai điều kiện thì nói cả hai')
+
 /* ── which column a branch belongs in ───────────────────────────────────── */
 const open = (base: string, num = 1) => ({ number: num, url: '', state: 'OPEN', isDraft: false, baseRefName: base })
 const merged = { number: 2, url: '', state: 'MERGED', isDraft: false, baseRefName: 'ctalk/develop' }
@@ -153,6 +166,31 @@ eq(stageFor(inInt, merged, S, [merged], ['ctalk/develop']), 'đã merge integrat
    'a build of the team env says nothing about integration')
 eq(stageFor(inInt, merged, S, [merged], ['develop']), 'đã build integration',
    'a build of integration puts it in integration\'s build column')
+
+/* ── mỗi ô đã điền là một điều kiện ─────────────────────────────────────── */
+// Ô "điều kiện PR" từng bị khoá trên mọi cột có nhánh, nên engine chưa bao giờ
+// đọc tới. Mở ô thì nó phải có tác dụng thật, không phải ô câm.
+const withPhase = (name: string, phase: '' | 'nopr' | 'open') =>
+  S.map((s) => (s.name === name ? { ...s, phase } : s))
+
+// `đã merge develop` cộng thêm điều kiện "PR đang mở" -> PR đã merge không khớp
+// nên cột không nhận, và card rơi về đường PR như mọi card merged mà chưa thấy ở
+// đâu: cột pre cuối cùng.
+eq(stageFor({ 'ctalk/develop': { ahead: 0 } }, merged, withPhase('đã merge develop', 'open'), [merged]),
+   'review', 'điều kiện PR không đạt thì cột có nhánh cũng không nhận')
+// Cùng dữ liệu, điều kiện để trống -> vẫn như cũ.
+eq(stageFor({ 'ctalk/develop': { ahead: 0 } }, merged, withPhase('đã merge develop', ''), [merged]),
+   'đã merge develop', 'để trống thì không xét, giữ nguyên hành vi cũ')
+// Và điều kiện khớp thì vào bình thường.
+eq(stageFor({ 'ctalk/develop': { ahead: 0 } }, open('ctalk/develop'), withPhase('develop', 'open'), [open('ctalk/develop')]),
+   'develop', 'điều kiện PR khớp thì cột có nhánh vẫn nhận')
+
+// `đã xoá nhánh` trên cột có nhánh: trước đây rơi xuống nhánh else và hành xử
+// như "chờ merge". Giờ nó là cột cuối, và không còn nhận card qua containment.
+const goneOnEnv = S.map((s) => (s.name === 'staging' ? { ...s, reach: 'gone' as const } : s))
+eq(cleanupStep(goneOnEnv)?.name, 'staging', '`gone` là cột cuối dù cột có điền nhánh')
+eq(stageFor({ staging: { ahead: 0 } }, open('staging'), goneOnEnv, [open('staging')]) === 'staging', false,
+   '`gone` không còn âm thầm hành xử như "chờ merge"')
 
 /* ── picking which pull request to show ─────────────────────────────────── */
 const prs = [

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useTransition } from "react";
+import { useEffect, useState, useTransition } from "react";
 
 import {
   type EnvState,
@@ -22,6 +22,7 @@ import {
   deleteNotesAction,
   detectGitHubAction,
   listReposAction,
+  detectWorkflowAction,
   saveGitHubConfigAction,
   checkLocalPathsAction,
   scanGitHubAction,
@@ -58,7 +59,6 @@ export function GitHubPanel({
   /** '' means untouched — see `setGitHubConfig`. Never pre-filled: the
       browser is not sent the token, only whether there is one. */
   const [token, setToken] = useState("");
-  const [projects, setProjects] = useState(toText(view.projectKeys));
   const [useEvents, setUseEvents] = useState(view.useEvents);
   const [localPaths, setLocalPaths] = useState(view.localPaths.join("\n"));
   const [pathRows, setPathRows] = useState<Array<{
@@ -78,6 +78,11 @@ export function GitHubPanel({
   const [repos, setRepos] = useState<string[]>(view.repos);
   const [buildWorkflow, setBuildWorkflow] = useState(view.buildWorkflow);
   const [buildRepo, setBuildRepo] = useState(view.buildRepo);
+  /** How the workflow above was arrived at, for the line that explains it. */
+  const [wfFound, setWfFound] = useState<"detected" | "unknown" | null>(null);
+  /** The two boxes stay hidden until asked for — see the notes beside them. */
+  const [repoOpen, setRepoOpen] = useState(false);
+  const [wfOpen, setWfOpen] = useState(false);
   const [buildEnabled, setBuildEnabled] = useState(view.buildEnabled);
   const [buildNotify, setBuildNotify] = useState(view.buildNotify);
   const [buildApps, setBuildApps] = useState<Record<string, string>>(
@@ -100,16 +105,43 @@ export function GitHubPanel({
   const [scan, setScan] = useState<ScanResult | null>(null);
   const [busy, start] = useTransition();
 
-  function save(extra?: Partial<{ projects: string; repos: string[] }>) {
-    const nextProjects = extra?.projects ?? projects;
+  // Work the workflow out once the build channel is on, and again whenever the
+  // repo it reads changes. A value already saved is left alone: the lookup is
+  // there to spare the first setup a question, not to correct a later answer.
+  useEffect(() => {
+    if (!buildEnabled) return;
+    let alive = true;
+    void detectWorkflowAction(buildRepo)
+      .then((res) => {
+        if (!alive) return;
+        setWfFound(res.workflow ? "detected" : "unknown");
+        if (res.workflow && !buildWorkflow) {
+          setBuildWorkflow(res.workflow);
+          save({ buildWorkflow: res.workflow });
+        }
+      })
+      .catch(() => {
+        if (alive) setWfFound("unknown");
+      });
+    return () => {
+      alive = false;
+    };
+    // `buildWorkflow` is read, not watched: saving what was just found must not
+    // send this round again.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [buildEnabled, buildRepo]);
+
+  function save(extra?: Partial<{ repos: string[]; buildWorkflow: string }>) {
     const nextRepos = extra?.repos ?? repos;
+    // A <select> saves on change, so the new value has to be passed in rather
+    // than read from state that React has not committed yet.
+    const nextWorkflow = extra?.buildWorkflow ?? buildWorkflow;
     start(async () => {
       const res = await saveGitHubConfigAction({
         repos: nextRepos,
         identity: {
           logins: toList(logins),
         },
-        projectKeys: toList(nextProjects),
         useEvents,
         localPaths: localPaths
           .split("\n")
@@ -117,7 +149,7 @@ export function GitHubPanel({
           .filter(Boolean),
         repoLabels,
         repoColors,
-        buildWorkflow,
+        buildWorkflow: nextWorkflow,
         buildEnabled,
         buildNotify,
         buildRepo,
@@ -125,24 +157,44 @@ export function GitHubPanel({
       });
       setNote({ ok: res.ok, text: res.message });
       if (res.view) {
-        setProjects(toText(res.view.projectKeys));
         setRepos(res.view.repos);
       }
     });
   }
 
-  function detect() {
-    start(async () => {
-      const res = await detectGitHubAction();
-      setNote({ ok: res.ok, text: res.message });
-      if (!res.ok) return;
-      if (res.login && !toList(logins).includes(res.login)) {
-        setLogins((v) => toText([...toList(v), res.login!]));
-      }
-      setOrgs(res.orgs ?? []);
-      if (res.orgs?.length && !owner) setOwner(res.orgs[0]);
-    });
-  }
+  // Ai cầm token thì GitHub biết chắc, nên app đọc lấy thay vì để một cái nút
+  // hỏi lại người dùng câu mà token đã trả lời. Login đã có thì không ghi đè:
+  // ô này là danh sách, người dùng có thể thêm tài khoản thứ hai vào đó.
+  useEffect(() => {
+    if (!hasToken) return;
+    let alive = true;
+    void detectGitHubAction()
+      .then((res) => {
+        if (!alive) return;
+        // Token hỏng thì phải nói ra. Im lặng ở đây từng là lỗi đắt ở module
+        // kia: một token hết hạn trông y như "không có nhánh nào của bạn".
+        if (!res.ok) {
+          setNote({ ok: false, text: res.message });
+          return;
+        }
+        if (res.login && !toList(logins).includes(res.login))
+          setLogins((v) => toText([...toList(v), res.login!]));
+        setOrgs(res.orgs ?? []);
+        if (res.orgs?.length) setOwner((o) => o || res.orgs![0]);
+      })
+      .catch((e: unknown) => {
+        if (alive)
+          setNote({
+            ok: false,
+            text: e instanceof Error ? e.message : "Không đọc được token",
+          });
+      });
+    return () => {
+      alive = false;
+    };
+    // `logins` được đọc chứ không theo dõi: điền xong không được gọi lại.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hasToken]);
 
   function loadRepos(who: string) {
     if (!who.trim()) return;
@@ -186,15 +238,7 @@ export function GitHubPanel({
 
       {/* ── identity ───────────────────────────────────────────────────────── */}
       <section className={CARD}>
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          <span className={CTITLE}>Nhánh nào là của tôi</span>
-          {/* Nút này điền đúng ô bên dưới, nên nó đứng ở đây chứ không
-              ở một card "Kết nối" riêng — card đó chỉ còn mỗi việc nhắc token
-              nằm ở Settings, mà Settings mới là nơi token thật sự sống. */}
-          <button type="button" onClick={detect} disabled={busy || !hasToken} className={BTN}>
-            Dò từ token
-          </button>
-        </div>
+        <span className={CTITLE}>Nhánh nào là của tôi</span>
         <p className="mt-1.5 text-[12.5px] text-ink-3">
           Một nhánh được coi là của bạn nếu commit cuối do bạn tạo. Nhánh bạn
           push mà commit cuối là của người khác thì dựa vào ô bên dưới.
@@ -437,22 +481,6 @@ export function GitHubPanel({
       </section>
 
       {/* ── project keys ─────────────────────────────────────────────────── */}
-      <section className={CARD}>
-        <div className={CTITLE}>Project key trong tên nhánh</div>
-        <input
-          value={projects}
-          onChange={(e) => setProjects(e.target.value)}
-          placeholder="VT, VTL, VA"
-          className={INPUT + " mt-2"}
-        />
-        <p className="mt-1 text-[12.5px] text-ink-3">
-          Chỉ khớp đúng các key này. Không đoán bừa theo dạng{" "}
-          <span className="font-mono">CHỮ-SỐ</span>, nếu không{" "}
-          <span className="font-mono">release-2026-08-31</span> sẽ thành ticket
-          &quot;RELEASE-2026&quot;. Quét hụt thì kết quả sẽ gợi ý key còn thiếu.
-        </p>
-      </section>
-
       {/* The build channel. Merging is not shipping: QC installs a TestFlight
           build, so a column that means "ready to test" has to be able to see
           one. A run alone is not enough either — it proves the code compiled,
@@ -492,8 +520,46 @@ export function GitHubPanel({
 
         {buildEnabled && (
         <>
-        <div className="mt-3 flex flex-wrap gap-3">
-          <label className="min-w-[190px] flex-1">
+        {/*
+         * Not a question any more.
+         *
+         * There was a picker here, listing every workflow in the repo. But the
+         * repo answers it: exactly one of the twelve active workflows packages
+         * the app itself — the rest lint, scan, test, or just call that one —
+         * so the app reads them and says what it found. The box stays reachable
+         * because a team whose build does not look like this one's has to be
+         * able to say so.
+         */}
+        <p className="mt-3 text-[12.5px] text-ink-3">
+          {wfFound === "unknown" && !buildWorkflow ? (
+            <span className="text-warn">
+              Chưa dò ra workflow nào dựng bản cài được trong{" "}
+              <span className="font-mono">{buildRepo || "repo build"}</span> —
+              điền tên file bên dưới.
+            </span>
+          ) : (
+            <>
+              Workflow build{" "}
+              <span className="font-mono text-ink-2">{buildWorkflow || "—"}</span>
+              {wfFound === "detected" && " · app tự đọc ra từ repo"}
+            </>
+          )}
+          {!wfOpen && (
+            <>
+              {" · "}
+              <button
+                type="button"
+                onClick={() => setWfOpen(true)}
+                className="text-accent-ink underline underline-offset-2"
+              >
+                đổi workflow
+              </button>
+            </>
+          )}
+        </p>
+
+        {wfOpen && (
+          <label className="mt-1.5 block max-w-md">
             <span className={CTITLE}>Workflow build</span>
             <input
               value={buildWorkflow}
@@ -502,19 +568,65 @@ export function GitHubPanel({
               placeholder="build.yml"
               className="mt-1 w-full rounded-md border border-line bg-ground px-2.5 py-1.5 font-mono text-[12px]"
             />
+            <span className="mt-1 block text-[11.5px] text-ink-3">
+              Tên file trong <span className="font-mono">.github/workflows/</span>.
+            </span>
           </label>
-          <label className="min-w-[190px] flex-1">
-            <span className={CTITLE}>Repo chứa build</span>
+        )}
+
+        {/*
+         * The repo is not a second question.
+         *
+         * The workflow list above is read *from* it, so picking a workflow
+         * already implies the repo — showing both made the screen restate
+         * itself. It stays reachable because the build does not have to live in
+         * a repo the board watches: another team may run it from a release repo
+         * of its own, and then there is nothing to infer it from.
+         */}
+        <p className="mt-1.5 text-[12.5px] text-ink-3">
+          Đọc từ repo{" "}
+          <span className="font-mono text-ink-2">{buildRepo || "—"}</span>
+          {!repoOpen && (
+            <>
+              {" · "}
+              <button
+                type="button"
+                onClick={() => setRepoOpen(true)}
+                className="text-accent-ink underline underline-offset-2"
+              >
+                đổi repo
+              </button>
+            </>
+          )}
+        </p>
+
+        {repoOpen && (
+          <label className="mt-1.5 block max-w-md">
+            <span className={CTITLE}>Repo chạy workflow</span>
             <input
               value={buildRepo}
               onChange={(e) => setBuildRepo(e.target.value)}
               onBlur={() => save()}
-              placeholder="owner/repo"
-              title="Repo chạy workflow build. SDK không tự build được — app iOS build bản tương ứng cho nó, nên cả hai repo đều nhìn vào đây."
+              placeholder={view.buildRepo || "owner/repo"}
               className="mt-1 w-full rounded-md border border-line bg-ground px-2.5 py-1.5 font-mono text-[12px]"
             />
+            <span className="mt-1 block text-[11.5px] text-ink-3">
+              Để trống thì lấy repo có nhãn <span className="font-mono">iOS</span>.
+              SDK không tự build được — app iOS dựng bản tương ứng cho nó.
+            </span>
           </label>
-        </div>
+        )}
+
+        {/* Đo trên 90 bản build thật: run GitHub cho biết commit của 57 bản,
+            ghi chú What to Test chỉ nêu ticket cho 20. Hai đường bổ cho nhau,
+            và thiếu hai ô này thì fetchEnvBuilds thoát ngay, không gọi cả ASC. */}
+        <p className="mt-1.5 text-[12.5px] leading-relaxed text-ink-3">
+          App ghép <b>run của workflow</b> với <b>bản build trên App Store
+          Connect</b>. Run cho biết bản build đó dựng từ <b>commit nào</b> và
+          đóng băng lúc nào — App Store Connect không biết điều đó, nó chỉ có số
+          hiệu build và ghi chú. Không có cặp này thì app không đọc build nào
+          cả, kể cả bản đã lên TestFlight.
+        </p>
 
         {envBranches.length > 0 ? (
           <div className="mt-3 flex flex-col gap-1.5">
@@ -650,11 +762,6 @@ export function GitHubPanel({
           scan={scan}
           baseUrl={baseUrl}
           envs={stages}
-          onAddKeys={(keys) => {
-            const next = toText([...toList(projects), ...keys]);
-            setProjects(next);
-            save({ projects: next });
-          }}
           onApplied={() => setScan(null)}
         />
       )}
@@ -675,13 +782,11 @@ function ScanReview({
   scan,
   baseUrl,
   envs,
-  onAddKeys,
   onApplied,
 }: {
   scan: ScanResult;
   baseUrl: string;
   envs: StageConfig[];
-  onAddKeys: (keys: string[]) => void;
   onApplied: () => void;
 }) {
   // A conflict overwrites a branch name the user typed, so it starts unticked:
@@ -786,24 +891,12 @@ function ScanReview({
         </p>
       )}
 
-      {scan.candidates.length > 0 && (
+      {scan.unmatched > 0 && (
         <div className="mt-2 rounded-md border border-line bg-surface-2 px-2.5 py-2">
           <p className="text-[12px] text-ink-2">
-            {scan.unmatched} nhánh của bạn không khớp project key nào. Có vẻ như
-            đây là key còn thiếu:
+            {scan.unmatched} nhánh của bạn không có mã ticket trong tên. Chúng vẫn
+            lên board, chỉ là card không có link Jira.
           </p>
-          <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
-            {scan.candidates.slice(0, 6).map((c) => (
-              <button
-                key={c.key}
-                type="button"
-                onClick={() => onAddKeys([c.key])}
-                className="rounded border border-accent bg-accent-soft px-1.5 py-px font-mono text-[11px] text-accent-ink hover:bg-accent hover:text-white"
-              >
-                + {c.key} ({c.count})
-              </button>
-            ))}
-          </div>
           {scan.unmatchedSamples.length > 0 && (
             <p className="mt-1.5 font-mono text-[10.5px] leading-relaxed text-ink-3">
               {scan.unmatchedSamples.join(" · ")}
