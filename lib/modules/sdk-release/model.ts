@@ -673,3 +673,185 @@ export const RUN_LABEL: Record<RunState, string> = {
   cancelled: "đã huỷ",
   lost: "mất dấu",
 };
+
+export interface ChangedFile {
+  /** `A` thêm, `M` sửa, `D` xoá, `R` đổi tên — chữ cái đầu của git. */
+  status: string;
+  path: string;
+  /** Đường dẫn cũ, chỉ có khi đổi tên. */
+  from?: string;
+}
+
+/**
+ * `git diff --name-status -M` đọc thành danh sách.
+ *
+ * Tách khỏi chỗ gọi git để test được mà không cần repo: dòng đổi tên có **ba**
+ * cột (`R100\told\tnew`) còn mọi dòng khác chỉ có hai, và đó đúng là trường hợp
+ * không dựng lại được bằng tay trong một clone thật.
+ */
+export function parseNameStatus(raw: string): ChangedFile[] {
+  const out: ChangedFile[] = [];
+  for (const line of raw.split("\n")) {
+    if (!line.trim()) continue;
+    const cols = line.split("\t");
+    const status = (cols[0] ?? "").charAt(0);
+    if (!status) continue;
+    if ((status === "R" || status === "C") && cols.length >= 3)
+      out.push({ status, path: cols[2], from: cols[1] });
+    else if (cols[1]) out.push({ status, path: cols[1] });
+  }
+  return out;
+}
+
+/**
+ * `git diff --numstat` đọc thành bảng: đường dẫn → số dòng thêm/bớt.
+ *
+ * File nhị phân được git ghi là `-\t-\t<path>`, không phải số 0 — hai thứ khác
+ * nhau và phải hiện khác nhau, nếu không một file ảnh sẽ đọc như một file
+ * không đổi gì.
+ */
+export function parseNumstat(
+  raw: string,
+): Map<string, { added: number; removed: number; binary: boolean }> {
+  const out = new Map<string, { added: number; removed: number; binary: boolean }>();
+  for (const line of raw.split("\n")) {
+    if (!line.trim()) continue;
+    const [a, d, ...rest] = line.split("\t");
+    let path = rest.join("\t");
+    // Đổi tên ở numstat có dạng `old => new` hoặc `dir/{old => new}/file`.
+    // Tên mới mới là cái khớp với --name-status, nên lấy vế phải.
+    if (path.includes(" => ")) {
+      path = path.includes("{")
+        ? path.replace(/\{([^{}]*) => ([^{}]*)\}/, "$2").replace(/\/\//g, "/")
+        : path.split(" => ")[1];
+    }
+    if (!path) continue;
+    const binary = a === "-" || d === "-";
+    out.set(path, {
+      added: binary ? 0 : Number(a) || 0,
+      removed: binary ? 0 : Number(d) || 0,
+      binary,
+    });
+  }
+  return out;
+}
+
+export interface DiffLine {
+  /** `hunk` là dòng `@@ … @@`, ba loại còn lại là nội dung. */
+  kind: "hunk" | "add" | "del" | "ctx";
+  /** Số dòng ở bản cũ / bản mới; `null` khi dòng đó không tồn tại ở bên ấy. */
+  old: number | null;
+  new: number | null;
+  text: string;
+}
+
+/**
+ * Một unified diff của **một** file, đọc thành từng dòng có sẵn số dòng.
+ *
+ * Số dòng phải tính ở đây chứ không để chỗ hiển thị đếm: đó là thứ duy nhất
+ * làm một diff đọc được, và nó chỉ đúng nếu bám theo đầu hunk `@@ -a,b +c,d @@`
+ * — nhảy cóc giữa các hunk là chuyện bình thường, không phải lỗi.
+ *
+ * Phần đầu (`diff --git`, `index`, `---`, `+++`) bị bỏ: người đọc đã biết đang
+ * xem file nào vì họ vừa bấm vào nó.
+ */
+export function parseUnifiedDiff(raw: string): DiffLine[] {
+  const out: DiffLine[] = [];
+  let oldNo = 0;
+  let newNo = 0;
+  let started = false;
+
+  for (const line of raw.split("\n")) {
+    const at = /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@(.*)$/.exec(line);
+    if (at) {
+      started = true;
+      oldNo = Number(at[1]);
+      newNo = Number(at[2]);
+      out.push({ kind: "hunk", old: null, new: null, text: line });
+      continue;
+    }
+    if (!started) continue;
+    // "\ No newline at end of file" nói về dòng ngay trên, không phải một dòng
+    // của file — đếm nó vào số dòng là lệch hết phần còn lại.
+    if (line.startsWith("\\")) continue;
+
+    const c = line.charAt(0);
+    const text = line.slice(1);
+    if (c === "+") out.push({ kind: "add", old: null, new: newNo++, text });
+    else if (c === "-") out.push({ kind: "del", old: oldNo++, new: null, text });
+    else if (c === " ")
+      out.push({ kind: "ctx", old: oldNo++, new: newNo++, text });
+  }
+  return out;
+}
+
+/**
+ * Nhánh khớp câu tìm tới mức nào — số càng nhỏ càng sát.
+ *
+ * Lọc bằng `includes` rồi giữ nguyên thứ tự là chỗ hỏng: đo trên 58 nhánh của
+ * clone SDK, gõ `develop` thì nhánh tên đúng `develop` rơi xuống **thứ 8**,
+ * dưới cả `ctalk/feature/resolve_ctalkdevelop_upgrade_26.09.09_phase1`; gõ
+ * `master` thì `master` đứng sau một nhánh dài 60 ký tự. Danh sách chỉ hiện 10
+ * dòng, nên một bậc thôi cũng đủ đẩy câu trả lời đúng ra khỏi màn hình.
+ *
+ * Bậc xếp theo *ý người gõ*, không theo vị trí ký tự: gõ tên một nhánh là đang
+ * gọi đúng nhánh đó, nên khớp cả tên thắng; kế đến là nhánh **mang tên** ấy ở
+ * đoạn cuối (`ctalk/develop`), rồi mới tới những nhánh chỉ *nhắc* tới nó.
+ */
+export function rankBranch(name: string, needle: string): number {
+  const n = name.toLowerCase();
+  const q = needle.toLowerCase();
+  if (!q) return 0;
+  if (n === q) return 0;
+
+  const segs = n.split("/");
+  if (segs[segs.length - 1] === q) return 1;
+  if (segs.includes(q)) return 2;
+  if (n.startsWith(q)) return 3;
+  if (segs.some((s) => s.startsWith(q))) return 4;
+  // Đầu một từ bên trong đoạn: gõ `706` phải thấy `VT_706_permalink_base_urls`.
+  if (segs.some((s) => s.split(/[-_.]/).some((w) => w.startsWith(q)))) return 5;
+  return n.includes(q) ? 6 : 7;
+}
+
+/**
+ * Từ khớp đứng thứ mấy trong đoạn chứa nó — `Infinity` nếu không từ nào khớp.
+ *
+ * Dùng để phá hoà giữa hai nhánh cùng bậc, và nó cần thiết: gõ `706` thì
+ * `merge_VT_4_and_VT_706` (từ thứ 5) từng đứng trên
+ * `VT_706_permalink_base_urls` (từ thứ 2), chỉ vì tên nó ngắn hơn ba ký tự.
+ * Độ dài là tiêu chí sai ở đây — từ khớp càng sớm thì tên càng *về* thứ vừa gõ.
+ */
+function wordIndex(name: string, q: string): number {
+  let best = Infinity;
+  for (const seg of name.toLowerCase().split("/")) {
+    const words = seg.split(/[-_.]/);
+    const i = words.findIndex((w) => w.startsWith(q));
+    if (i >= 0) best = Math.min(best, i);
+  }
+  return best;
+}
+
+/**
+ * Lọc rồi xếp nhánh theo độ sát với câu tìm.
+ *
+ * Phá hoà theo thứ tự: từ khớp sớm hơn, rồi tên ngắn hơn, rồi bảng chữ cái —
+ * ba tiêu chí đều không phụ thuộc thứ tự đầu vào, nên gõ cùng một chữ hai lần
+ * luôn ra cùng một danh sách.
+ */
+export function searchBranches<T extends { name: string }>(
+  items: readonly T[],
+  query: string,
+): T[] {
+  const q = query.trim().toLowerCase();
+  if (!q) return [...items];
+  return items
+    .filter((b) => b.name.toLowerCase().includes(q))
+    .sort(
+      (a, b) =>
+        rankBranch(a.name, q) - rankBranch(b.name, q) ||
+        wordIndex(a.name, q) - wordIndex(b.name, q) ||
+        a.name.length - b.name.length ||
+        a.name.localeCompare(b.name),
+    );
+}
