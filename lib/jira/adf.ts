@@ -68,3 +68,81 @@ export function adfToText(doc: unknown): string {
     )
     .join('\n\n')
 }
+
+/** Tiêu đề của khối Definition of Done, dùng chung cho cả ghi lẫn đọc ngược. */
+export const DOD_HEADING = 'Definition of Done'
+
+/**
+ * Chữ dạng gạch đầu dòng → ADF. Chỉ bullet và đoạn văn, không hơn.
+ *
+ * Ở cạnh `adfToBlocks` vì hai hàm là một cặp: cái này ghi ra, cái kia đọc về,
+ * và luật đặt khối Definition of Done phải giống nhau ở cả hai chiều — lệch
+ * một chữ là sửa mô tả xong sẽ mất phần DoD.
+ */
+export function textToAdf(description: string, dod: string) {
+  const content: unknown[] = []
+
+  const pushBlock = (text: string) => {
+    const lines = text.split('\n').map((l) => l.trim()).filter(Boolean)
+    let bullets: string[] = []
+
+    const flush = () => {
+      if (!bullets.length) return
+      content.push({
+        type: 'bulletList',
+        content: bullets.map((b) => ({
+          type: 'listItem',
+          content: [{ type: 'paragraph', content: [{ type: 'text', text: b }] }],
+        })),
+      })
+      bullets = []
+    }
+
+    for (const line of lines) {
+      if (/^[-*•]\s+/.test(line)) bullets.push(line.replace(/^[-*•]\s+/, ''))
+      else {
+        flush()
+        content.push({ type: 'paragraph', content: [{ type: 'text', text: line }] })
+      }
+    }
+    flush()
+  }
+
+  if (description.trim()) pushBlock(description)
+
+  if (dod.trim()) {
+    content.push({
+      type: 'heading',
+      attrs: { level: 3 },
+      content: [{ type: 'text', text: 'Definition of Done' }],
+    })
+    pushBlock(dod)
+  }
+
+  if (!content.length) content.push({ type: 'paragraph', content: [] })
+
+  return { type: 'doc', version: 1, content }
+}
+
+/**
+ * Tách mô tả đã lưu thành hai ô như lúc soạn: phần thân và phần DoD.
+ *
+ * Cắt ở đúng heading mà {@link textToAdf} ghi ra. Không tìm thấy thì cả tài
+ * liệu là phần thân — an toàn hơn đoán, vì đoán sai là người dùng bấm lưu rồi
+ * mất nguyên khối DoD.
+ */
+export function splitDod(doc: unknown): { description: string; dod: string } {
+  const blocks = adfToBlocks(doc)
+  const at = blocks.findIndex(
+    (b) => b.kind === 'heading' && b.text.trim().toLowerCase() === DOD_HEADING.toLowerCase(),
+  )
+  const asText = (list: AdfBlock[]) =>
+    list
+      .map((b) => (b.kind === 'bullets' ? b.items.map((i) => `- ${i}`).join('\n') : b.text))
+      .join('\n\n')
+      .trim()
+
+  return at < 0
+    ? { description: asText(blocks), dod: '' }
+    : { description: asText(blocks.slice(0, at)), dod: asText(blocks.slice(at + 1)) }
+}

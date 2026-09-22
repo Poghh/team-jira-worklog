@@ -1,7 +1,15 @@
 'use server'
 
 import { getMyself } from '@/lib/jira/client'
-import { attachToSprint, transitionIssue, updateDates, updateStoryPoints } from '@/lib/jira/issues'
+import { generateTask, pointRulesText } from '@/lib/ai/gemini'
+import {
+  attachToSprint,
+  transitionIssue,
+  updateDates,
+  updateStoryPoints,
+  updateDescription,
+  updateSummary,
+} from '@/lib/jira/issues'
 import { createWorklog, loggedMinutesOnDate } from '@/lib/jira/worklog'
 import { listDaysOff } from '@/lib/days-off'
 import { scheduleForDate } from '@/lib/quota'
@@ -203,6 +211,76 @@ export async function setSprintAction(
     return {
       ok: false,
       message: error instanceof Error ? error.message : 'Không gán được sprint',
+    }
+  }
+}
+
+/**
+ * Ghi lại mô tả issue — chỉ chạy khi người dùng bấm Lưu.
+ */
+export async function updateDescriptionAction(
+  issueKey: string,
+  description: string,
+  dod: string,
+): Promise<ActionResult> {
+  try {
+    await updateDescription(issueKey, description, dod)
+    return { ok: true, message: `Đã lưu mô tả ${issueKey}` }
+  } catch (error) {
+    return {
+      ok: false,
+      message: error instanceof Error ? error.message : 'Không lưu được mô tả',
+    }
+  }
+}
+
+/**
+ * Nhờ Gemini viết lại mô tả cho một tiêu đề đã đổi.
+ *
+ * Không ghi gì cả — chỉ trả chữ về để người dùng đọc, sửa, rồi mới bấm Lưu.
+ * Đổi tiêu đề xong mà mô tả tự nhảy theo là thứ không ai muốn; đề xuất thì có.
+ *
+ * Dùng chính `generateTask` của màn Task mới, nên văn phong và luật point giống
+ * hệt, và tiêu đề đóng vai "ý tưởng" — đó đúng là thứ vừa thay đổi.
+ */
+export async function regenerateDescriptionAction(
+  title: string,
+  parentSummary?: string,
+): Promise<ActionResult & { description?: string; dod?: string }> {
+  if (!title.trim()) return { ok: false, message: 'Chưa có tiêu đề để dựa vào' }
+  try {
+    const data = await generateTask(title, {
+      pointRules: pointRulesText(),
+      parentSummary,
+    })
+    return {
+      ok: true,
+      message: `Đã sinh lại mô tả · ${data.model}`,
+      description: data.description,
+      dod: data.dod,
+    }
+  } catch (error) {
+    return { ok: false, message: error instanceof Error ? error.message : 'Gemini lỗi' }
+  }
+}
+
+/**
+ * Đổi tiêu đề issue — chỉ chạy khi người dùng bấm Lưu trên modal chi tiết.
+ *
+ * Không có đường nào gọi tự động vào đây, cùng luật với `transitionAction`:
+ * app không bao giờ tự ghi vào Jira thay người dùng.
+ */
+export async function updateSummaryAction(
+  issueKey: string,
+  summary: string,
+): Promise<ActionResult> {
+  try {
+    await updateSummary(issueKey, summary)
+    return { ok: true, message: `Đã đổi tiêu đề ${issueKey}` }
+  } catch (error) {
+    return {
+      ok: false,
+      message: error instanceof Error ? error.message : 'Không đổi được tiêu đề',
     }
   }
 }

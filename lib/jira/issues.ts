@@ -6,6 +6,7 @@ import {
   getTeamScope,
   requireProjectKey,
 } from "../settings";
+import { textToAdf } from "./adf";
 import { getBoardConfig } from "./board-config";
 import {
   JiraError, type JiraIssue, jiraFetch, searchJql } from "./client";
@@ -790,6 +791,50 @@ async function setEstimateViaBoard(
     // An empty string clears the estimate; the endpoint rejects null.
     { method: "PUT", body: { value: points === null ? "" : String(points) } },
   );
+}
+
+/**
+ * Đổi tiêu đề issue.
+ *
+ * Một PUT vào `summary`, không đụng field nào khác — khác `attachToSprint` là
+ * chỗ phải đọc trước rồi ghi cả mảng, vì `summary` là một chuỗi đơn nên không
+ * có gì để mất.
+ *
+ * Cắt khoảng trắng hai đầu và chặn chuỗi rỗng: Jira nhận `""` và issue sẽ mất
+ * tiêu đề trên mọi màn hình, một cú trượt tay không hoàn tác được từ đây.
+ */
+export async function updateSummary(
+  issueKey: string,
+  summary: string,
+): Promise<void> {
+  const text = summary.trim();
+  if (!text) throw new Error("Tiêu đề không được để trống");
+
+  await jiraFetch(`/rest/api/3/issue/${encodeURIComponent(issueKey)}`, {
+    method: "PUT",
+    body: { fields: { summary: text } },
+  });
+}
+
+/**
+ * Ghi lại mô tả issue, gồm cả khối Definition of Done.
+ *
+ * Hai ô chứ không một: Jira lưu chung trong một tài liệu ADF, nhưng người dùng
+ * soạn chúng riêng — và `textToAdf` là đúng hàm đã dựng mô tả lúc tạo issue,
+ * nên sửa xong không làm đổi cấu trúc so với các issue khác.
+ *
+ * Cho phép để trống cả hai: xoá sạch mô tả là một ý định hợp lệ, khác với đổi
+ * tiêu đề thành rỗng.
+ */
+export async function updateDescription(
+  issueKey: string,
+  description: string,
+  dod: string,
+): Promise<void> {
+  await jiraFetch(`/rest/api/3/issue/${encodeURIComponent(issueKey)}`, {
+    method: "PUT",
+    body: { fields: { description: textToAdf(description, dod) } },
+  });
 }
 
 /**
