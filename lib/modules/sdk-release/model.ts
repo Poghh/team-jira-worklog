@@ -599,20 +599,168 @@ export function recoveryPlan(a: Aftermath, sdkPath = "", packagePath = ""): Reco
 /* ── reading the run's log ──────────────────────────────────────────────── */
 
 /**
- * Carriage returns collapsed to what a terminal would actually show.
+ * Một dòng log vẽ ra đúng như terminal sẽ vẽ nó.
  *
- * Not polish — `cargo` writes its progress with `\r`, so forty minutes of build
- * accumulates thousands of `Compiling …` lines in a `<pre>` that only ever
- * needed to show the last one.
+ * Không phải "cắt lấy phần sau dấu `\r` cuối cùng" — cách đó sai ở hai chỗ mà
+ * log thật có cả hai:
+ *
+ *  - `\b` (backspace) lùi con trỏ rồi ký tự sau viết đè. `script` vọng lại
+ *    `^D\b\b` ở đầu log vì stdin đóng ngay, và chỉ có xử lý `\b` mới xoá nó
+ *    như terminal xoá.
+ *  - `\r` rồi viết một chuỗi **ngắn hơn** thì phần đuôi cũ vẫn còn trên màn
+ *    hình. Cắt chuỗi sẽ nuốt mất phần đuôi ấy.
+ *
+ * Nên: một ô cho mỗi cột, con trỏ chạy trên đó, ký tự ghi đè ô nó đứng. Mã
+ * ANSI rộng bằng không — nó bám vào ô kế tiếp chứ không chiếm cột nào, nếu
+ * không thì màu sẽ lệch chỗ sau mỗi lần viết đè.
  */
-export function collapseCr(text: string): string {
+function renderLine(line: string): string {
+  const cells: Array<{ pre: string; ch: string }> = [];
+  let cur = 0;
+  let pending = "";
+
+  // eslint-disable-next-line no-control-regex
+  const esc = /\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b./gy;
+  for (let i = 0; i < line.length; ) {
+    esc.lastIndex = i;
+    const m = line[i] === "\x1b" ? esc.exec(line) : null;
+    if (m) {
+      pending += m[0];
+      i = esc.lastIndex;
+      continue;
+    }
+    const ch = line[i++];
+    if (ch === "\r") cur = 0;
+    else if (ch === "\b") cur = Math.max(0, cur - 1);
+    else {
+      cells[cur] = { pre: pending, ch };
+      pending = "";
+      cur++;
+    }
+  }
+
+  let out = "";
+  for (let i = 0; i < cells.length; i++) out += (cells[i]?.pre ?? "") + (cells[i]?.ch ?? " ");
+  return out + pending;
+}
+
+/**
+ * Cả log vẽ ra như terminal.
+ *
+ * PTY đổi mọi `\n` thành `\r\n`, nên phải tách CRLF ra trước: `\r` cuối dòng là
+ * dấu xuống dòng, không phải lệnh viết đè. Thiếu bước đó thì mọi dòng thành
+ * rỗng và log trắng bóc.
+ *
+ * Không phải trang điểm — `cargo` vẽ thanh tiến trình bằng cách trả con trỏ về
+ * đầu dòng rồi viết đè, nên bốn mươi phút build tích lại hàng nghìn dòng
+ * `Compiling …` trong khi terminal chỉ từng hiện một dòng.
+ */
+export function terminalText(text: string): string {
   return text
+    .replace(/\r\n/g, "\n")
     .split("\n")
-    .map((line) => {
-      const at = line.lastIndexOf("\r");
-      return at < 0 ? line : line.slice(at + 1);
-    })
+    .map(renderLine)
     .join("\n");
+}
+
+/**
+ * Mọi chuỗi điều khiển ANSI, gỡ sạch.
+ *
+ * Dùng cho phần *đọc hiểu* log — `phaseOf` tìm dòng `🚀 Pushing changes`, và
+ * nó phải tìm được dù tool có tô màu dòng đó hay không.
+ */
+export function stripAnsi(text: string): string {
+  // CSI (`ESC [ … chữ cái`) và OSC (`ESC ] … BEL|ST`) — hai dạng duy nhất các
+  // tool ở đây phát ra.
+  return text
+    // eslint-disable-next-line no-control-regex
+    .replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, "")
+    // eslint-disable-next-line no-control-regex
+    .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, "");
+}
+
+/** Một đoạn chữ cùng màu, như terminal sẽ vẽ nó. */
+export interface AnsiSpan {
+  text: string;
+  /** CSS color, hoặc '' khi dùng màu chữ mặc định. */
+  color: string;
+  bold: boolean;
+}
+
+/**
+ * Bảng 16 màu, lấy theo bộ của GitHub Dark — cùng bộ nền terminal trong app.
+ *
+ * 0–7 thường, 8–15 sáng. Tool phát số nào thì vẽ màu ấy, không diễn giải lại.
+ */
+const ANSI_16 = [
+  "#484f58", "#ff7b72", "#3fb950", "#d29922",
+  "#58a6ff", "#bc8cff", "#39c5cf", "#b1bac4",
+  "#6e7681", "#ffa198", "#56d364", "#e3b341",
+  "#79c0ff", "#d2a8ff", "#56d4dd", "#f0f6fc",
+];
+
+/** 256-màu: 16 màu đầu, khối 6×6×6, rồi 24 mức xám. */
+function xterm256(n: number): string {
+  if (n < 16) return ANSI_16[n];
+  if (n < 232) {
+    const i = n - 16;
+    const step = (v: number) => (v === 0 ? 0 : 55 + v * 40);
+    const to = (v: number) => step(v).toString(16).padStart(2, "0");
+    return `#${to(Math.floor(i / 36))}${to(Math.floor(i / 6) % 6)}${to(i % 6)}`;
+  }
+  const g = (n - 232) * 10 + 8;
+  return `#${g.toString(16).padStart(2, "0").repeat(3)}`;
+}
+
+/**
+ * Một dòng log có mã ANSI, đọc thành các đoạn có màu.
+ *
+ * Chỉ SGR (`ESC[…m`) — màu chữ, đậm, và reset. Không xử lý màu nền hay di
+ * chuyển con trỏ: cargo và rustc không dùng chúng trong dòng chảy log, và một
+ * bộ mô phỏng terminal đầy đủ là thứ module này không cần.
+ *
+ * Mọi mã không hiểu được **bỏ qua chứ không in ra** — in ra thì người đọc thấy
+ * rác `[0m`, mà đó chính là thứ đang phải tránh.
+ */
+export function parseAnsi(line: string): AnsiSpan[] {
+  const out: AnsiSpan[] = [];
+  let color = "";
+  let bold = false;
+  let at = 0;
+
+  // eslint-disable-next-line no-control-regex
+  const re = /\x1b\[([0-9;]*)m|\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g;
+  for (let m = re.exec(line); m; m = re.exec(line)) {
+    if (m.index > at) out.push({ text: line.slice(at, m.index), color, bold });
+    at = m.index + m[0].length;
+    if (m[1] === undefined) continue; // không phải SGR: nuốt, không vẽ
+
+    const codes = m[1] === "" ? [0] : m[1].split(";").map(Number);
+    for (let i = 0; i < codes.length; i++) {
+      const c = codes[i];
+      if (c === 0) {
+        color = "";
+        bold = false;
+      } else if (c === 1) bold = true;
+      else if (c === 22) bold = false;
+      else if (c === 39) color = "";
+      else if (c >= 30 && c <= 37) color = ANSI_16[c - 30];
+      else if (c >= 90 && c <= 97) color = ANSI_16[c - 90 + 8];
+      else if (c === 38) {
+        // `38;5;n` là 256-màu, `38;2;r;g;b` là truecolor.
+        if (codes[i + 1] === 5) {
+          color = xterm256(codes[i + 2] ?? 0);
+          i += 2;
+        } else if (codes[i + 1] === 2) {
+          const [r, g, b] = [codes[i + 2] ?? 0, codes[i + 3] ?? 0, codes[i + 4] ?? 0];
+          color = `rgb(${r} ${g} ${b})`;
+          i += 4;
+        }
+      }
+    }
+  }
+  if (at < line.length) out.push({ text: line.slice(at), color, bold });
+  return out;
 }
 
 /** The last `n` lines, for a console that must not grow without bound. */
@@ -640,7 +788,7 @@ export type RunPhase =
  * furthest one reached rather than the first.
  */
 export function phaseOf(tail: string): RunPhase {
-  const t = collapseCr(tail);
+  const t = terminalText(tail);
   const marks: Array<[RunPhase, string]> = [
     ["finish", "Update release"],
     ["push", "Pushing changes"],

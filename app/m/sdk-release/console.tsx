@@ -8,6 +8,7 @@ import {
   type RecoveryPlan,
   type RunState,
   type SdkRelease,
+  parseAnsi,
   parseUnifiedDiff,
   phaseOf,
   searchBranches,
@@ -58,22 +59,6 @@ const TERM = {
   dim: "#7d8590",
   edge: "#30363d",
 } as const;
-
-/**
- * Colour per line, matched on what the tools themselves print.
- *
- * Not decoration: a build log is thousands of near-identical `Compiling …`
- * lines with the six that matter buried in them. The tool's own `🚀` steps and
- * anything that says `error` are the two things somebody scrolls back to find.
- */
-function lineTone(line: string): string {
-  if (/^\s*(error|error\[)/i.test(line) || /\berror:/i.test(line)) return "#ff7b72";
-  if (/^\s*warning:/i.test(line) || /\bwarning:/i.test(line)) return "#d29922";
-  if (line.startsWith("🚀")) return "#7ee787";
-  if (/^\s*(Compiling|Building|Downloading|Updating|Finished)\b/.test(line)) return TERM.dim;
-  if (line.startsWith("=== ")) return "#d29922";
-  return TERM.text;
-}
 
 /** Something the server said, plus whether it is bad news. */
 interface Note {
@@ -1310,10 +1295,27 @@ function RunCard({
           stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
         }}
       >
+        {/* Màu do chính lệnh phát ra, không phải app đoán.
+            Trước đây mỗi dòng bị tô theo regex — mọi dòng có chữ "error:" đều
+            đỏ, kể cả khi đó là tên một hàm trong đoạn code rustc đang trích. */}
         {run.log
           ? run.log.split("\n").map((line, i) => (
-              <div key={i} style={{ color: lineTone(line) }}>
-                {line || "\u00a0"}
+              <div key={i}>
+                {line ? (
+                  parseAnsi(line).map((sp, j) => (
+                    <span
+                      key={j}
+                      style={{
+                        color: sp.color || undefined,
+                        fontWeight: sp.bold ? 600 : undefined,
+                      }}
+                    >
+                      {sp.text}
+                    </span>
+                  ))
+                ) : (
+                  "\u00a0"
+                )}
               </div>
             ))
           : <span style={{ color: TERM.dim }}>(chưa có gì)</span>}
