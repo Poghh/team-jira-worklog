@@ -24,7 +24,6 @@ import {
   parseReleaseTag,
   releasesForBranch,
   phaseOf,
-  strandedTags,
   tailLines,
   versionString,
 } from '@/lib/modules/sdk-release/model'
@@ -155,22 +154,29 @@ eq(nextOrdinal(['2026.09.18-ctalkdev.1'], '2026.09.18', 'ctalkdev'), 2, 'then th
 eq(nextOrdinal(['2026.09.15-cxpdev.1', '2026.09.15-cxpdev.3'], '2026.09.15', 'cxpdev'), 4,
    'a gap in the numbers must not be handed out again')
 
-// And the mechanism behind that gap: a failed run still holds its number on
-// GitHub. Counting only real tags would propose .2, and `makeRelease` would
-// fail creating a tag that already exists — after a forty-minute build.
+// Tag `pre-` KHÔNG đốt số.
+//
+// Trước đây nó có, dựa trên một quan sát đúng mà giải thích sai: lịch sử có
+// `.1`, `pre-.2`, `.3`, nên tưởng lần chạy hỏng giữ mất số. Log thật của
+// `swift run release` cho thấy tag pre- là sổ sách của chính lệnh — cắm lúc
+// "Making release", rồi "Delete tag pre-…" ở bước cuối. Còn sót một cái nghĩa
+// là lần chạy ấy chết, chứ không nghĩa là tên đã được phát hành.
+//
+// Đếm nó vào thì app nhảy số vì rác mà chính lệnh sẽ dọn, và người dùng thấy
+// `.2` cho một cái tên chưa ai dùng. Chỉ tag thật mới tính.
 eq(nextOrdinal(
      ['2026.08.20-cxpdev.1', 'pre-2026.08.20-cxpdev.2', '2026.08.20-cxpdev.3'],
      '2026.08.20', 'cxpdev'), 4,
-   'a pre- tag burns its ordinal')
+   'tag thật cao nhất vẫn quyết định, tag pre- xen giữa không đổi gì')
 eq(nextOrdinal(['2026.09.17-ctalkdev.1', 'pre-2026.09.17-ctalkdev.2'], '2026.09.17', 'ctalkdev'),
-   3, 'even when the failed run is the highest number')
+   2, 'tag pre- cao nhất bị bỏ qua — .2 vẫn là số tiếp theo')
+eq(nextOrdinal(['pre-2026.09.17-ctalkdev.1'], '2026.09.17', 'ctalkdev'), 1,
+   'chỉ có tag pre- thì coi như chưa ai dùng')
 
 eq(nextOrdinal(['2026.08.20-cxpdev.3'], '2026.08.21', 'cxpdev'), 1, 'a new day starts over')
 eq(nextOrdinal(['v1.0.83', '2026.09.17-cxpdev.1'], '2026.09.17', 'ctalkdev'), 1,
    'other suffixes and legacy tags do not count toward this one')
 
-eq(strandedTags(['2026.09.17-ctalkdev.1', 'pre-2026.09.17-ctalkdev.2'], '2026.09.17', 'ctalkdev'),
-   ['pre-2026.09.17-ctalkdev.2'], 'stranded runs are found by date and suffix')
 
 /* ── the whole proposal ─────────────────────────────────────────────────── */
 const p = nextVersion({
@@ -198,8 +204,12 @@ const stranded = nextVersion({
   suffixes: S,
   projectKeys: KEYS,
 })
-eq(stranded.version, '2026.09.17-ctalkdev.3', 'skips the burnt number')
-eq(stranded.warnings.length, 1, 'and mentions the run that burnt it')
+eq(stranded.version, '2026.09.17-ctalkdev.2', 'không nhảy số vì tag pre-')
+// Vẫn nhảy qua số đó — một tag pre- còn sót nghĩa là lần chạy ấy chết giữa
+// chừng và để lại một trang release gắn vào tag đó, nên tên ấy chưa rảnh.
+// Nhưng KHÔNG cảnh báo: tag pre- là sổ sách của lệnh, lệnh tự dọn, và app nói
+// vào đó chỉ làm người dùng đi xoá thứ không phải việc của mình.
+eq(stranded.warnings.length, 0, 'nhưng không cảnh báo gì về tag pre-')
 
 /* ── reading the build log ──────────────────────────────────────────────── */
 // cargo writes progress with \r. Left alone, forty minutes of build fills the
@@ -316,9 +326,26 @@ eq(steps.map((s) => (s.command ?? s.url ?? '').split(' ').slice(0, 4).join(' '))
    ['git -C /Repo/swift fetch',
     'git -C /Repo/swift rebase',
     'https://github.com/atthetalk/viptalk-matrix-rust-components-swift/releases/tag/pre-2026.09.19-ctalkdev.2',
-    'git -C /Repo/swift tag',
     ''],
-   'fetch, rebase, delete the release, delete the local tag, then run again')
+   'fetch, rebase, xoá trang release, rồi chạy lại')
+
+// Tag pre- là sổ sách của `swift run release`: log thật cho thấy nó cắm lúc
+// "Making release" rồi tự "Delete tag pre-…" ở bước cuối. App từng bày cách xoá
+// tag — vừa thừa vừa sai, vì lệnh mới là chỗ quản nó. Chỉ trang release là việc
+// của người dùng.
+for (const [name, a] of [
+  ['còn bản dở dang', { preTagged: true }],
+  ['push bị từ chối', { preTagged: true, unpushed: 1 }],
+] as const) {
+  const cmds = after(a).steps.map((s) => s.command ?? '')
+  eq(cmds.some((c) => /refs\/tags\/pre-|tag -d pre-/.test(c)), false,
+     `${name}: KHÔNG bày cách xoá tag pre-`)
+  eq(after(a).steps.some((st) => (st.url ?? '').includes('/releases/tag/pre-')), true,
+     `${name}: có bước xoá trang release`)
+}
+// Bản đã release thật thì không được bày cách xoá gì cả.
+eq(after({ tagged: true }).steps.some((s) => (s.command ?? '').includes('push origin :refs')), false,
+   'bản đã lên thật thì không gợi ý xoá tag')
 eq(/có người push lên main trước bạn/.test(after({ preTagged: true, unpushed: 1, remoteMoved: true }).detail),
    true, 'and it says why, when it knows why')
 eq(/origin\/main đã đổi/.test(after({ remoteMoved: true }).detail), true,

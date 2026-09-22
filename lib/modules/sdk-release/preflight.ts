@@ -4,7 +4,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 
 import type { SdkConfig } from "./config";
-import { type VersionProposal, strandedTags } from "./model";
+import type { VersionProposal } from "./model";
 import { aheadOfRemote, containsRemote, readHead, topLevel } from "./repo";
 
 /**
@@ -250,31 +250,21 @@ export async function runChecks(input: {
       ),
     );
 
-  const taken = tags.some(
-    (t) => t.trim() === proposal.version || t.trim() === `pre-${proposal.version}`,
-  );
+  // Chỉ tag thật. Tag `pre-` là sổ sách của chính `swift run release`: nó cắm
+  // lúc "Making release" rồi tự `Delete tag pre-…` ở bước cuối. App cảnh báo về
+  // nó là xen vào việc của lệnh, và từng chặn nút Release vì rác lệnh sẽ tự dọn.
+  const taken = tags.some((t) => t.trim() === proposal.version);
   if (taken) {
     out.push(
       fail(
         "collision",
         "Tên version",
-        `Tag ${proposal.version} (hoặc pre-) đã tồn tại. makeRelease sẽ chết vì tạo một tag đã có — sau khi build xong.`,
+        `Tag ${proposal.version} đã tồn tại — đã có bản release mang tên này.`,
       ),
     );
   } else {
     out.push(ok("collision", "Tên version", `${proposal.version} chưa ai dùng`));
   }
-
-  const stranded = strandedTags(tags, proposal.version.slice(0, 10), proposal.suffix);
-  if (stranded.length)
-    out.push(
-      warn(
-        "stranded",
-        "Tag pre- còn sót",
-        `${stranded.length} tag pre- cùng ngày/hậu tố: ${stranded.slice(0, 3).join(", ")}. Mỗi cái là một lần chạy chết SAU khi build xong — có thể đã push rồi.`,
-        `git -C ${cfg.packagePath} push origin --delete ${stranded[0]}`,
-      ),
-    );
 
   /* ── G · one at a time ────────────────────────────────────────────────── */
   if (input.liveRunId !== null)

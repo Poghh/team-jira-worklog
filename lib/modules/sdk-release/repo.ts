@@ -286,7 +286,14 @@ export async function listBranches(dir: string): Promise<BranchChoice[]> {
     .map((s) => s.trim())
     .filter((s) => s && s !== "HEAD");
 
-  const names = [...new Set([...local, ...remote])].sort();
+  // Danh sách lấy từ **remote**, không gộp với local.
+  //
+  // Gộp vào thì mọi nhánh cũ còn sót trong clone đều hiện ra — kể cả nhánh đồng
+  // nghiệp đã xoá xong việc từ lâu — và không cái nào trong số đó release được:
+  // commit bump ghi lại `<repo>/<branch> <sha>`, nên nhánh phải có trên origin
+  // thì người khác mới lần ra được. Clone này có 7 nhánh local so với 57 trên
+  // remote, và phần chênh lệch đúng là rác.
+  const names = [...new Set(remote)].sort();
   return names.map((name) => ({ name, remoteOnly: !local.has(name) }));
 }
 

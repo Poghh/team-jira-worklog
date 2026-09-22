@@ -485,6 +485,7 @@ export async function saveSdkConfigAction(input: {
   sdkPath: string;
   packagePath: string;
   suffixes: Record<string, string>;
+  notifyEnd: boolean;
 }): Promise<ActionResult & { view?: SdkConfigView }> {
   if (!enabled()) return { ok: false, message: "Module đang tắt" };
   try {

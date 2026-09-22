@@ -561,6 +561,7 @@ export function SdkRelease({ view, runs }: { view: SdkConfigView; runs: RunRow[]
             <div className="flex min-h-0 min-w-0 flex-1 flex-col">
               <RunCard
                 run={run}
+                notifyEnd={view.notifyEnd}
                 onCancel={(id) =>
                   act(async () => {
                     const res = await cancelRunAction(id);
@@ -1138,9 +1139,12 @@ function CopyBtn({ text }: { text: string }) {
 function RunCard({
   run,
   onCancel,
+  notifyEnd,
 }: {
   run: RunView | null;
   onCancel: (id: number) => void;
+  /** Công tắc ở tab Cấu hình — xem `notifyEnd` trong config. */
+  notifyEnd: boolean;
 }) {
   const bottom = useRef<HTMLPreElement>(null);
   const stick = useRef(true);
@@ -1157,22 +1161,68 @@ function RunCard({
    * push both exit non-zero — so the refs are asked instead, and the answer
    * decides which recovery is the right one.
    */
+  /**
+   * Kêu một tiếng đúng lúc lần chạy dừng.
+   *
+   * Lưu state trước đó chứ không dựa vào lần render: bắn khi và chỉ khi nó vừa
+   * *chuyển* từ `running` sang kết thúc. Thiếu vế đó thì mở lại trang sau khi
+   * build xong từ hôm qua cũng kêu, và một thông báo về việc đã cũ còn tệ hơn
+   * không có.
+   */
+  const was = useRef<RunState | null>(null);
+  useEffect(() => {
+    const now = run?.state ?? null;
+    const before = was.current;
+    was.current = now;
+    if (!run || !now || now === "running") return;
+    if (before !== "running") return;
+    if (!notifyEnd) return;
+    if (typeof Notification === "undefined" || Notification.permission !== "granted")
+      return;
+
+    new Notification(`Release ${run.version} — ${RUN_LABEL[now]}`, {
+      body: run.message || (now === "ok" ? "Đã lên repo khách." : "Xem log trong app."),
+      // Một tag cho cả module: lần chạy sau thay chỗ lần trước chứ không xếp
+      // chồng, vì chỉ có một lần chạy tại một thời điểm.
+      tag: "sdk-release-run",
+    });
+  }, [run, notifyEnd]);
+
   const [plan, setPlan] = useState<RecoveryPlan | null>(null);
+  /**
+   * Bấm tăng khi người dùng hỏi lại remote từ nút trên thẻ khắc phục.
+   *
+   * Thiếu nó thì thẻ là ảnh chụp một lần: làm đủ bốn bước, tag đã sạch cả hai
+   * bên, mà thẻ vẫn nằm đó bảo tên đang bị giữ chỗ — không có cách nào biết
+   * mình đã xong ngoài việc tải lại trang, mà tải lại thì thẻ biến mất hẳn kể
+   * cả khi chưa dọn.
+   */
+  const [recheck, setRecheck] = useState(0);
+  const [checking, setChecking] = useState(false);
   const runId = run?.id ?? null;
   const ended = run && run.state !== "running";
   useEffect(() => {
-    setPlan(null);
-    if (runId === null || !ended || run?.state === "ok") return;
+    if (runId === null || !ended || run?.state === "ok") {
+      setPlan(null);
+      return;
+    }
     let alive = true;
+    setChecking(true);
     void diagnoseRunAction(runId)
       .then((res) => {
-        if (alive && res.plan) setPlan(res.plan);
+        if (!alive) return;
+        // Dọn xong thì `recoveryPlan` trả về `clean`, và thẻ tự biến mất —
+        // đó là câu trả lời "đã xong", không cần ai xác nhận bằng miệng.
+        setPlan(res.plan ?? null);
       })
-      .catch(() => {});
+      .catch(() => {})
+      .finally(() => {
+        if (alive) setChecking(false);
+      });
     return () => {
       alive = false;
     };
-  }, [runId, ended, run?.state]);
+  }, [runId, ended, run?.state, recheck]);
 
   // Empty, but still a terminal. A paragraph in a white card says "nothing to
   // see here"; a dark screen with a prompt on it says "this is where the build
@@ -1245,7 +1295,13 @@ function RunCard({
         </p>
       )}
 
-      {plan && plan.state !== "clean" && <RecoveryCard plan={plan} />}
+      {plan && plan.state !== "clean" && (
+        <RecoveryCard
+          plan={plan}
+          checking={checking}
+          onRecheck={() => setRecheck((n) => n + 1)}
+        />
+      )}
 
       <Terminal
         scrollRef={bottom}
@@ -1292,7 +1348,15 @@ function RunCard({
  * has no write token for somebody else's repository and does none of this
  * itself.
  */
-function RecoveryCard({ plan }: { plan: RecoveryPlan }) {
+function RecoveryCard({
+  plan,
+  checking,
+  onRecheck,
+}: {
+  plan: RecoveryPlan;
+  checking: boolean;
+  onRecheck: () => void;
+}) {
   const bad = plan.state === "push-rejected";
   return (
     <section
@@ -1319,6 +1383,17 @@ function RecoveryCard({ plan }: { plan: RecoveryPlan }) {
           {plan.state === "done" ? "ĐÃ XONG" : bad ? "CẦN DỌN" : "CÒN SÓT"}
         </span>
         <b className={"text-[13px] " + (bad ? "text-crit" : "text-ink")}>{plan.title}</b>
+        {/* Bốn bước làm tay xong thì phải có cách hỏi lại. Không có nút này,
+            thẻ đứng nguyên như cũ và người dùng không biết mình đã xong. */}
+        <button
+          type="button"
+          onClick={onRecheck}
+          disabled={checking}
+          title="Hỏi lại remote xem đã dọn xong chưa"
+          className="ml-auto shrink-0 rounded-md border border-line bg-surface px-2 py-[3px] text-[11px] text-ink-2 hover:bg-surface-2 disabled:opacity-50"
+        >
+          {checking ? "Đang hỏi…" : "↻ Kiểm lại"}
+        </button>
       </div>
 
       <p className="mt-1.5 text-[12px] leading-relaxed text-ink-2">{plan.detail}</p>
@@ -1525,6 +1600,48 @@ function ConfirmDialog({
   );
 }
 
+/**
+ * Trạng thái quyền thông báo, và nút xin lại khi bị chặn.
+ *
+ * Bật công tắc mà trình duyệt đang chặn thì sẽ không có tiếng nào kêu, và không
+ * gì trên màn hình nói ra điều đó — công tắc trông như hỏng.
+ */
+function NotifyPermission({ enabled }: { enabled: boolean }) {
+  const [state, setState] = useState<NotificationPermission | "unsupported">("default");
+
+  useEffect(() => {
+    setState(typeof Notification === "undefined" ? "unsupported" : Notification.permission);
+  }, []);
+
+  if (!enabled || state === "granted") return null;
+
+  if (state === "unsupported")
+    return (
+      <p className="mt-1.5 text-[11.5px] text-ink-3">
+        Trình duyệt này không có thông báo desktop.
+      </p>
+    );
+
+  return (
+    <p className="mt-1.5 text-[11.5px] text-warn">
+      {state === "denied"
+        ? "Trình duyệt đang chặn thông báo cho trang này — mở cài đặt site để cho phép."
+        : "Chưa cấp quyền thông báo."}
+      {state === "default" && (
+        <button
+          type="button"
+          onClick={() =>
+            void Notification.requestPermission().then((p) => setState(p))
+          }
+          className="ml-1.5 underline underline-offset-2"
+        >
+          Cấp quyền
+        </button>
+      )}
+    </p>
+  );
+}
+
 function ConfigCard({ view }: { view: SdkConfigView }) {
   const [sdkPath, setSdkPath] = useState(view.sdkPath);
   const [packagePath, setPackagePath] = useState(view.packagePath);
@@ -1533,6 +1650,7 @@ function ConfigCard({ view }: { view: SdkConfigView }) {
   const [rows, setRows] = useState(() =>
     Object.entries(view.suffixes).map(([branch, suffix]) => ({ branch, suffix })),
   );
+  const [notifyEnd, setNotifyEnd] = useState(view.notifyEnd);
   const [note, setNote] = useState("");
   const [busy, start] = useTransition();
 
@@ -1547,6 +1665,7 @@ function ConfigCard({ view }: { view: SdkConfigView }) {
         suffixes: Object.fromEntries(
           rows.filter((r) => r.branch.trim()).map((r) => [r.branch, r.suffix]),
         ),
+        notifyEnd,
       });
       setNote(res.message);
     });
@@ -1598,6 +1717,42 @@ function ConfigCard({ view }: { view: SdkConfigView }) {
           />
         </label>
         </div>
+      </section>
+
+      {/*
+       * Thông báo desktop khi lần chạy kết thúc.
+       *
+       * Build mất 20–60 phút và không ai ngồi nhìn màn hình suốt chừng ấy — đó
+       * đúng là lý do chạy trong app thay vì trong Terminal. Xin quyền ngay tại
+       * chỗ bật, chứ không lúc trang tải: trình duyệt chỉ cho xin khi người dùng
+       * vừa bấm một cái gì đó.
+       */}
+      <section className={CARD}>
+        <div className={CTITLE}>Thông báo</div>
+        <label className="mt-2 flex cursor-pointer items-start gap-2">
+          <input
+            type="checkbox"
+            checked={notifyEnd}
+            onChange={(e) => {
+              setNotifyEnd(e.target.checked);
+              if (
+                e.target.checked &&
+                typeof Notification !== "undefined" &&
+                Notification.permission === "default"
+              )
+                void Notification.requestPermission();
+            }}
+            className="mt-[3px] size-3.5 shrink-0 accent-[var(--accent)]"
+          />
+          <span className="text-[12.5px] text-ink-2">
+            Báo lên desktop khi lần chạy <b>kết thúc</b> — xong, lỗi, hay bị huỷ.
+            <span className="mt-0.5 block text-[11.5px] text-ink-3">
+              Log vẫn chạy trong app dù bạn ở tab khác; cái này chỉ là tiếng gọi
+              lúc nó dừng.
+            </span>
+          </span>
+        </label>
+        <NotifyPermission enabled={notifyEnd} />
       </section>
 
       {/*

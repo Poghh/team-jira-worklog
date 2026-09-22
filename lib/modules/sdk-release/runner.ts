@@ -113,15 +113,12 @@ export async function reapRuns(): Promise<void> {
     exitCode: number | null;
     signal: string | null;
     error?: string;
-    /** Set when the watcher stopped the build deliberately; the reason. */
-    stopped?: string;
   } | null = null;
   try {
     status = JSON.parse(await fs.readFile(`${live.logPath}.status`, "utf8")) as {
       exitCode: number | null;
       signal: string | null;
       error?: string;
-      stopped?: string;
     };
   } catch {
     status = null;
@@ -132,16 +129,6 @@ export async function reapRuns(): Promise<void> {
       phase: phaseOf(tail),
       message:
         "Tiến trình không còn chạy và không ghi lại kết quả — nhiều khả năng bị kill. Xem log để biết nó dừng ở bước nào.",
-    });
-    return;
-  }
-
-  // The watcher stopped it on purpose: not a failure of the build, and the
-  // reason is the only thing worth reading afterwards.
-  if (status.stopped) {
-    finishRun(live.id, "cancelled", {
-      phase: phaseOf(tail),
-      message: `App tự dừng: ${status.stopped}.`,
     });
     return;
   }
@@ -178,7 +165,7 @@ export async function startRun(input: {
   suffix: string;
   ordinal: number;
   localOnly: boolean;
-  /** `origin/main` of the swift repo right now — the watcher's baseline. */
+  /** `origin/main` của repo swift lúc bắt đầu — lưu để đối chiếu về sau. */
   mainSha: string;
 }): Promise<StartResult> {
   const cfg = getSdkConfig();
@@ -217,23 +204,12 @@ export async function startRun(input: {
           ...(input.localOnly ? ["--local-only"] : []),
         ];
 
-    // The supervisor watches the remote for the whole run, so it needs to know
-    // which repository, which version, and what `main` looked like at the
-    // start. Passed as one JSON argument rather than three, so adding a third
-    // thing to watch later does not mean re-numbering argv.
-    const watch = JSON.stringify({
-      dir: cfg.packagePath,
-      version: input.version,
-      mainSha: input.mainSha,
-    });
-
     const child = spawn(
       process.execPath,
       [
         path.join(process.cwd(), "lib/modules/sdk-release/supervise.mjs"),
         logPath,
         `${logPath}.status`,
-        input.mainSha ? watch : "-",
         ...argv,
       ],
       {
