@@ -10,13 +10,15 @@
  */
 import {
   DEFAULT_BRANCH_SUFFIXES,
-  collapseCr,
+  terminalText,
   deriveSuffix,
   nextOrdinal,
   nextVersion,
   parseBumpMessage,
   parseNameStatus,
   parseNumstat,
+  parseAnsi,
+  stripAnsi,
   rankBranch,
   searchBranches,
   parseUnifiedDiff,
@@ -214,9 +216,9 @@ eq(stranded.warnings.length, 0, 'nhưng không cảnh báo gì về tag pre-')
 /* ── reading the build log ──────────────────────────────────────────────── */
 // cargo writes progress with \r. Left alone, forty minutes of build fills the
 // console with thousands of lines that only ever meant to be one.
-eq(collapseCr('a\rb\rCompiling matrix-sdk\nplain'), 'Compiling matrix-sdk\nplain',
+eq(terminalText('a\rb\rCompiling matrix-sdk\nplain'), 'Compiling matrix-sdk\nplain',
    'only what a terminal would still be showing')
-eq(collapseCr('no carriage returns'), 'no carriage returns', 'untouched otherwise')
+eq(terminalText('no carriage returns'), 'no carriage returns', 'untouched otherwise')
 eq(tailLines('1\n2\n3\n4', 2), '3\n4', 'the last lines only')
 eq(tailLines('1\n2', 5), '1\n2', 'short input is returned whole')
 
@@ -449,6 +451,33 @@ eq(searchBranches(B, 'khongcogi'), [], 'không khớp thì rỗng')
 // hai lần gõ cùng một chữ.
 eq(searchBranches(B, 'develop').slice(0, 3).map((b) => b.name),
    ['develop', 'cxp/develop', 'ctalk/develop'], 'cùng bậc: ngắn trước, rồi theo bảng chữ cái')
+
+/* ── log phải hiện đúng như terminal ────────────────────────────────────── */
+// PTY đổi mọi \n thành \r\n. Không tách CRLF ra trước thì `\r` cuối dòng bị đọc
+// là "viết đè", và mọi dòng thành rỗng — log trắng bóc.
+eq(terminalText('a\r\nb\r\n'), 'a\nb\n', 'CRLF là xuống dòng, không phải viết đè')
+eq(terminalText('  Building [1]\r  Building [2]\r  Building [3]\r\n'),
+   '  Building [3]\n', 'thanh tiến trình: chỉ còn trạng thái cuối, như terminal')
+// `script` vọng lại ^D ở đầu vì stdin đóng ngay; `\r` ngay sau đó xoá nó, đúng
+// như terminal thật.
+eq(terminalText('^D\b\b\r  Building [3] 3/3\r\n'), '  Building [3] 3/3\n',
+   'rác đầu dòng của script bị chính \\r xoá đi')
+
+eq(stripAnsi('\x1b[0;32m   Finished\x1b[0m release'), '   Finished release', 'gỡ sạch mã màu')
+eq(stripAnsi('\x1b]0;tiêu đề\x07xong'), 'xong', 'gỡ cả chuỗi OSC đặt tiêu đề cửa sổ')
+
+// Tô theo mã tool phát ra, không đoán bằng regex.
+eq(parseAnsi('\x1b[0;32m   Finished\x1b[0m release').map((s) => [s.text, s.color]),
+   [['   Finished', '#3fb950'], [' release', '']], 'màu bật rồi tắt')
+eq(parseAnsi('\x1b[1;31merror:\x1b[0m hỏng')[0], { text: 'error:', color: '#ff7b72', bold: true },
+   'đậm và màu cùng lúc')
+eq(parseAnsi('không màu'), [{ text: 'không màu', color: '', bold: false }], 'dòng trơn: một đoạn')
+eq(parseAnsi('\x1b[38;5;208mcam\x1b[m')[0]?.color, '#ff8700', '256-màu')
+eq(parseAnsi('\x1b[38;2;10;20;30mrgb\x1b[m')[0]?.color, 'rgb(10 20 30)', 'truecolor')
+// Mã không hiểu được phải bị nuốt, không in ra — in ra là người đọc thấy rác.
+eq(parseAnsi('\x1b[2Kxoá dòng').map((s) => s.text).join(''), 'xoá dòng',
+   'mã không phải SGR bị nuốt chứ không vẽ')
+eq(parseAnsi(''), [], 'dòng rỗng')
 
 console.log(bad ? `\n${bad} of ${n} FAILED` : `\nall ${n} ok`)
 if (bad) process.exit(1)

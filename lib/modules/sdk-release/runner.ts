@@ -1,12 +1,16 @@
 import "server-only";
 
 import { execFile, spawn } from "node:child_process";
+import { existsSync } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
 
 import { getSdkConfig } from "./config";
-import { collapseCr, phaseOf, tailLines } from "./model";
+import { terminalText, phaseOf, stripAnsi, tailLines } from "./model";
+
+/** `script` của BSD — cấp TTY cho lệnh để nó phát màu và thanh tiến trình. */
+const SCRIPT_BIN = "/usr/bin/script";
 import { type RunRow, claimRun, finishRun, getRun, liveRun, updateRun } from "./store";
 
 const run = promisify(execFile);
@@ -105,7 +109,7 @@ export async function reapRuns(): Promise<void> {
 
   const tail = await readTail(live.logPath);
   if (pidAlive(live.pid)) {
-    updateRun(live.id, { phase: phaseOf(tail) });
+    updateRun(live.id, { phase: phaseOf(stripAnsi(tail)) });
     return;
   }
 
@@ -126,7 +130,7 @@ export async function reapRuns(): Promise<void> {
 
   if (!status) {
     finishRun(live.id, "lost", {
-      phase: phaseOf(tail),
+      phase: phaseOf(stripAnsi(tail)),
       message:
         "Tiến trình không còn chạy và không ghi lại kết quả — nhiều khả năng bị kill. Xem log để biết nó dừng ở bước nào.",
     });
@@ -136,7 +140,7 @@ export async function reapRuns(): Promise<void> {
   const code = status.exitCode;
   finishRun(live.id, code === 0 ? "ok" : "failed", {
     exitCode: code,
-    phase: phaseOf(tail),
+    phase: phaseOf(stripAnsi(tail)),
     message: status.error
       ? `Không khởi động được lệnh: ${status.error}`
       : code === 0
@@ -204,13 +208,28 @@ export async function startRun(input: {
           ...(input.localOnly ? ["--local-only"] : []),
         ];
 
+    // Chạy dưới TTY thật, qua `script`.
+    //
+    // Không có nó thì stdout của lệnh là một file, và cargo/rustc tự tắt hết:
+    // không màu, không thanh tiến trình vẽ đè. Log lưu xuống là một thứ khác
+    // với thứ người ta thấy khi gõ lệnh trong Terminal — mà cả điểm của cái
+    // console này là chiếu lại đúng nó.
+    //
+    // `script -q /dev/null <lệnh>` là dạng BSD, đúng cho macOS — và module này
+    // chỉ chạy được trên macOS vì cần Xcode. Đo trước khi dùng: mã thoát đi
+    // qua nguyên vẹn (thử `exit 3` ra 3), và `test -t 1` bên trong báo có tty.
+    // Thiếu `script` thì chạy thẳng, mất màu chứ không hỏng.
+    const argvTty = existsSync(SCRIPT_BIN)
+      ? [SCRIPT_BIN, "-q", "/dev/null", ...argv]
+      : argv;
+
     const child = spawn(
       process.execPath,
       [
         path.join(process.cwd(), "lib/modules/sdk-release/supervise.mjs"),
         logPath,
         `${logPath}.status`,
-        ...argv,
+        ...argvTty,
       ],
       {
         // `Tools/Release/Sources`, exactly where the guide says to stand.
@@ -224,13 +243,27 @@ export async function startRun(input: {
         // orphaning a forty-minute compile.
         detached: true,
         stdio: "ignore",
-        // The environment as inherited, untouched. There was a settings box
-        // that prepended directories to `PATH`, justified by "a Next server
-        // does not have ~/.cargo/bin". Measured against the running server:
-        // it did — all three directories the box defaulted to were already
-        // there, and the only thing it ever changed was the *order*, which is
-        // to say which toolchain won. Deciding that is not this module's job.
-        // A build that cannot find its tools says so in the log.
+        // Môi trường thừa hưởng nguyên, chỉ thêm đúng mấy biến bật màu.
+        //
+        // Không đụng `PATH`: từng có ô cấu hình chèn thư mục vào đầu `PATH`,
+        // lý do là "Next server không có ~/.cargo/bin". Đo trên server đang
+        // chạy thì nó có — cả ba thư mục mặc định của ô đó đều đã nằm sẵn, và
+        // thứ duy nhất nó đổi là **thứ tự**, tức là toolchain nào thắng. Quyết
+        // định đó không phải việc của module này.
+        //
+        // Màu thì khác. stdout của lệnh là một file, không phải TTY, nên cargo
+        // và rustc tự tắt màu — log lưu xuống là chữ trắng trơn, và app phải
+        // đoán màu bằng regex để bù. Đoán thì sai: nó tô mọi dòng có chữ
+        // "error:" kể cả khi đó là tên hàm. Bật màu thật rồi chiếu nguyên xi
+        // thì log trong app đúng bằng log trong Terminal.
+        env: {
+          ...process.env,
+          CARGO_TERM_COLOR: "always",
+          CLICOLOR_FORCE: "1",
+          FORCE_COLOR: "1",
+          // Có TERM thì những tool hỏi terminfo mới chịu phát mã màu.
+          TERM: process.env.TERM || "xterm-256color",
+        },
       },
     );
     child.unref();
@@ -256,7 +289,7 @@ export async function viewRun(id: number, lines = 400): Promise<RunView | null> 
   const row = getRun(id);
   if (!row) return null;
   const raw = await readTail(row.logPath, 256 * 1024);
-  return { ...row, log: tailLines(collapseCr(raw), lines) };
+  return { ...row, log: tailLines(terminalText(raw), lines) };
 }
 
 /**
