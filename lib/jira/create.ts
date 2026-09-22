@@ -1,55 +1,10 @@
 import 'server-only'
 
 import { SETTING_KEYS, getSetting, getTeamScope, requireProjectKey } from '../settings'
+import { textToAdf } from './adf'
 import { type JiraIssue, JiraError, jiraFetch, searchJql } from './client'
 import { updateStoryPoints } from './issues'
 import { getProjectMeta } from './meta'
-
-/** Markdown-ish bullet text → ADF. Only bullets and paragraphs, nothing more. */
-function toAdf(description: string, dod: string) {
-  const content: unknown[] = []
-
-  const pushBlock = (text: string) => {
-    const lines = text.split('\n').map((l) => l.trim()).filter(Boolean)
-    let bullets: string[] = []
-
-    const flush = () => {
-      if (!bullets.length) return
-      content.push({
-        type: 'bulletList',
-        content: bullets.map((b) => ({
-          type: 'listItem',
-          content: [{ type: 'paragraph', content: [{ type: 'text', text: b }] }],
-        })),
-      })
-      bullets = []
-    }
-
-    for (const line of lines) {
-      if (/^[-*•]\s+/.test(line)) bullets.push(line.replace(/^[-*•]\s+/, ''))
-      else {
-        flush()
-        content.push({ type: 'paragraph', content: [{ type: 'text', text: line }] })
-      }
-    }
-    flush()
-  }
-
-  if (description.trim()) pushBlock(description)
-
-  if (dod.trim()) {
-    content.push({
-      type: 'heading',
-      attrs: { level: 3 },
-      content: [{ type: 'text', text: 'Definition of Done' }],
-    })
-    pushBlock(dod)
-  }
-
-  if (!content.length) content.push({ type: 'paragraph', content: [] })
-
-  return { type: 'doc', version: 1, content }
-}
 
 export interface CreateIssueInput {
   issueTypeId: string
@@ -200,7 +155,7 @@ export async function createIssue(input: CreateIssueInput): Promise<CreatedIssue
     project: { key: projectKey },
     issuetype: { id: input.issueTypeId },
     summary: withTeamPrefix(input.summary, team.prefix),
-    description: toAdf(input.description, input.dod),
+    description: textToAdf(input.description, input.dod),
   }
 
   if (input.parentKey) fields.parent = { key: input.parentKey }
