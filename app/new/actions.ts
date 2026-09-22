@@ -112,25 +112,60 @@ export async function createIssueAction(input: {
       dueDate: input.dueDate,
     })
 
-    // The draft has become a real issue, so drop the local copy — Jira is the
-    // source of truth from here.
-    if (input.draftId) deleteDraft(input.draftId)
-    if (input.templateId) markTemplateUsed(input.templateId)
-
-    revalidatePath('/')
-    revalidatePath('/new')
-    return {
-      ok: true,
-      message: `Đã tạo ${created.key}`,
-      key: created.key,
-      url: created.url,
-      id: created.id,
-      warning: created.storyPointsPending
-        ? `${created.key} tạo xong nhưng chưa ghi được story point — bấm ô point trên board để đặt lại`
-        : undefined,
-    }
+    return afterCreate(created, input.draftId, input.templateId)
   } catch (error) {
     return { ok: false, message: error instanceof Error ? error.message : 'Không tạo được issue' }
+  }
+}
+
+/**
+ * Dọn dẹp sau khi issue đã tạo xong, và không bao giờ biến nó thành thất bại.
+ *
+ * Ba việc này từng nằm chung `try` với `createIssue`, nên một lỗi ở đây — xoá
+ * draft, đếm lượt dùng mẫu, revalidate — trả về `ok: false` và người dùng đọc
+ * thành "không tạo được", trong khi Jira đã có issue thật. Lần sau họ tạo lại,
+ * và board có hai issue trùng.
+ *
+ * Issue đã tồn tại là sự thật không rút lại được, nên nó quyết định câu trả
+ * lời. Việc dọn dẹp hỏng thì nói riêng ở `warning`.
+ */
+function afterCreate(
+  created: { key: string; url: string; id: string; storyPointsPending?: boolean },
+  draftId?: number,
+  templateId?: number,
+): CreateResult {
+  const failed: string[] = []
+  const tryStep = (what: string, run: () => void) => {
+    try {
+      run()
+    } catch {
+      failed.push(what)
+    }
+  }
+
+  // The draft has become a real issue, so drop the local copy — Jira is the
+  // source of truth from here.
+  if (draftId) tryStep('xoá draft', () => deleteDraft(draftId))
+  if (templateId) tryStep('đếm lượt dùng mẫu', () => markTemplateUsed(templateId))
+  tryStep('làm mới board', () => {
+    revalidatePath('/')
+    revalidatePath('/new')
+  })
+
+  const warnings = [
+    created.storyPointsPending
+      ? `${created.key} tạo xong nhưng chưa ghi được story point — bấm ô point trên board để đặt lại`
+      : '',
+    failed.length ? `Issue đã tạo, nhưng không ${failed.join(' và ')} được` : '',
+  ].filter(Boolean)
+
+  return {
+    ok: true,
+    message: `Đã tạo ${created.key}`,
+    key: created.key,
+    url: created.url,
+    id: created.id,
+    warning: warnings.length ? warnings.join(' · ') : undefined,
   }
 }
 
