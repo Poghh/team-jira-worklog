@@ -42,6 +42,14 @@ const K = {
    * process whose parent died — would only ever be tested by accident.
    */
   fakeCommand: `${PREFIX}fake_command`,
+  /**
+   * Báo lên desktop khi một lần chạy kết thúc — xong, lỗi, hay bị huỷ.
+   *
+   * Mặc định bật. Build mất 20–60 phút và không ai ngồi nhìn màn hình suốt
+   * chừng ấy, nên một thông báo đúng lúc nó kết thúc là cả điểm của việc chạy
+   * trong app thay vì trong Terminal.
+   */
+  notifyEnd: `${PREFIX}notify_end`,
 } as const;
 
 function getRaw(key: string): string | undefined {
@@ -61,6 +69,7 @@ export interface SdkConfig {
   packagePath: string;
   suffixes: Record<string, string>;
   fakeCommand: string;
+  notifyEnd: boolean;
 }
 
 /** Defensive: these rows are hand-editable, so a bad one must not throw. */
@@ -93,6 +102,9 @@ export function getSdkConfig(): SdkConfig {
     // Empty in normal use; see the key's note. There is no dry-run mode any
     // more, so this is the only way to exercise the runner without a release.
     fakeCommand: (getRaw(K.fakeCommand) ?? "").trim(),
+    // Vắng nghĩa là chưa ai chạm vào, và với một tín hiệu hữu ích cỡ này thì
+    // "chưa chạm" nên là bật, không phải tắt.
+    notifyEnd: (getRaw(K.notifyEnd) ?? "true") === "true",
   };
 }
 
@@ -100,9 +112,13 @@ export function setSdkConfig(input: {
   sdkPath: string;
   packagePath: string;
   suffixes: Record<string, string>;
+  notifyEnd: boolean;
 }) {
   setRaw(K.sdkPath, input.sdkPath.trim());
   setRaw(K.packagePath, input.packagePath.trim());
+  // Ghi cả hai chiều, nên một lần tắt là câu trả lời của người dùng chứ không
+  // rơi về mặc định ở lần đọc sau.
+  setRaw(K.notifyEnd, input.notifyEnd ? "true" : "false");
   const clean: Record<string, string> = {};
   for (const [branch, suffix] of Object.entries(input.suffixes)) {
     const b = branch.trim();

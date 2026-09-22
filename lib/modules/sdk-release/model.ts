@@ -320,22 +320,16 @@ export function nextOrdinal(
   for (const tag of tags) {
     const t = parseReleaseTag(tag);
     if (!t || t.date !== date || t.suffix !== suffix) continue;
+    // Bỏ qua tag `pre-`. Log thật của `swift run release` cho thấy nó cắm tag
+    // đó lúc "Making release" rồi tự "Delete tag pre-…" ở bước cuối — sổ sách
+    // nội bộ, không phải một bản đã phát hành. Đếm nó vào là app nhảy số vì rác
+    // mà chính lệnh sẽ dọn, và người dùng thấy `.2` cho một cái tên chưa ai dùng.
+    if (t.pre) continue;
     if (t.ordinal > highest) highest = t.ordinal;
   }
   return highest + 1;
 }
 
-/** `pre-*` tags for one date and suffix — runs that died partway. */
-export function strandedTags(
-  tags: string[],
-  date: string,
-  suffix: string,
-): string[] {
-  return tags.filter((tag) => {
-    const t = parseReleaseTag(tag);
-    return Boolean(t?.pre && t.date === date && t.suffix === suffix);
-  });
-}
 
 export interface VersionProposal {
   version: string;
@@ -388,12 +382,6 @@ export function nextVersion(input: {
     warnings.push(
       `tag ${version} đã tồn tại — master chưa từng có 2 bản trong ngày, quy tắc đặt tên không có chỗ cho bản thứ hai`,
     );
-  const stranded = strandedTags(input.tags, input.date, d.suffix);
-  if (stranded.length)
-    warnings.push(
-      `còn ${stranded.length} tag pre- cùng ngày/hậu tố (${stranded.slice(0, 3).join(", ")}) — mỗi cái là một lần chạy chết sau khi build xong`,
-    );
-
   return {
     version,
     suffix: d.suffix,
@@ -562,12 +550,9 @@ export function recoveryPlan(a: Aftermath, sdkPath = "", packagePath = ""): Reco
           command: `git -C ${pkg} rebase origin/main`,
         },
         {
-          text: "Xoá release và tag pre- trên GitHub — phải xoá trước khi chạy lại, vì makeRelease sẽ chết nếu tag đã tồn tại",
+          // Chỉ trang release. Tag pre- là sổ sách của lệnh, nó tự dọn.
+          text: "Xoá trang release trên GitHub",
           url: releaseUrl,
-        },
-        {
-          text: `Xoá luôn tag pre- ở máy nếu có`,
-          command: `git -C ${pkg} tag -d pre-${a.version}`,
         },
         {
           text: "Chạy lại — vẫn tên version cũ, vì chưa có bản release thật nào mang tên đó",
@@ -578,13 +563,18 @@ export function recoveryPlan(a: Aftermath, sdkPath = "", packagePath = ""): Reco
   if (a.preTagged)
     return {
       state: "stranded",
-      title: `Còn sót tag pre-${a.version}`,
+      title: `Còn bản release dở dang ${a.version}`,
       detail:
-        "Một lần chạy đã tạo release rồi chết, nhưng không có commit nào kẹt ở máy. " +
-        "Tag này sẽ chặn mọi lần chạy lại cùng tên.",
+        "Một lần chạy đã tạo release rồi chết trước khi upload framework, và không có " +
+        "commit nào kẹt ở máy. Trang release đó gắn vào tag pre-, Assets trống hoặc chỉ " +
+        "có source code tự sinh.\n" +
+        // Tag `pre-` là sổ sách của chính lệnh: nó cắm lúc "Making release" và
+        // tự `Delete tag pre-…` ở bước cuối. App từng bày cách xoá tag ở đây —
+        // vừa thừa vừa sai, vì lệnh mới là chỗ quản nó.
+        "Không cần đụng tới tag: lệnh release tự dọn tag pre- của nó.",
       steps: [
-        { text: "Xoá release và tag pre- trên GitHub", url: releaseUrl },
-        { text: "Rồi chạy lại", command: "" },
+        { text: `Xoá trang release ${a.version} trên GitHub`, url: releaseUrl },
+        { text: "Rồi chạy lại" },
       ],
     };
 
