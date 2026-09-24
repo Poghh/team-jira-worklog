@@ -150,6 +150,54 @@ export function stageRule(stage: StageConfig): string {
   return main;
 }
 
+/** Nhánh đã lấy bản mới của môi trường về chưa, đọc thành một câu. */
+export interface BaseFreshness {
+  /** `null` khi chưa đo được — khác hẳn với "đã up to date". */
+  upToDate: boolean | null;
+  /** Gốc chung già bao nhiêu ngày; `null` khi chưa đo được. */
+  days: number | null;
+  text: string;
+}
+
+/**
+ * Nhánh đang dựng trên bản môi trường của bao giờ.
+ *
+ * Trả lời đúng câu hỏi "đã up to date chưa" bằng `behind === 0` — một sự thật
+ * nhị phân, không cần ngưỡng nào cả.
+ *
+ * So với `master`, nên số commit tụt lại mới đọc được: đo trên repo này ra 0,
+ * 11, 62, 174. Cùng những nhánh ấy so với môi trường `ctalk/develop` ra 127,
+ * 137, 301, 501 — môi trường nhận hàng trăm commit một tuần nên con số ở đó vô
+ * nghĩa, và còn nói ngược: nhánh mới tách một ngày tụt 127, nhánh ngâm 145
+ * ngày chỉ tụt 301.
+ *
+ * Tuổi của gốc vẫn đứng trước, vì đó là thứ nói ngay "nhánh này cũ tới mức
+ * nào" mà không cần biết repo chạy nhanh hay chậm.
+ *
+ * Không tô màu theo ngưỡng "bao nhiêu ngày là cũ": ba nhánh không đủ để rút ra
+ * một con số, và bịa ra một con số rồi trình bày như đã đo là chuyện khác hẳn.
+ */
+export function baseFreshness(
+  side: { baseAt?: number | null; behind?: number | null; baseBranch?: string },
+  now = Math.floor(Date.now() / 1000),
+): BaseFreshness {
+  const env = side.baseBranch ?? "";
+  if (!env || side.behind === null || side.behind === undefined || !side.baseAt)
+    return { upToDate: null, days: null, text: "" };
+
+  if (side.behind === 0)
+    return { upToDate: true, days: 0, text: `đã có bản mới nhất của ${env}` };
+
+  const days = Math.max(0, Math.floor((now - side.baseAt) / 86400));
+  const age =
+    days === 0 ? "hôm nay" : days === 1 ? "hôm qua" : `${days} ngày trước`;
+  return {
+    upToDate: false,
+    days,
+    text: `dựng trên ${env} của ${age} · tụt ${side.behind} commit`,
+  };
+}
+
 /**
  * The steps a containment check can answer — one per environment.
  *
@@ -344,6 +392,22 @@ export interface CardSide {
   localOnly: boolean;
   localPath: string;
   branchUpdatedAt: number | null;
+  /**
+   * Nhánh này đang dựng trên bản môi trường của lúc nào — epoch giây.
+   *
+   * Là ngày của **merge-base** giữa nhánh và môi trường đầu tiên, tức điểm nó
+   * tách ra. `null` khi chưa đo được.
+   *
+   * Tuổi chứ không phải số commit, và đó là kết luận từ đo đạc chứ không phải
+   * sở thích: trên repo này `VT-451` mới tách 1 ngày đã tụt 127 commit, còn
+   * `scanner_suggestion` ngâm 145 ngày chỉ tụt 301. Hiện số commit thì nhánh
+   * tươi trông gần bằng nhánh cổ — chỉ số đó nói ngược.
+   */
+  baseAt?: number | null;
+  /** Số commit của nhánh gốc mà nhánh này chưa có. 0 = đã up to date. */
+  behind?: number | null;
+  /** Nhánh gốc đã so — `master`, hoặc nhánh mặc định của repo. */
+  baseBranch?: string;
   /**
    * The user named this branch for this repository; a scan must not re-point
    * it.

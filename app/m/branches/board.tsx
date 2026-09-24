@@ -33,6 +33,7 @@ import {
   type CardSide,
   type LadderRow,
   type PrPin,
+  baseFreshness,
   branchesToDelete,
   cardLadder,
   stageRule,
@@ -312,6 +313,61 @@ const SPINE_X = "left-[64px] w-[2px] rounded-full";
  * label is filled solid, the same chip the header uses, so the block and the
  * header can be paired by colour rather than by reading.
  */
+/**
+ * Nhánh đang dựng trên bản môi trường của bao giờ.
+ *
+ * Hiện **tuổi**, không hiện số commit tụt lại. Đo trên repo này: một nhánh mới
+ * tách một ngày đã tụt 127 commit, một nhánh ngâm 145 ngày chỉ tụt 301 — con
+ * số ấy nói ngược, và đặt nó lên card thì nhánh tươi trông gần bằng nhánh cổ.
+ *
+ * Câm khi chưa đo được. Card quét từ bản cũ của app không có dữ liệu này, và
+ * im lặng đúng hơn là đoán "đã up to date".
+ */
+function BaseAge({ side }: { side: CardSide }) {
+  const f = baseFreshness(side);
+  if (f.upToDate === null) return null;
+  const base = side.baseBranch;
+
+  return (
+    <span
+      title={
+        f.upToDate
+          ? `Nhánh đã chứa mọi commit của ${base}.`
+          : `Nhánh tách ra từ ${base} và chưa lấy lại bản mới. ` +
+            `Merge muộn dễ đụng conflict, và bản build từ đây thiếu những sửa lỗi sau đó.`
+      }
+      className="flex min-w-0 items-start gap-1.5"
+    >
+      {/* Cùng hình học với `SideHead`: ô nhãn 62px rồi gap-1.5, nên chữ bắt
+          đầu ở 68px — vừa qua gân dọc ở 64px. Đặt `padding` bằng tay thì chữ
+          cắt ngang gân, và sẽ lệch lại mỗi lần ai đổi bề rộng ô nhãn. */}
+      <span aria-hidden className="w-[62px] shrink-0" />
+      {f.upToDate ? (
+        // Tin tốt thì nói khẽ: chữ thường, màu mờ. Card này đã dày đặc, và một
+        // thứ "không có việc gì phải làm" mà cũng hét lên thì chỉ làm loãng
+        // những badge đang thật sự đòi hành động.
+        <span className="min-w-0 text-[10.5px] leading-snug text-ink-3">
+          ✓ {f.text}
+        </span>
+      ) : (
+        // Chưa rebase là một **việc phải làm**, nên nó được một dải riêng chứ
+        // không phải một badge nhỏ lẫn giữa những badge khác: nền vàng chạy
+        // hết chiều ngang, thanh dọc đậm bên trái, chữ đậm. Bản trước là pill
+        // 9.5px và trên một card dày đặc thì nó chìm nghỉm.
+        //
+        // Vẫn dùng cặp màu `warn` sẵn có của app thay vì bịa màu mới — cặp đó
+        // đã được chọn để đọc được trên cả nền sáng lẫn tối.
+        <span className="flex min-w-0 items-start gap-1.5 overflow-hidden rounded-[4px] border-l-[3px] border-warn bg-warn-soft py-[3px] pl-1.5 pr-2">
+          <span className="text-[11px] font-bold leading-[1.35] text-warn">⟳</span>
+          <span className="min-w-0 text-[11px] leading-[1.35] text-warn">
+            <b className="font-bold">Chưa rebase</b> — {f.text}
+          </span>
+        </span>
+      )}
+    </span>
+  );
+}
+
 function SideHead({
   label,
   solid,
@@ -1414,6 +1470,7 @@ function NoteCard({
                   title={`${side.repo} · ${side.branch}`}
                   text={`⑂ ${side.branch}`}
                 />
+                <BaseAge side={side} />
                 <Ladder
                   rows={cardLadder(side.prs, [], stages)}
                   repo={side.repo}

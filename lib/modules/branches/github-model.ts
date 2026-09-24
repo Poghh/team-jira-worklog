@@ -689,6 +689,11 @@ export function parseCardSides(raw: string, row: FlatSide): CardSide[] {
                 localPath: String(o.localPath ?? ""),
                 branchUpdatedAt:
                   typeof o.branchUpdatedAt === "number" ? o.branchUpdatedAt : null,
+                // Thiếu thì `null`, không phải 0: chưa đo được khác hẳn với đo
+                // rồi và ra "đã up to date".
+                baseAt: typeof o.baseAt === "number" ? o.baseAt : null,
+                behind: typeof o.behind === "number" ? o.behind : null,
+                baseBranch: typeof o.baseBranch === "string" ? o.baseBranch : "",
               },
             ]
           : [];
@@ -937,8 +942,30 @@ export function cardStage(
       const p = prPhase(pickPr(side.prs.map(asPullRequest)));
       return end.phase === "open" ? p === "open" : p === "none";
     });
+  /**
+   * Việc còn dở, đo được trên chính card.
+   *
+   * Một nhánh vẫn còn trên remote **và** chưa lọt vào môi trường nào thì đó là
+   * code chưa đi đâu cả — nói gì thì nói, nó chưa xong.
+   */
+  const stillInFlight = sides.some((side) => {
+    if (side.branchGone || !side.branch.trim()) return false;
+    const env = parseEnvState(side.envState);
+    return !Object.values(env).some((e) => e?.ahead === 0);
+  });
+
   if (end && endPhaseOk) {
-    if (finished === true) return end.name;
+    // Jira đóng ticket vẫn là nhân chứng mạnh nhất, nhưng không còn tuyệt đối.
+    //
+    // Team này sửa tiếp trên ticket đã đóng — ticket gốc đóng rồi, bug quay
+    // lại, nhánh mới cắt ra trên chính key cũ. Đo trên bảng: 2 trong 3 card
+    // đang nằm ở cột cuối trong khi nhánh vừa tạo mười ba phút trước và chưa
+    // merge vào đâu. Cột cuối là đầu xa nhất của bảng, mà bảng này sinh ra để
+    // thấy việc đang chạy — giấu việc đang chạy vào đó là hỏng đúng mục đích.
+    //
+    // Won't-fix kèm một nhánh bỏ hoang thì sẽ nằm lại ở cột trước thay vì về
+    // done; sai kiểu nhìn thấy được, và kéo tay một cái là xong.
+    if (finished === true && !stillInFlight) return end.name;
     const reachedEnv = Boolean(stages.find((s) => s.name === best)?.branch);
     // Only when nobody asked. A caller holding a live "In Progress" is not
     // short of information, and letting the weaker witness overrule it would
