@@ -18,6 +18,7 @@ import {
   jiraRefFromUrl,
   noteProgress,
   branchesCleanedUp,
+  baseFreshness,
   branchesToDelete,
   ticketsDone,
   cardLadder,
@@ -452,10 +453,23 @@ eq(ticketsDone(['VERIFIED ON STAGING']), false,
 eq(ticketsDone([null]), false, 'a ticket Jira did not answer for is not done')
 eq(ticketsDone([]), false, 'a card naming no ticket is not done either')
 
-// Jira closing the ticket wins from anywhere — a won't-fix never reaches an
-// environment and is still over.
-eq(cardStage([sideAt('o/ios', [prAt(1, 'OPEN', 'ctalk/develop')])], [], S, true), 'done',
-   'a closed ticket finishes the card from any column')
+// Jira đóng ticket vẫn là nhân chứng mạnh nhất — nhưng không tuyệt đối.
+//
+// Nhánh đã bị xoá thì không còn gì đang chạy: won't-fix về done như cũ.
+eq(cardStage([{ ...sideAt('o/ios', []), branchGone: true }], [], S, true), 'done',
+   'ticket đóng + nhánh đã xoá -> done')
+// Nhánh đã vào một môi trường cũng vậy: code đi đâu đó rồi.
+eq(cardStage([sideAt('o/ios', [], '{"ctalk/develop":{"ahead":0}}')], [], S, true), 'done',
+   'ticket đóng + code đã vào môi trường -> done')
+
+// Nhưng nhánh CÒN SỐNG và chưa vào môi trường nào thì là việc đang chạy, và
+// cột cuối là đầu xa nhất của bảng — giấu việc đang chạy vào đó là hỏng đúng
+// mục đích bảng này sinh ra. Đo trên bảng thật: 2/3 card dính, nhánh vừa cắt
+// mười ba phút trước trên một ticket đã đóng (team sửa tiếp trên key cũ).
+eq(cardStage([sideAt('o/ios', [prAt(1, 'OPEN', 'ctalk/develop')])], [], S, true), 'develop',
+   'ticket đóng nhưng nhánh còn sống & chưa merge -> KHÔNG về done')
+eq(cardStage([sideAt('o/ios', [])], [], S, true), 'đang code',
+   'kể cả khi chưa có PR nào')
 eq(cardStage([sideAt('o/ios', [prAt(1, 'OPEN', 'ctalk/develop')])], [], S, false), 'develop',
    'and an open one leaves it exactly where it was')
 eq(cardStage([sideAt('o/ios', [prAt(1, 'OPEN', 'ctalk/develop')])], [], S, null), 'develop',
@@ -704,6 +718,47 @@ eq(mineBy({ repo: 'o/r', name: 'hir/task/x', committedAt: 0, login: 'ai-do', ema
   eq(withLocalState(settled, here) === settled, true, 'nothing changed, same array back')
   eq(withLocalState([side()], here) === undefined, false, 'a change gives a new array')
 }
+
+/* ── nhánh đã lấy bản mới của môi trường về chưa ────────────────────────── */
+const NOW = ts('2026-09-23T08:00:00Z')
+const fresh = (baseAt: number | null, behind: number | null, baseBranch = 'master') =>
+  baseFreshness({ baseAt, behind, baseBranch }, NOW)
+
+// Câu hỏi là nhị phân, và `behind === 0` trả lời nó mà không cần ngưỡng nào.
+eq(fresh(ts('2026-09-23T07:00:00Z'), 0).upToDate, true, 'behind 0 -> đã up to date')
+eq(fresh(ts('2026-09-23T07:00:00Z'), 0).text, 'đã có bản mới nhất của master',
+   'và nói đúng tên nhánh gốc đã so')
+
+// So với `master` thì số commit mới đọc được — đo thật: 0, 11, 62, 174. Cùng
+// những nhánh ấy so với môi trường `ctalk/develop` ra 127, 137, 301, 501, và
+// còn nói ngược: nhánh tách 1 ngày tụt 127, nhánh ngâm 145 ngày chỉ tụt 301.
+eq(fresh(ts('2026-09-22T06:00:00Z'), 11).text, 'dựng trên master của hôm qua · tụt 11 commit',
+   'tuổi đứng trước, số commit theo sau')
+eq(fresh(ts('2026-05-01T12:00:00Z'), 174).days, 144, 'nhánh cổ thì tuổi nói ngay')
+eq(fresh(ts('2026-09-23T01:00:00Z'), 5).text, 'dựng trên master của hôm nay · tụt 5 commit', 'cùng ngày')
+eq(fresh(ts('2026-09-13T09:00:00Z'), 62).text, 'dựng trên master của 9 ngày trước · tụt 62 commit',
+   'nhiều ngày thì đếm ngày')
+
+// Repo không có `master` thì so với nhánh mặc định, và câu chữ phải nói đúng
+// cái đã so chứ không mặc định ghi "master".
+eq(fresh(ts('2026-09-22T06:00:00Z'), 3, 'main').text, 'dựng trên main của hôm qua · tụt 3 commit',
+   'nói đúng nhánh gốc thật sự dùng')
+
+// Chưa đo được khác hẳn với "đã up to date" — không được trả về true.
+eq(fresh(null, null).upToDate, null, 'chưa đo -> null, không phải true')
+eq(fresh(ts('2026-09-20T00:00:00Z'), null).text, '', 'thiếu behind thì không nói gì')
+eq(fresh(null, 3).upToDate, null, 'thiếu baseAt cũng vậy')
+eq(fresh(ts('2026-09-20T00:00:00Z'), 3, '').upToDate, null, 'không biết đã so với gì thì im')
+
+// Ba trường này phải sống sót qua một vòng lưu–đọc. Bỏ sót `baseBranch` ở
+// `parseCardSides` là đúng lỗi đã gặp: quét ghi đủ, DB có đủ, mà card im lặng.
+const roundTrip = parseCardSides(
+  serializeCardSides([{ ...sideAt('o/sdk', []), baseAt: 1790057579, behind: 0, baseBranch: 'master' }]),
+  { repo: '', branch: '', prs: '', prNumber: null, prUrl: '', prState: '', prBase: '', envState: '', landedVia: '', branchGone: false, localAhead: 0, localOnly: false, localPath: '', branchUpdatedAt: null },
+)[0]
+eq([roundTrip.baseAt, roundTrip.behind, roundTrip.baseBranch], [1790057579, 0, 'master'],
+   'baseAt/behind/baseBranch sống sót qua lưu–đọc')
+eq(baseFreshness(roundTrip, NOW).upToDate, true, 'và đọc ra đúng kết luận')
 
 console.log(bad ? `\n${bad}/${n} FAILED` : `\nall ${n} ok`)
 process.exit(bad ? 1 : 0)

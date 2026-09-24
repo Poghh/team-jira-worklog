@@ -721,6 +721,94 @@ export async function fetchPrsByNumber(
   return out;
 }
 
+/** Nhánh đang dựng trên bản môi trường của lúc nào, và tụt lại bao nhiêu. */
+export interface BaseState {
+  /** Ngày của merge-base, epoch giây. */
+  baseAt: number;
+  /** Commit của môi trường mà nhánh chưa có. 0 = đã up to date. */
+  behind: number;
+}
+
+/**
+ * Nhánh nào đóng vai "bản chính" của repo này — mặc định `master`.
+ *
+ * `master` là nhánh phát hành, chạy chậm, nên "tụt bao nhiêu commit so với nó"
+ * là con số đọc được: đo trên repo này ra 0, 11, 62, 174. So với môi trường
+ * `ctalk/develop` thì cùng những nhánh ấy ra 127, 137, 301, 501 — môi trường
+ * nhận hàng trăm commit một tuần nên con số mất hết ý nghĩa.
+ *
+ * Repo không có `master` thì lấy nhánh mặc định của nó. Không có ô cấu hình:
+ * hai repo ở đây đều có `master`, và một ô để hỏi lại điều app tự tra được
+ * chỉ là thêm việc cho người dùng.
+ */
+export async function fetchBaseBranch(
+  token: string,
+  repo: string,
+): Promise<string> {
+  const [owner, name] = repo.split("/");
+  if (!owner || !name) return "";
+  try {
+    await rest(token, `/repos/${owner}/${name}/branches/master`);
+    return "master";
+  } catch {
+    // Không có `master` — hỏi nhánh mặc định.
+  }
+  try {
+    const info = await rest<{ default_branch?: string }>(
+      token,
+      `/repos/${owner}/${name}`,
+    );
+    return info.default_branch ?? "";
+  } catch {
+    return "";
+  }
+}
+
+/**
+ * Điểm mà mỗi nhánh tách ra khỏi `base`, đo bằng REST compare.
+ *
+ * GraphQL cho sẵn `behindBy` trong cùng truy vấn `compare` mà module này đã
+ * chạy, nhưng nó **không** có ngày của merge-base — mà ngày mới là thứ đáng
+ * đọc. Nên phải đi đường REST, một lần gọi cho mỗi nhánh.
+ *
+ * `per_page=1&page=2` là mẹo giữ chi phí xuống: trang 2 không còn danh sách
+ * `files` nữa, mà đó chính là phần nặng. Đo trên một nhánh tụt 301 commit:
+ * **255 KB → 11 KB**, và `merge_base_commit` cùng `behind_by` vẫn nguyên.
+ *
+ * Nhánh nào không so được — base không tồn tại ở repo đó — thì vắng mặt trong
+ * kết quả, chứ không trả 0.
+ */
+export async function fetchBaseStates(
+  token: string,
+  repo: string,
+  base: string,
+  branches: string[],
+): Promise<Record<string, BaseState>> {
+  const out: Record<string, BaseState> = {};
+  if (!base || !branches.length) return out;
+
+  for (const branch of branches) {
+    try {
+      const body = await rest<{
+        behind_by?: number;
+        merge_base_commit?: { commit?: { committer?: { date?: string } } };
+      }>(
+        token,
+        `/repos/${repo}/compare/${encodeURIComponent(base)}...${encodeURIComponent(branch)}` +
+          `?per_page=1&page=2`,
+      );
+      const at = body.merge_base_commit?.commit?.committer?.date;
+      if (!at) continue;
+      const secs = Math.floor(new Date(at).getTime() / 1000);
+      if (!secs) continue;
+      out[branch] = { baseAt: secs, behind: body.behind_by ?? 0 };
+    } catch {
+      // Một nhánh không so được không được làm hỏng cả lần quét.
+    }
+  }
+  return out;
+}
+
 /** One successful run of the build workflow, and what it built. */
 export interface BuildRun {
   /** Commit it built. */

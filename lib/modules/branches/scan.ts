@@ -35,6 +35,9 @@ import {
 } from "./github-model";
 import {
   fetchBranches,
+  type BaseState,
+  fetchBaseBranch,
+  fetchBaseStates,
   fetchEnvState,
   fetchMergedPrs,
   type PinnedPr,
@@ -504,6 +507,32 @@ export async function scanGitHub(): Promise<ScanResult> {
     () => ({}) as Record<string, EnvState>,
   );
 
+  /**
+   * Mỗi nhánh đang dựng trên bản `master` của lúc nào.
+   *
+   * `master` chứ không phải môi trường đầu: nó là nhánh phát hành, chạy chậm,
+   * nên "tụt bao nhiêu" là con số đọc được — đo trên repo này ra 0, 11, 62,
+   * 174. Cùng những nhánh ấy so với `ctalk/develop` ra 127, 137, 301, 501, vì
+   * môi trường nhận hàng trăm commit một tuần.
+   *
+   * Chỉ hỏi cho nhánh đã lọt vào `measure` — đúng những nhánh sẽ lên card.
+   */
+  const baseState: Record<string, BaseState & { baseBranch: string }> = {};
+  {
+    const byRepo = new Map<string, string[]>();
+    for (const t of measure)
+      byRepo.set(t.repo, [...(byRepo.get(t.repo) ?? []), t.branch]);
+    for (const [repo, list] of byRepo) {
+      const base = await fetchBaseBranch(token, repo).catch(() => "");
+      if (!base) continue;
+      const got = await fetchBaseStates(token, repo, base, list).catch(
+        () => ({}) as Record<string, BaseState>,
+      );
+      for (const [branch, v] of Object.entries(got))
+        baseState[`${repo}#${branch}`] = { ...v, baseBranch: base };
+    }
+  }
+
   // Content that reached an environment by another route.
   //
   // Comparing commit SHAs alone was wrong for this team: a resolve branch
@@ -616,6 +645,9 @@ export async function scanGitHub(): Promise<ScanResult> {
         localOnly: Boolean(branch.local?.onlyLocal),
         localPath: branch.local?.path ?? "",
         branchUpdatedAt: branch.committedAt || null,
+        baseAt: baseState[`${branch.repo}#${branch.name}`]?.baseAt ?? null,
+        baseBranch: baseState[`${branch.repo}#${branch.name}`]?.baseBranch ?? "",
+        behind: baseState[`${branch.repo}#${branch.name}`]?.behind ?? null,
       };
       return { branch, envs, target, side };
     });
@@ -833,6 +865,9 @@ export async function scanGitHub(): Promise<ScanResult> {
       localOnly: Boolean(branch.local?.onlyLocal),
       localPath: branch.local?.path ?? "",
       branchUpdatedAt: branch.committedAt || null,
+      baseAt: baseState[`${branch.repo}#${branch.name}`]?.baseAt ?? null,
+      baseBranch: baseState[`${branch.repo}#${branch.name}`]?.baseBranch ?? "",
+      behind: baseState[`${branch.repo}#${branch.name}`]?.behind ?? null,
     };
     /**
      * The card's other repositories, taken from the scan when it saw them.
@@ -881,6 +916,9 @@ export async function scanGitHub(): Promise<ScanResult> {
           localOnly: Boolean(b.local?.onlyLocal),
           localPath: b.local?.path ?? "",
           branchUpdatedAt: b.committedAt || null,
+          baseAt: baseState[`${b.repo}#${b.name}`]?.baseAt ?? null,
+          baseBranch: baseState[`${b.repo}#${b.name}`]?.baseBranch ?? "",
+          behind: baseState[`${b.repo}#${b.name}`]?.behind ?? null,
         });
       }
     }
