@@ -300,10 +300,19 @@ export async function listParentCandidates(
     issues.unshift(...extra)
   }
 
+  return toParentOptions(issues, meta.sprintFieldId, currentSprintId)
+}
+
+/** Issue thô → `ParentOption`, dùng chung cho cả danh sách sẵn lẫn tìm kiếm. */
+function toParentOptions(
+  issues: JiraIssue[],
+  sprintFieldId: string | null | undefined,
+  currentSprintId: number | null,
+): ParentOption[] {
   return issues
     .filter((i) => (i.fields.issuetype?.hierarchyLevel ?? 0) === 0)
     .map((issue) => {
-      const raw = meta.sprintFieldId ? issue.fields[meta.sprintFieldId] : null
+      const raw = sprintFieldId ? issue.fields[sprintFieldId] : null
       const sprints = Array.isArray(raw) ? (raw as Array<{ id?: number; name?: string }>) : []
       const last = sprints[sprints.length - 1]
       return {
@@ -318,4 +327,54 @@ export async function listParentCandidates(
         isDone: issue.fields.status?.statusCategory?.key === 'done',
       }
     })
+}
+
+/**
+ * Tìm task cha bằng chính Jira, không lọc trên danh sách đã tải sẵn.
+ *
+ * Picker vốn tải 150 issue mới nhất rồi lọc ở client, và ở quy mô project này
+ * thì cách đó không thể đúng: đo được **hơn 400** task cha đang mở, nên một
+ * task như `VT-626` (In Progress, tạo 2026-09-04) rơi ra ngoài cửa sổ và ô tìm
+ * kiếm trả về "Không tìm thấy" cho một task đang hiện trên board.
+ *
+ * Gõ gì cũng tìm được: `key` khi chuỗi trông như mã task, và `summary ~` cho
+ * mọi trường hợp còn lại. Jira khớp `~` không phân biệt hoa thường và theo từ,
+ * nên gõ "backfill" ra được "[CTALK][Web] Media Event Backfill".
+ */
+export async function searchParentCandidates(
+  term: string,
+  currentSprintId: number | null,
+): Promise<ParentOption[]> {
+  const q = term.trim()
+  if (q.length < 2) return []
+
+  const meta = await getProjectMeta()
+  const projectKey = requireProjectKey()
+
+  const fields = ['summary', 'issuetype', 'parent', 'status']
+  if (meta.sprintFieldId) fields.push(meta.sprintFieldId)
+
+  // Dấu nháy và ký tự điều khiển của JQL phải chặn ở đây — chuỗi này do người
+  // dùng gõ, và nó đi thẳng vào câu truy vấn.
+  const safe = q.replace(/["\\]/g, ' ').trim()
+  if (!safe) return []
+
+  // `VT-626`, `vt626`, hay chỉ `626` — cả ba đều là cách người ta gọi tên một
+  // task, nên cả ba phải tìm ra nó.
+  const num = /^(?:[a-z]+[\s-]?)?(\d{1,6})$/i.exec(safe)?.[1]
+  const keys = new Set<string>()
+  if (/^[a-z]+-\d+$/i.test(safe)) keys.add(safe.toUpperCase())
+  if (num) keys.add(`${projectKey}-${num}`)
+
+  const byKey = [...keys].map((k) => `key = "${k}"`)
+  const clause = [...byKey, `summary ~ "${safe}"`].join(' OR ')
+
+  const issues = await searchJql<JiraIssue>(
+    `project = "${projectKey}" AND issuetype not in subTaskIssueTypes()` +
+      `${teamLabelClause()} AND (${clause}) ORDER BY created DESC`,
+    fields,
+    { limit: 40 },
+  )
+
+  return toParentOptions(issues, meta.sprintFieldId, currentSprintId)
 }

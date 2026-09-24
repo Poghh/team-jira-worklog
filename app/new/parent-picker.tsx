@@ -1,6 +1,8 @@
 'use client'
 
-import { useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
+
+import { searchParentsAction } from './actions'
 
 import type { ParentOption } from './composer'
 
@@ -32,27 +34,76 @@ export function ParentPicker({
   // would bury them. A parent arriving from a board link is exempt — see below.
   const [showDone, setShowDone] = useState(false)
   const inputRef = useRef<HTMLInputElement>(null)
+  /**
+   * Kết quả Jira trả về cho chữ đang gõ.
+   *
+   * Lọc trên `parents` là chưa đủ: danh sách đó là 150 issue mới nhất, mà
+   * project này có hơn 400 task cha **đang mở** — nên một task đang chạy như
+   * `VT-626` không nằm trong đó và ô tìm trả về "Không tìm thấy" cho thứ đang
+   * hiện trên board. Danh sách tải sẵn vẫn giữ để mở ra là thấy ngay, nhưng
+   * chữ gõ vào thì hỏi thẳng Jira.
+   */
+  const [remote, setRemote] = useState<ParentOption[]>([])
+  const [seeking, setSeeking] = useState(false)
 
   const selected = parents.find((p) => p.key === value) ?? null
   const doneCount = parents.filter((p) => p.isDone).length
 
+  useEffect(() => {
+    const q = term.trim()
+    if (epicMode || q.length < 2) {
+      setRemote([])
+      setSeeking(false)
+      return
+    }
+    setSeeking(true)
+    let alive = true
+    // Chờ 250ms: gõ `VT-626` là sáu lần đổi, mà năm lần đầu không ai cần.
+    const id = setTimeout(() => {
+      void searchParentsAction(q, currentSprintId)
+        .then((res) => {
+          if (alive) setRemote(res.options ?? [])
+        })
+        .catch(() => {
+          if (alive) setRemote([])
+        })
+        .finally(() => {
+          if (alive) setSeeking(false)
+        })
+    }, 250)
+    return () => {
+      alive = false
+      clearTimeout(id)
+    }
+  }, [term, currentSprintId, epicMode])
+
   const options = useMemo(() => {
     const q = term.trim().toLowerCase()
-    return parents
+    // Kết quả từ Jira nối sau phần khớp sẵn, bỏ trùng. Không thay thế: phần
+    // sẵn hiện ngay lúc gõ, còn Jira trả về sau vài trăm mili-giây.
+    const seen = new Set<string>()
+    const merged = [...parents, ...remote].filter((p) =>
+      seen.has(p.key) ? false : (seen.add(p.key), true),
+    )
+    return merged
       // `currentSprintId` absent means there is nothing to narrow by — epics are
       // not sprint-scoped — so every option must pass regardless of `wide`,
       // which may be stale if React reused this instance across a type switch.
-      .filter((p) => !currentSprintId || wide || p.inCurrentSprint)
+      //
+      // Đang gõ thì bỏ qua bộ lọc sprint: người ta gõ hẳn một mã task ra là
+      // đang gọi đúng task đó, không phải đang duyệt sprint. Giữ bộ lọc ở đây
+      // là lại "Không tìm thấy" cho thứ vừa tìm ra.
+      .filter((p) => q.length >= 2 || !currentSprintId || wide || p.inCurrentSprint)
       // The already-selected one always stays visible, otherwise arriving from
       // "+ Task con" on a Done Bug would show an empty field.
-      .filter((p) => showDone || !p.isDone || p.key === value)
+      .filter((p) => showDone || !p.isDone || p.key === value || q.length >= 2)
       .filter(
         (p) =>
           !q ||
           `${p.key} ${p.summary} ${p.epicName ?? ''}`.toLowerCase().includes(q),
       )
       .slice(0, 60)
-  }, [parents, term, wide, currentSprintId, showDone, value])
+  }, [parents, remote, term, wide, currentSprintId, showDone, value])
 
   return (
     <div className="relative">
@@ -129,7 +180,9 @@ export function ParentPicker({
           )}
 
           {options.length === 0 ? (
-            <div className="p-2.5 text-center text-[12.5px] text-ink-3">Không tìm thấy</div>
+            <div className="p-2.5 text-center text-[12.5px] text-ink-3">
+              {seeking ? 'Đang tìm…' : 'Không tìm thấy'}
+            </div>
           ) : (
             options.map((p) => (
               <button

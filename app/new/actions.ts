@@ -2,8 +2,10 @@
 
 import { revalidatePath } from 'next/cache'
 
+import type { ActionResult } from '@/app/actions'
+
 import { type GenerateOutcome, generateTask, pointRulesText } from '@/lib/ai/gemini'
-import { createIssue } from '@/lib/jira/create'
+import { type ParentOption, createIssue, searchParentCandidates } from '@/lib/jira/create'
 import { getProjectMeta } from '@/lib/jira/meta'
 import { deleteDraft, saveDraft } from '@/lib/drafts'
 import { SETTING_KEYS, getSetting } from '@/lib/settings'
@@ -18,6 +20,32 @@ export interface GenerateResult {
   ok: boolean
   message: string
   data?: GenerateOutcome
+}
+
+/**
+ * Tìm task cha bằng chính Jira.
+ *
+ * Picker có sẵn một danh sách tải trước để mở ra là thấy ngay, nhưng lọc trên
+ * danh sách ấy không đủ: project này có hơn 400 task cha đang mở, nên cửa sổ
+ * 150 issue mới nhất bỏ sót cả những task đang chạy.
+ */
+export async function searchParentsAction(
+  term: string,
+  currentSprintId: number | null,
+): Promise<ActionResult & { options?: ParentOption[] }> {
+  try {
+    return {
+      ok: true,
+      message: '',
+      options: await searchParentCandidates(term, currentSprintId),
+    }
+  } catch (error) {
+    return {
+      ok: false,
+      message: error instanceof Error ? error.message : 'Không tìm được task cha',
+      options: [],
+    }
+  }
 }
 
 export async function generateAction(
