@@ -136,6 +136,68 @@ CREATE TABLE IF NOT EXISTS ios_publish_log (
   created_at   INTEGER NOT NULL DEFAULT (strftime('%s','now'))
 );
 
+CREATE TABLE IF NOT EXISTS task_notes (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  issue_key  TEXT NOT NULL DEFAULT '',
+  issue_keys TEXT NOT NULL DEFAULT '',
+  title      TEXT NOT NULL DEFAULT '',
+  branch     TEXT NOT NULL DEFAULT '',
+  stage      TEXT NOT NULL DEFAULT '',
+  body       TEXT NOT NULL DEFAULT '',
+  repo               TEXT NOT NULL DEFAULT '',
+  pr_number          INTEGER,
+  pr_url             TEXT NOT NULL DEFAULT '',
+  pr_state           TEXT NOT NULL DEFAULT '',
+  pr_base            TEXT NOT NULL DEFAULT '',
+  prs                TEXT NOT NULL DEFAULT '',
+  sides              TEXT NOT NULL DEFAULT '',
+  branch_updated_at  INTEGER,
+  env_state          TEXT NOT NULL DEFAULT '',
+  landed_via         TEXT NOT NULL DEFAULT '',
+  branch_gone        INTEGER NOT NULL DEFAULT 0,
+  github_pinned      INTEGER NOT NULL DEFAULT 0,
+  local_ahead        INTEGER NOT NULL DEFAULT 0,
+  local_only         INTEGER NOT NULL DEFAULT 0,
+  local_path         TEXT NOT NULL DEFAULT '',
+  jira_url           TEXT NOT NULL DEFAULT '',
+  jira_urls          TEXT NOT NULL DEFAULT '',
+  build              TEXT NOT NULL DEFAULT '',
+  build_branch       TEXT NOT NULL DEFAULT '',
+  build_at           INTEGER NOT NULL DEFAULT 0,
+  builds             TEXT NOT NULL DEFAULT '',
+  synced_at          INTEGER,
+  created_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+  updated_at INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+);
+CREATE INDEX IF NOT EXISTS task_notes_stage_idx ON task_notes (stage);
+-- Partial: one card per Jira issue, but any number of ticketless cards, which
+-- all carry issue_key = '' and would collide under a plain unique index.
+--
+-- Being partial has a consequence worth knowing before writing to this table:
+-- an upsert must repeat the predicate — ON CONFLICT(issue_key) WHERE issue_key
+-- <> '' DO UPDATE … — or SQLite answers "ON CONFLICT clause does not match any
+-- PRIMARY KEY or UNIQUE constraint", which reads like the index is missing
+-- rather than merely unmatched. saveTaskNote sidesteps it by looking the row
+-- up first.
+CREATE UNIQUE INDEX IF NOT EXISTS task_notes_issue_idx
+  ON task_notes (issue_key) WHERE issue_key <> '';
+
+CREATE TABLE IF NOT EXISTS release_tasks (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  task_id      TEXT NOT NULL DEFAULT '',
+  description  TEXT NOT NULL DEFAULT '',
+  branch_name  TEXT NOT NULL DEFAULT '',
+  sub_tasks    TEXT NOT NULL DEFAULT '[]',
+  product      TEXT NOT NULL DEFAULT '',
+  team         TEXT NOT NULL DEFAULT '',
+  environment  TEXT NOT NULL DEFAULT '',
+  build_status TEXT NOT NULL DEFAULT '',
+  no_branch    INTEGER NOT NULL DEFAULT 0,
+  ref_id       INTEGER,
+  created_at   INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+  updated_at   INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+);
+
 CREATE TABLE IF NOT EXISTS sdk_release_run (
   id           INTEGER PRIMARY KEY AUTOINCREMENT,
   version      TEXT NOT NULL DEFAULT '',
@@ -170,22 +232,6 @@ CREATE INDEX IF NOT EXISTS sdk_release_run_state_idx ON sdk_release_run (state);
 -- repeat the predicate, so every write here is a plain UPDATE by id.
 CREATE UNIQUE INDEX IF NOT EXISTS sdk_release_run_one_live
   ON sdk_release_run (state) WHERE state = 'running';
-
-CREATE TABLE IF NOT EXISTS release_tasks (
-  id           INTEGER PRIMARY KEY AUTOINCREMENT,
-  task_id      TEXT NOT NULL DEFAULT '',
-  description  TEXT NOT NULL DEFAULT '',
-  branch_name  TEXT NOT NULL DEFAULT '',
-  sub_tasks    TEXT NOT NULL DEFAULT '[]',
-  product      TEXT NOT NULL DEFAULT '',
-  team         TEXT NOT NULL DEFAULT '',
-  environment  TEXT NOT NULL DEFAULT '',
-  build_status TEXT NOT NULL DEFAULT '',
-  no_branch    INTEGER NOT NULL DEFAULT 0,
-  ref_id       INTEGER,
-  created_at   INTEGER NOT NULL DEFAULT (strftime('%s','now')),
-  updated_at   INTEGER NOT NULL DEFAULT (strftime('%s','now'))
-);
 `;
 
 /**
@@ -230,6 +276,9 @@ function open() {
     "no_branch INTEGER NOT NULL DEFAULT 0",
   );
   ensureColumn(sqlite, "release_tasks", "ref_id", "ref_id INTEGER");
+  ensureColumn(sqlite, "task_notes", "prs", "prs TEXT NOT NULL DEFAULT ''");
+  ensureColumn(sqlite, "task_notes", "builds", "builds TEXT NOT NULL DEFAULT ''");
+  ensureColumn(sqlite, "task_notes", "sides", "sides TEXT NOT NULL DEFAULT ''");
   ensureColumn(sqlite, "drafts", "start_date", "start_date TEXT");
   ensureColumn(sqlite, "drafts", "due_date", "due_date TEXT");
   // `origin/main` of the swift repo as it stood when the run started. The

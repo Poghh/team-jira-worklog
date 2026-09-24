@@ -233,6 +233,149 @@ export const releaseTasks = sqliteTable("release_tasks", {
 });
 
 /**
+ * `branches` module — one card per thing being worked on: which branch it lives
+ * on, and whatever about it must not be forgotten.
+ *
+ * `issueKey` ties a card to a Jira issue so the task board can show it inline
+ * and nothing has to be typed twice; it is empty for work with no ticket, which
+ * is why the uniqueness rule on it is partial (see the raw DDL). `title` is a
+ * snapshot of the summary rather than a live read — the board must render
+ * without waiting on Jira, and a card outlives the issue it was copied from.
+ */
+export const taskNotes = sqliteTable(
+  "task_notes",
+  {
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    /**
+     * The card's primary Jira key, and what the unique index enforces — one
+     * card per ticket. '' for work with no ticket.
+     */
+    issueKey: text("issue_key").notNull().default(""),
+    /**
+     * Every ticket this card covers, as a JSON array, primary key first.
+     *
+     * One branch here routinely fixes two tickets
+     * (`ctalk/bugfix/VTL-286_VTL-610`), and keeping only the first left the
+     * second with no card. '' means "just the primary key".
+     */
+    issueKeys: text("issue_keys").notNull().default(""),
+    title: text("title").notNull().default(""),
+    branch: text("branch").notNull().default(""),
+    /** Which column the card sits in — a name from the module's stage config. */
+    stage: text("stage").notNull().default(""),
+    /** Free text. A line starting with `-` renders as a bullet. */
+    body: text("body").notNull().default(""),
+    /** `owner/name` when the branch was found on GitHub, '' when typed by hand. */
+    repo: text("repo").notNull().default(""),
+    /** Latest PR for the branch, as GitHub last reported it. */
+    prNumber: integer("pr_number"),
+    prUrl: text("pr_url").notNull().default(""),
+    /** OPEN | CLOSED | MERGED | DRAFT, or '' when the branch has no PR. */
+    prState: text("pr_state").notNull().default(""),
+    /**
+     * The branch that PR is aimed at.
+     *
+     * Stored because it is what puts a card in a "chờ merge" column, and a
+     * column the user cannot see the reason for is a column they distrust.
+     */
+    prBase: text("pr_base").notNull().default(""),
+    /**
+     * JSON list of every request the branch has, one per branch it targets.
+     *
+     * The four fields above stay: they are the *one* request that decides the
+     * card's column and the one a pin names. This is the rest of them, kept
+     * only so the card can show where the work went at each step.
+     */
+    prs: text("prs").notNull().default(""),
+    /**
+     * JSON list of one entry per repository the fix touches.
+     *
+     * The GitHub columns above are the *first* of these, derived on write. They
+     * stay because everything outside this board reads them — the task board's
+     * branch popover, the branch link, the pairing editor — and a fix in one
+     * repository, which is most of them, has exactly one side.
+     */
+    sides: text("sides").notNull().default(""),
+    /** Tip commit time from GitHub — how stale the branch is. */
+    branchUpdatedAt: integer("branch_updated_at"),
+    /**
+     * JSON: env branch → commits the tip has that the env does not. 0 means
+     * arrived, null means that env has no branch in this repo.
+     */
+    envState: text("env_state").notNull().default(""),
+    /** Head branch of the pull request that carried the work in, when it was
+     * not this card's own branch — usually a `resolve_*` branch. */
+    landedVia: text("landed_via").notNull().default(""),
+    /**
+     * Set when a scan looked for this branch and GitHub no longer had it —
+     * normally because the work shipped and the branch was deleted on release.
+     */
+    branchGone: integer("branch_gone", { mode: "boolean" })
+      .notNull()
+      .default(false),
+    /**
+     * The user corrected the GitHub link by hand. A scan may still refresh the
+     * PR and environment data, but must not re-point the card at a different
+     * branch or repo — that correction was the whole reason the field exists.
+     */
+    githubPinned: integer("github_pinned", { mode: "boolean" })
+      .notNull()
+      .default(false),
+    /** Commits sitting in the local clone that the server has not seen. */
+    localAhead: integer("local_ahead").notNull().default(0),
+    /** The branch exists only on this machine — never pushed. */
+    localOnly: integer("local_only", { mode: "boolean" })
+      .notNull()
+      .default(false),
+    /** Which clone the local branch was read from — this machine has four. */
+    localPath: text("local_path").notNull().default(""),
+    /**
+     * Where this card's ticket lives, when the derived link would be wrong.
+     *
+     * The board builds `{jiraBaseUrl}/browse/{issueKey}` by default, which
+     * breaks on the two shapes this board actually holds: a key from a project
+     * the app is not pointed at, and a hand-written key that is not a key at
+     * all ("VT-365 REFS: VT-17252").
+     */
+    jiraUrl: text("jira_url").notNull().default(""),
+    /**
+     * JSON `{issueKey: url}` — one override per ticket the card covers.
+     *
+     * A card naming two tickets routinely names them in two different Jira
+     * projects, and `jira_url` could only ever speak for the first. Kept
+     * alongside it rather than replacing it so rows written before this still
+     * open the link they were given.
+     */
+    jiraUrls: text("jira_urls").notNull().default(""),
+    /**
+     * Build number this card's work shipped in, e.g. `20260904113038`.
+     *
+     * Written from the build's own "What to Test" note, which names the tickets
+     * it carries — the only account of a build's contents that is stated rather
+     * than inferred. Typed by hand when a build went out without that note.
+     */
+    build: text("build").notNull().default(""),
+    /** Environment that build belongs to, for showing it next to the number. */
+    buildBranch: text("build_branch").notNull().default(""),
+    /** When the build's contents were frozen, so a newer build can win. */
+    buildAt: integer("build_at").notNull().default(0),
+    /**
+     * JSON list of one build per environment.
+     *
+     * The three fields above are the newest entry of this list, derived on
+     * every write. They stay because the warning and the tooltip each want a
+     * single build to name, and deriving them means they cannot drift.
+     */
+    builds: text("builds").notNull().default(""),
+    /** When a GitHub scan last wrote to this card. Null for hand-made cards. */
+    syncedAt: integer("synced_at"),
+    createdAt: integer("created_at").notNull().default(now),
+    updatedAt: integer("updated_at").notNull().default(now),
+  },
+  (t) => [index("task_notes_stage_idx").on(t.stage)],
+);
+
+/**
  * `sdk-release` module — one row per attempt to release the iOS SDK.
  *
  * Written before the process exists and updated by reaping rather than by the
@@ -294,4 +437,5 @@ export type ProgressReport = typeof progressReports.$inferSelect;
 export type ProgressItem = typeof progressItems.$inferSelect;
 export type IosPublishLog = typeof iosPublishLog.$inferSelect;
 export type ReleaseTask = typeof releaseTasks.$inferSelect;
+export type TaskNote = typeof taskNotes.$inferSelect;
 export type SdkReleaseRun = typeof sdkReleaseRun.$inferSelect;

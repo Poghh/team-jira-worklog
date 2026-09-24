@@ -6,7 +6,7 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "test": "tsx tests/sdk-release.mts && tsx tests/points.mts && tsx tests/schedule.mts && tsx --conditions=react-server tests/jira-retry.mts && tsx --conditions=react-server tests/jira-down.mts"
+    "test": "tsx tests/sdk-release.mts && tsx tests/branches.mts && tsx tests/points.mts && tsx tests/schedule.mts && tsx --conditions=react-server tests/jira-retry.mts && tsx --conditions=react-server tests/jira-down.mts"
   },
   "dependencies": {
     "better-sqlite3": "^12.11.1",
