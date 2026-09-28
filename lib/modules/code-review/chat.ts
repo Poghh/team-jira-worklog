@@ -130,7 +130,10 @@ async function workspace(roundId: number): Promise<{ workdir: string; addDirs: s
   }
   if (!round.headSha) return 'Vòng này chưa có commit để mở lại.'
   try {
-    const workdir = await withRepoLock(repo.localPath, () => addWorktree(repo.localPath, `r${roundId}`, round.headSha))
+    // The session lives under the directory the round ran in, so recreate
+    // exactly that one — its recorded name, not one derived from the id.
+    const name = round.workdir ? path.basename(round.workdir) : `r${roundId}`
+    const workdir = await withRepoLock(repo.localPath, () => addWorktree(repo.localPath, name, round.headSha))
     return { workdir, addDirs, repoPath: repo.localPath }
   } catch (err) {
     return `Không mở lại được code của vòng này: ${gitSays(err)}`
@@ -141,7 +144,8 @@ export async function sendChat(roundId: number, text: string): Promise<{ ok: boo
   const body = text.trim()
   if (!body) return { ok: false, message: 'Tin nhắn trống.' }
   const round = getRound(roundId)
-  if (!round || round.state !== 'done') return { ok: false, message: 'Chỉ trao đổi được với vòng review đã xong.' }
+  if (!round) return { ok: false, message: 'Không thấy vòng review này nữa (có thể đã bị xoá) — tải lại trang.' }
+  if (round.state !== 'done') return { ok: false, message: 'Chỉ trao đổi được với vòng review đã xong.' }
   if (listMessages(roundId).some((m) => m.state === 'running')) {
     return { ok: false, message: 'Claude đang trả lời tin trước — đợi chút.' }
   }
