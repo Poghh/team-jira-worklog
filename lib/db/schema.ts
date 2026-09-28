@@ -353,6 +353,8 @@ export const reviewRounds = sqliteTable(
     message: text("message").notNull().default(""),
     /** What the Claude run reported it cost, USD — informational. */
     costUsd: real("cost_usd").notNull().default(0),
+    /** Claude Code session id — `--resume` target for the follow-up chat. */
+    sessionId: text("session_id").notNull().default(""),
     bootAt: integer("boot_at").notNull().default(0),
     createdAt: integer("created_at").notNull().default(now),
     startedAt: integer("started_at"),
@@ -403,6 +405,32 @@ export const reviewFindings = sqliteTable(
     index("review_findings_round_idx").on(t.roundId),
     index("review_findings_item_idx").on(t.itemId),
   ],
+);
+
+/** A turn in the reviewer ↔ Claude conversation about one round. */
+export const reviewMessages = sqliteTable(
+  "review_messages",
+  {
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    roundId: integer("round_id").notNull(),
+    /** 'user' | 'assistant' */
+    role: text("role").notNull().default("user"),
+    body: text("body").notNull().default(""),
+    /** JSON: review changes Claude proposes; applied only on the reviewer's click. */
+    changes: text("changes").notNull().default(""),
+    /** running | done | failed | cancelled | lost (assistant turns) */
+    state: text("state").notNull().default("done"),
+    applied: integer("applied", { mode: "boolean" }).notNull().default(false),
+    pid: integer("pid").notNull().default(0),
+    workdir: text("workdir").notNull().default(""),
+    logPath: text("log_path").notNull().default(""),
+    message: text("message").notNull().default(""),
+    costUsd: real("cost_usd").notNull().default(0),
+    bootAt: integer("boot_at").notNull().default(0),
+    createdAt: integer("created_at").notNull().default(now),
+    endedAt: integer("ended_at"),
+  },
+  (t) => [index("review_messages_round_idx").on(t.roundId)],
 );
 
 export type ReviewItem = typeof reviewItems.$inferSelect;

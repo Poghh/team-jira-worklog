@@ -3,7 +3,7 @@ import 'server-only'
 import { and, asc, desc, eq, inArray, sql } from 'drizzle-orm'
 
 import { db } from '@/lib/db'
-import { reviewFindings, reviewItems, reviewRounds } from '@/lib/db/schema'
+import { reviewFindings, reviewItems, reviewMessages, reviewRounds } from '@/lib/db/schema'
 
 import {
   type DocFile,
@@ -123,6 +123,8 @@ export function markSeen(id: number) {
 }
 
 export function deleteItem(id: number) {
+  const roundIds = db.select({ id: reviewRounds.id }).from(reviewRounds).where(eq(reviewRounds.itemId, id)).all().map((r) => r.id)
+  if (roundIds.length) db.delete(reviewMessages).where(inArray(reviewMessages.roundId, roundIds)).run()
   db.delete(reviewFindings).where(eq(reviewFindings.itemId, id)).run()
   db.delete(reviewRounds).where(eq(reviewRounds.itemId, id)).run()
   db.delete(reviewItems).where(eq(reviewItems.id, id)).run()
@@ -317,4 +319,43 @@ export function patchFinding(
 export function getFinding(id: number): FindingView | null {
   const r = db.select().from(reviewFindings).where(eq(reviewFindings.id, id)).get()
   return r ? toFinding(r) : null
+}
+
+/* ── chat ───────────────────────────────────────────────────────────────── */
+
+export type MessageRow = typeof reviewMessages.$inferSelect
+
+export function listMessages(roundId: number): MessageRow[] {
+  return db.select().from(reviewMessages).where(eq(reviewMessages.roundId, roundId)).orderBy(asc(reviewMessages.id)).all()
+}
+
+export function getMessage(id: number): MessageRow | null {
+  return db.select().from(reviewMessages).where(eq(reviewMessages.id, id)).get() ?? null
+}
+
+export function insertMessage(row: typeof reviewMessages.$inferInsert): number {
+  return db.insert(reviewMessages).values(row).returning({ id: reviewMessages.id }).get().id
+}
+
+export function updateMessage(id: number, patch: Partial<Omit<MessageRow, 'id'>>) {
+  db.update(reviewMessages).set(patch).where(eq(reviewMessages.id, id)).run()
+}
+
+/** Ends a running assistant turn — only if it is still running (compare-and-set). */
+export function finishMessage(id: number, state: 'done' | 'failed' | 'cancelled' | 'lost', patch: Partial<Omit<MessageRow, 'id' | 'state'>> = {}) {
+  return (
+    db
+      .update(reviewMessages)
+      .set({ ...patch, state, endedAt: nowSql })
+      .where(and(eq(reviewMessages.id, id), eq(reviewMessages.state, 'running')))
+      .run().changes > 0
+  )
+}
+
+export function runningMessages(): MessageRow[] {
+  return db.select().from(reviewMessages).where(eq(reviewMessages.state, 'running')).all()
+}
+
+export function patchFindingFull(id: number, patch: Partial<Omit<typeof reviewFindings.$inferInsert, 'id'>>) {
+  db.update(reviewFindings).set(patch).where(eq(reviewFindings.id, id)).run()
 }

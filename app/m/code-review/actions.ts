@@ -2,6 +2,7 @@
 
 import { revalidatePath } from 'next/cache'
 
+import { type ChatMessage, applyChanges, cancelChat, listChat, sendChat } from '@/lib/modules/code-review/chat'
 import { type ClaudeCheck, checkClaude } from '@/lib/modules/code-review/claude'
 import { getRepo, setRepos, setRunnerConfig } from '@/lib/modules/code-review/config'
 import { isRepo, listRemoteBranches, fetchAll, gitSays, withRepoLock } from '@/lib/modules/code-review/git'
@@ -556,4 +557,30 @@ export async function saveRunnerAction(input: {
   const claude = await checkClaude(true)
   revalidatePath('/m/code-review')
   return { ok: true, message: 'Đã lưu.', claude }
+}
+
+/* ── chat with Claude about a round ─────────────────────────────────────── */
+
+export async function chatAction(roundId: number): Promise<ChatMessage[]> {
+  if (!enabled()) return []
+  ensureTicker()
+  await tick()
+  return listChat(roundId)
+}
+
+export async function sendChatAction(roundId: number, text: string): Promise<Result> {
+  if (!enabled()) return OFF
+  ensureTicker()
+  return sendChat(roundId, text)
+}
+
+export async function cancelChatAction(messageId: number): Promise<Result> {
+  if (!enabled()) return OFF
+  await cancelChat(messageId)
+  return { ok: true, message: 'Đã huỷ.' }
+}
+
+export async function applyChatAction(messageId: number): Promise<Result> {
+  if (!enabled()) return OFF
+  return applyChanges(messageId)
 }

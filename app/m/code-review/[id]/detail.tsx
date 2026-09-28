@@ -31,6 +31,7 @@ import {
   updateSummaryAction,
 } from '../actions'
 import { useAttachments, useDocUpload } from '../review'
+import { type ChatHandle, ChatPanel, ChatShortcut } from './chat'
 import { AccessNote, DiscussionPanel, FindingGithub, GhProvider, SubmitReview, useGh } from './github'
 import {
   BTN,
@@ -175,6 +176,7 @@ export function ReviewDetail({
           findings={detail.findings[current.id] ?? []}
           log={detail.logRoundId === current.id ? detail.log : []}
           githubRepo={githubRepo}
+          canRun={claude.ok}
           onChanged={() => refresh(current.id)}
         />
       )}
@@ -210,6 +212,7 @@ function RoundPanel({
   findings,
   log,
   githubRepo,
+  canRun,
   onChanged,
 }: {
   item: ItemView
@@ -218,6 +221,7 @@ function RoundPanel({
   findings: FindingView[]
   log: ItemDetail['log']
   githubRepo: string
+  canRun: boolean
   onChanged: () => void
 }) {
   const live = LIVE_STATES.includes(round.state)
@@ -277,7 +281,7 @@ function RoundPanel({
       </div>
 
       {round.state === 'done' && (
-        <DoneRound item={item} round={round} findings={findings} githubRepo={githubRepo} isLatest={isLatest} onChanged={onChanged} />
+        <DoneRound item={item} round={round} findings={findings} githubRepo={githubRepo} isLatest={isLatest} canRun={canRun} onChanged={onChanged} />
       )}
     </div>
   )
@@ -324,6 +328,7 @@ function DoneRound({
   findings: initial,
   githubRepo,
   isLatest,
+  canRun,
   onChanged,
 }: {
   item: ItemView
@@ -331,13 +336,17 @@ function DoneRound({
   findings: FindingView[]
   githubRepo: string
   isLatest: boolean
+  canRun: boolean
   onChanged: () => void
 }) {
   const [findings, setFindings] = useState(initial)
   const [summary, setSummary] = useState(round.summary)
   const [filter, setFilter] = useState<Filter>('live')
+  const chat = useRef<ChatHandle>(null)
 
   useEffect(() => setFindings(initial), [initial])
+  // Claude's accepted proposal may have rewritten the summary.
+  useEffect(() => setSummary(round.summary), [round.summary])
 
   const patch = (id: number, p: Partial<FindingView>) => {
     setFindings((all) => all.map((f) => (f.id === id ? { ...f, ...p } : f)))
@@ -400,6 +409,7 @@ function DoneRound({
             </span>
           )}
           <div className="ml-auto flex gap-1.5">
+            <ChatShortcut />
             <CopyButton text={summary} />
             <CopyButton text={allClipboard(item.kind, summary, findings)} label="Copy tất cả (markdown)" className={BTN_PRI} />
           </div>
@@ -458,11 +468,14 @@ function DoneRound({
                 link={blobUrl(githubRepo, round.headSha, f)}
                 onPatch={(p) => patch(f.id, p)}
                 onPosted={onChanged}
+                onAsk={() => chat.current?.ask(f)}
               />
             ))}
           </section>
         ))
       )}
+
+      <ChatPanel ref={chat} roundId={round.id} findings={findings} canRun={canRun} onApplied={onChanged} />
     </>
   )
 }
@@ -473,14 +486,17 @@ function FindingCard({
   link,
   onPatch,
   onPosted,
+  onAsk,
 }: {
   f: FindingView
   kind: ItemView['kind']
   link: string
   onPatch: (p: Partial<FindingView>) => void
   onPosted: () => void
+  onAsk: () => void
 }) {
   const [body, setBody] = useState(f.body)
+  useEffect(() => setBody(f.body), [f.body])
   const [editing, setEditing] = useState(false)
   const dim = f.status === 'dismissed' || f.status === 'fixed'
   const loc = kind === 'doc' ? f.location : where(f)
@@ -569,6 +585,9 @@ function FindingCard({
         {!f.ghUrl && f.status !== 'dismissed' && f.status !== 'fixed' && <FindingGithub f={{ ...f, body }} onPosted={onPosted} />}
         <button type="button" className={BTN} onClick={() => setEditing(true)}>
           Sửa
+        </button>
+        <button type="button" className={BTN} title="Hỏi lại / phản biện điểm này với Claude" onClick={onAsk}>
+          Hỏi Claude
         </button>
         {f.status === 'dismissed' ? (
           <button type="button" className={BTN} onClick={() => onPatch({ status: f.origin === 'carried' ? 'not_fixed' : 'open' })}>

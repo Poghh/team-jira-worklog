@@ -257,3 +257,102 @@ ${VOICE}
 ${input.note.trim() ? `\n## Ghi chú của người review\n${input.note.trim()}\n` : ''}${rulesBlock(input.globalRules, input.repoRules)}${previousBlock(input.previous, 'doc')}
 Khi xong, trả kết quả qua structured output theo schema.`
 }
+
+/* ── follow-up chat ────────────────────────────────────────────────────── */
+
+/**
+ * A chat turn answers in prose and may *propose* edits to the review. Nothing
+ * in `changes` touches the review until the reviewer clicks "Áp dụng".
+ */
+export const CHAT_SCHEMA = {
+  type: 'object',
+  properties: {
+    reply: { type: 'string', description: 'Câu trả lời cho người review, tiếng Việt.' },
+    changes: {
+      type: 'object',
+      description: 'Chỉ khi cần sửa bản review. Bỏ trống nếu không.',
+      properties: {
+        summary_comment: { type: 'string', description: 'Comment chung viết lại hoàn chỉnh.' },
+        update: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: {
+              id: { type: 'integer' },
+              title: { type: 'string' },
+              comment: { type: 'string', description: 'Nội dung comment mới, hoàn chỉnh.' },
+              severity: { type: 'string', enum: ['blocker', 'major', 'minor', 'nit'] },
+              dismiss: { type: 'boolean', description: 'true nếu finding này sai / không cần nêu.' },
+              reason: { type: 'string', description: 'Vì sao đổi — một câu.' },
+            },
+            required: ['id'],
+          },
+        },
+        add: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: {
+              file: { type: 'string' },
+              line: { type: 'integer' },
+              end_line: { type: 'integer' },
+              location: { type: 'string' },
+              severity: { type: 'string', enum: ['blocker', 'major', 'minor', 'nit'] },
+              category: { type: 'string' },
+              title: { type: 'string' },
+              comment: { type: 'string' },
+            },
+            required: ['severity', 'title', 'comment'],
+          },
+        },
+      },
+    },
+  },
+  required: ['reply'],
+} as const
+
+export function chatPrompt(input: {
+  kind: 'pr' | 'doc'
+  message: string
+  summary: string
+  findings: FindingView[]
+  /** No session to resume: the review has to be re-established from scratch. */
+  fresh: null | { title: string; baseSha: string; headSha: string; docs: DocFile[] }
+}): string {
+  const list = input.findings.length
+    ? input.findings
+        .map((f) => {
+          const loc = input.kind === 'doc' ? f.location || f.file : `${f.file}${f.line ? `:${f.line}` : ''}`
+          return `- id ${f.id} [${f.severity}] (${f.status}) ${loc} — ${f.title}\n  ${f.body.replace(/\n+/g, ' ').slice(0, 500)}`
+        })
+        .join('\n')
+    : '(không có finding nào)'
+  const context = input.fresh
+    ? `Bạn là người đã review ${input.kind === 'doc' ? `tài liệu "${input.fresh.title}"` : `"${input.fresh.title}"`}. ${
+        input.kind === 'pr'
+          ? `Diff: \`git diff ${input.fresh.baseSha} ${input.fresh.headSha}\`; thư mục hiện tại là code ở commit ${input.fresh.headSha}.`
+          : ''
+      }${input.fresh.docs.length ? ` Tài liệu: ${input.fresh.docs.map((d) => d.path).join(', ')}.` : ''} Phiên review gốc không còn, nên hãy đọc lại những gì cần để trả lời.\n\n`
+    : 'Tiếp tục phiên review ở trên.\n\n'
+
+  return `${context}Người review đang trao đổi với bạn về kết quả review. Trạng thái HIỆN TẠI của bản review (người review có thể đã sửa tay — dùng bản này, không dùng bản bạn nhớ):
+
+## Comment chung
+${input.summary.trim() || '(trống)'}
+
+## Findings
+${list}
+
+## Tin nhắn của người review
+"""
+${input.message.trim()}
+"""
+
+Trả lời trong \`reply\`: tiếng Việt, đi thẳng vào câu hỏi; mở lại code / tài liệu để kiểm chứng khi cần, đừng trả lời theo trí nhớ nếu không chắc. Nếu người review yêu cầu (hoặc bạn thấy rõ là cần) sửa bản review, đề xuất trong \`changes\`:
+- \`update\`: sửa title / comment / severity của finding theo id, hoặc \`dismiss: true\` nếu nó sai; kèm \`reason\`.
+- \`add\`: finding mới (cùng dạng như lúc review).
+- \`summary_comment\`: comment chung viết lại hoàn chỉnh.
+Comment đề xuất giữ đúng giọng văn đã quy định (tiếng Việt, paste thẳng lên GitHub được). Không có gì cần đổi thì bỏ \`changes\`. Người review sẽ tự bấm áp dụng.
+
+${UNTRUSTED}`
+}

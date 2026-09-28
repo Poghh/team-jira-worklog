@@ -253,6 +253,26 @@ CREATE TABLE IF NOT EXISTS review_findings (
 );
 CREATE INDEX IF NOT EXISTS review_findings_round_idx ON review_findings (round_id);
 CREATE INDEX IF NOT EXISTS review_findings_item_idx ON review_findings (item_id);
+
+-- The reviewer talking to Claude about one round, resuming its session.
+CREATE TABLE IF NOT EXISTS review_messages (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  round_id   INTEGER NOT NULL,
+  role       TEXT NOT NULL DEFAULT 'user',
+  body       TEXT NOT NULL DEFAULT '',
+  changes    TEXT NOT NULL DEFAULT '',
+  state      TEXT NOT NULL DEFAULT 'done',
+  applied    INTEGER NOT NULL DEFAULT 0,
+  pid        INTEGER NOT NULL DEFAULT 0,
+  workdir    TEXT NOT NULL DEFAULT '',
+  log_path   TEXT NOT NULL DEFAULT '',
+  message    TEXT NOT NULL DEFAULT '',
+  cost_usd   REAL NOT NULL DEFAULT 0,
+  boot_at    INTEGER NOT NULL DEFAULT 0,
+  created_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+  ended_at   INTEGER
+);
+CREATE INDEX IF NOT EXISTS review_messages_round_idx ON review_messages (round_id);
 `;
 
 /**
@@ -313,6 +333,8 @@ function open() {
   ensureColumn(sqlite, "review_findings", "gh_comment_id", "gh_comment_id INTEGER");
   ensureColumn(sqlite, "review_findings", "gh_url", "gh_url TEXT NOT NULL DEFAULT ''");
   ensureColumn(sqlite, "review_items", "seen_at", "seen_at INTEGER");
+  // The Claude session a round ran in, so the reviewer can keep talking to it.
+  ensureColumn(sqlite, "review_rounds", "session_id", "session_id TEXT NOT NULL DEFAULT ''");
   return drizzle(sqlite, { schema });
 }
 

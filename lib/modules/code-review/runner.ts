@@ -1,12 +1,10 @@
 import 'server-only'
 
-import { execFile, spawn } from 'node:child_process'
+import { spawn } from 'node:child_process'
 import fs from 'node:fs/promises'
 import path from 'node:path'
-import { promisify } from 'node:util'
 
-import type { reviewFindings } from '@/lib/db/schema'
-
+import { reapChats } from './chat'
 import { checkClaude } from './claude'
 import { getRepo, getReviewConfig } from './config'
 import {
@@ -24,16 +22,14 @@ import {
   snippetAt,
   withRepoLock,
 } from './git'
+import { type RawFinding, buildFreshRows } from './findings'
 import { getPull, listPullComments } from './github'
-import {
-  DOC_CATEGORIES,
-  type DocFile,
-  type FindingStatus,
-  SEVERITIES,
-  type Severity,
-} from './model'
+import type { DocFile, FindingStatus } from './model'
 import { ALLOWED_TOOLS, DISALLOWED_TOOLS, ISOLATION_FLAGS, reviewEnv } from './guard'
 import { CODE_SCHEMA, DOC_SCHEMA, codePrompt, docPrompt } from './prompts'
+import { type LogLine, bootTime, lastResult, parseLog, pidAlive, readLog, strayLines } from './proc'
+
+export type { LogLine }
 import {
   type RoundRow,
   finishRound,
@@ -48,7 +44,6 @@ import {
   updateRound,
 } from './store'
 
-const run = promisify(execFile)
 
 /**
  * The review queue.
@@ -66,26 +61,6 @@ const run = promisify(execFile)
 
 export const LOG_DIR = path.join(process.cwd(), 'data', 'code-review', 'logs')
 const SUPERVISOR = path.join(process.cwd(), 'lib/modules/code-review/supervise.mjs')
-
-async function bootTime(): Promise<number> {
-  try {
-    const { stdout } = await run('/usr/sbin/sysctl', ['-n', 'kern.boottime'], { timeout: 5_000 })
-    const m = /sec\s*=\s*(\d+)/.exec(stdout)
-    return m ? Number(m[1]) : 0
-  } catch {
-    return 0
-  }
-}
-
-function pidAlive(pid: number): boolean {
-  if (!pid) return false
-  try {
-    process.kill(pid, 0)
-    return true
-  } catch (err) {
-    return (err as NodeJS.ErrnoException).code === 'EPERM'
-  }
-}
 
 /* ── ticking ────────────────────────────────────────────────────────────── */
 
@@ -119,6 +94,7 @@ export async function tick(): Promise<void> {
   g.__crTicking = true
   try {
     await reap()
+    await reapChats()
     startQueued()
   } catch (err) {
     console.error('[code-review] tick', err)
@@ -363,61 +339,11 @@ function parseDocs(raw: string): DocFile[] {
 
 /* ── finishing ──────────────────────────────────────────────────────────── */
 
-interface ResultEvent {
-  type: 'result'
-  subtype?: string
-  is_error?: boolean
-  result?: string
-  structured_output?: unknown
-  total_cost_usd?: number
-  errors?: string[]
-}
-
 interface Output {
   verdict?: string
   summary_comment?: string
-  findings?: Array<{
-    file?: string
-    line?: number
-    end_line?: number
-    location?: string
-    severity?: string
-    category?: string
-    title?: string
-    comment?: string
-  }>
+  findings?: RawFinding[]
   previous?: Array<{ id?: number; status?: string; note?: string; line?: number; end_line?: number }>
-}
-
-async function readLog(logPath: string): Promise<string> {
-  try {
-    return await fs.readFile(logPath, 'utf8')
-  } catch {
-    return ''
-  }
-}
-
-function lastResult(log: string): ResultEvent | null {
-  const lines = log.split('\n')
-  for (let i = lines.length - 1; i >= 0; i--) {
-    const l = lines[i].trim()
-    if (!l.startsWith('{')) continue
-    try {
-      const e = JSON.parse(l)
-      if (e?.type === 'result') return e as ResultEvent
-    } catch {}
-  }
-  return null
-}
-
-/** Lines of the log that are not stream-json — the CLI's own complaints. */
-function strayLines(log: string): string {
-  return log
-    .split('\n')
-    .filter((l) => l.trim() && !l.trim().startsWith('{'))
-    .slice(-6)
-    .join(' ')
-    .slice(0, 600)
 }
 
 async function cleanup(r: RoundRow) {
@@ -465,63 +391,25 @@ async function finalize(r: RoundRow) {
     verdict,
     summary: (out.summary_comment ?? '').trim(),
     costUsd: result.total_cost_usd ?? 0,
+    sessionId: result.session_id ?? '',
     message: '',
   })
   await cleanup(r)
 }
 
-const SEVERITY_ORDER: Record<Severity, number> = { blocker: 0, major: 1, minor: 2, nit: 3 }
 
 async function storeOutput(r: RoundRow, out: Output) {
   const item = getItem(r.itemId)
   if (!item) return
   const repo = item.repoId ? getRepo(item.repoId) : undefined
-  const rows: Array<typeof reviewFindings.$inferInsert> = []
 
   let ranges: Map<string, Array<[number, number]>> | null = null
   if (item.kind === 'pr' && repo && r.baseSha && r.headSha) {
     ranges = await diffRanges(repo.localPath, r.baseSha, r.headSha).catch(() => null)
   }
 
-  const fresh = [...(out.findings ?? [])]
-    .filter((f) => (f.title || f.comment)?.trim())
-    .map((f) => ({ ...f, severity: (SEVERITIES as string[]).includes(f.severity ?? '') ? (f.severity as Severity) : 'minor' }))
-    .sort((a, b) => SEVERITY_ORDER[a.severity] - SEVERITY_ORDER[b.severity])
-
-  let position = 0
-  for (const f of fresh) {
-    const file = (f.file ?? '').replace(/^\.?\//, '').trim()
-    const line = Number.isInteger(f.line) && f.line! > 0 ? f.line! : null
-    const endLine = Number.isInteger(f.end_line) && f.end_line! >= (line ?? 0) ? f.end_line! : null
-    let snippet = { text: '', start: 0 }
-    if (repo && file && line && r.headSha) snippet = await snippetAt(repo.localPath, r.headSha, file, line, endLine)
-    const inDiff = Boolean(
-      ranges && file && line && (ranges.get(file) ?? []).some(([a, b]) => line >= a && line <= b),
-    )
-    rows.push({
-      roundId: r.id,
-      itemId: r.itemId,
-      file,
-      line,
-      endLine,
-      location: (f.location ?? '').trim(),
-      severity: f.severity,
-      category:
-        item.kind === 'doc'
-          ? (DOC_CATEGORIES as string[]).includes(f.category ?? '')
-            ? f.category!
-            : 'unreasonable'
-          : (f.category ?? '').trim(),
-      title: (f.title ?? '').trim(),
-      body: (f.comment ?? '').trim(),
-      snippet: snippet.text,
-      snippetStart: snippet.start,
-      inDiff,
-      origin: 'new',
-      status: 'open',
-      position: position++,
-    })
-  }
+  const rows = await buildFreshRows(r, item.kind, repo, out.findings ?? [], ranges, 0)
+  let position = rows.length
 
   // Carry every finding the previous round left open into this one, with
   // Claude's verdict on whether it was addressed. The old rows stay as they
@@ -601,79 +489,11 @@ export async function cancelRound(id: number): Promise<{ ok: boolean; message: s
 
 /* ── watching ───────────────────────────────────────────────────────────── */
 
-export interface LogLine {
-  kind: 'tool' | 'text' | 'result' | 'error'
-  text: string
-}
-
-function short(s: unknown, n = 140): string {
-  const t = String(s ?? '').replace(/\s+/g, ' ').trim()
-  return t.length > n ? `${t.slice(0, n)}…` : t
-}
-
-function describeTool(name: string, input: Record<string, unknown>, cwd: string): string {
-  const rel = (p: unknown) => {
-    const s = String(p ?? '')
-    if (cwd && s.startsWith(cwd)) return s.slice(cwd.length + 1) || '.'
-    // Outside the worktree is the uploaded PDFs: the name is what matters.
-    return s.startsWith('/') ? path.basename(s) : s
-  }
-  switch (name) {
-    case 'Read':
-      return `📖 ${rel(input.file_path)}${input.offset ? ` @${input.offset}` : ''}${input.pages ? ` tr.${input.pages}` : ''}`
-    case 'Grep':
-      return `🔎 grep ${short(input.pattern, 80)}${input.path ? ` trong ${rel(input.path)}` : ''}`
-    case 'Glob':
-      return `🗂 ${short(input.pattern, 80)}`
-    case 'Bash':
-      return `$ ${short(input.command, 160)}`
-    case 'StructuredOutput':
-      return '📝 Ghi kết quả'
-    default:
-      return `🔧 ${name}`
-  }
-}
-
 /** The log as a reviewer wants to watch it: what Claude is reading, and why. */
 export async function viewLog(id: number, limit = 250): Promise<LogLine[]> {
   const r = getRound(id)
   if (!r?.logPath) return []
-  const raw = await readLog(r.logPath)
-  const out: LogLine[] = []
-  for (const l of raw.split('\n')) {
-    const line = l.trim()
-    if (!line) continue
-    if (!line.startsWith('{')) {
-      out.push({ kind: 'error', text: short(line, 400) })
-      continue
-    }
-    let e: {
-      type?: string
-      message?: { content?: Array<{ type: string; text?: string; name?: string; input?: Record<string, unknown> }> }
-      subtype?: string
-      is_error?: boolean
-      num_turns?: number
-      total_cost_usd?: number
-      duration_ms?: number
-    }
-    try {
-      e = JSON.parse(line)
-    } catch {
-      continue
-    }
-    if (e.type === 'assistant') {
-      for (const c of e.message?.content ?? []) {
-        if (c.type === 'tool_use') out.push({ kind: 'tool', text: describeTool(c.name ?? '', c.input ?? {}, r.workdir) })
-        else if (c.type === 'text' && c.text?.trim()) out.push({ kind: 'text', text: short(c.text, 600) })
-      }
-    } else if (e.type === 'result') {
-      out.push({
-        kind: e.is_error ? 'error' : 'result',
-        text: `${e.is_error ? '✗ Lỗi' : '✓ Xong'} · ${e.num_turns ?? '?'} lượt · ${Math.round((e.duration_ms ?? 0) / 1000)}s${e.total_cost_usd ? ` · ~$${e.total_cost_usd.toFixed(2)}` : ''}`,
-      })
-    }
-  }
-  return out.slice(-limit)
+  return parseLog(await readLog(r.logPath), r.workdir, limit)
 }
 
 export function updateRoundSummary(id: number, summary: string) {
