@@ -186,6 +186,73 @@ CREATE TABLE IF NOT EXISTS release_tasks (
   created_at   INTEGER NOT NULL DEFAULT (strftime('%s','now')),
   updated_at   INTEGER NOT NULL DEFAULT (strftime('%s','now'))
 );
+CREATE TABLE IF NOT EXISTS review_items (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  kind       TEXT NOT NULL DEFAULT 'pr',
+  repo_id    TEXT NOT NULL DEFAULT '',
+  title      TEXT NOT NULL DEFAULT '',
+  pr_number  INTEGER,
+  base_ref   TEXT NOT NULL DEFAULT '',
+  head_ref   TEXT NOT NULL DEFAULT '',
+  author     TEXT NOT NULL DEFAULT '',
+  url        TEXT NOT NULL DEFAULT '',
+  note       TEXT NOT NULL DEFAULT '',
+  status     TEXT NOT NULL DEFAULT 'open',
+  created_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+  updated_at INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+);
+CREATE INDEX IF NOT EXISTS review_items_status_idx ON review_items (status);
+
+-- Unlike sdk_release_run there is no "one live row" index: reviews run side by
+-- side on purpose, each in its own worktree. The ceiling is a setting, enforced
+-- by the queue in lib/modules/code-review/runner.ts.
+CREATE TABLE IF NOT EXISTS review_rounds (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  item_id       INTEGER NOT NULL,
+  round         INTEGER NOT NULL DEFAULT 1,
+  state         TEXT NOT NULL DEFAULT 'queued',
+  base_sha      TEXT NOT NULL DEFAULT '',
+  head_sha      TEXT NOT NULL DEFAULT '',
+  prev_head_sha TEXT NOT NULL DEFAULT '',
+  docs          TEXT NOT NULL DEFAULT '[]',
+  pid           INTEGER NOT NULL DEFAULT 0,
+  workdir       TEXT NOT NULL DEFAULT '',
+  log_path      TEXT NOT NULL DEFAULT '',
+  verdict       TEXT NOT NULL DEFAULT '',
+  summary       TEXT NOT NULL DEFAULT '',
+  message       TEXT NOT NULL DEFAULT '',
+  cost_usd      REAL NOT NULL DEFAULT 0,
+  boot_at       INTEGER NOT NULL DEFAULT 0,
+  created_at    INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+  started_at    INTEGER,
+  ended_at      INTEGER
+);
+CREATE INDEX IF NOT EXISTS review_rounds_item_idx ON review_rounds (item_id);
+CREATE INDEX IF NOT EXISTS review_rounds_state_idx ON review_rounds (state);
+
+CREATE TABLE IF NOT EXISTS review_findings (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  round_id      INTEGER NOT NULL,
+  item_id       INTEGER NOT NULL,
+  prev_id       INTEGER,
+  file          TEXT NOT NULL DEFAULT '',
+  line          INTEGER,
+  end_line      INTEGER,
+  location      TEXT NOT NULL DEFAULT '',
+  severity      TEXT NOT NULL DEFAULT 'minor',
+  category      TEXT NOT NULL DEFAULT '',
+  title         TEXT NOT NULL DEFAULT '',
+  body          TEXT NOT NULL DEFAULT '',
+  snippet       TEXT NOT NULL DEFAULT '',
+  snippet_start INTEGER NOT NULL DEFAULT 0,
+  in_diff       INTEGER NOT NULL DEFAULT 0,
+  origin        TEXT NOT NULL DEFAULT 'new',
+  status        TEXT NOT NULL DEFAULT 'open',
+  follow_note   TEXT NOT NULL DEFAULT '',
+  position      INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS review_findings_round_idx ON review_findings (round_id);
+CREATE INDEX IF NOT EXISTS review_findings_item_idx ON review_findings (item_id);
 `;
 
 /**
@@ -241,6 +308,11 @@ function open() {
     "main_sha",
     "main_sha TEXT NOT NULL DEFAULT ''",
   );
+  // code-review: the GitHub comment a finding was posted as, so replies can be
+  // shown under it; and when the reviewer last read an item's discussion.
+  ensureColumn(sqlite, "review_findings", "gh_comment_id", "gh_comment_id INTEGER");
+  ensureColumn(sqlite, "review_findings", "gh_url", "gh_url TEXT NOT NULL DEFAULT ''");
+  ensureColumn(sqlite, "review_items", "seen_at", "seen_at INTEGER");
   return drizzle(sqlite, { schema });
 }
 

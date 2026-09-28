@@ -6,7 +6,7 @@
  * both read it directly). Adding a module is adding an entry plus its route
  * under `app/m/<id>/`; nav, Settings and the route guard all derive from here.
  */
-export type ModuleId = 'progress' | 'ios-publish' | 'releases' | 'sdk-release'
+export type ModuleId = 'progress' | 'ios-publish' | 'releases' | 'sdk-release' | 'code-review'
 
 export interface ModuleManifest {
   id: ModuleId
@@ -65,6 +65,17 @@ export const MODULES: ModuleManifest[] = [
     nav: { href: '/m/releases', label: 'Releases' },
     status: 'ready',
     tables: ['release_tasks'],
+  },
+  {
+    id: 'code-review',
+    name: 'Code review',
+    icon: '🔍',
+    description:
+      'Nhờ Claude Code trên máy review PR GitHub và tài liệu PDF: chạy nhiều PR song song, mỗi PR một worktree riêng; member sửa xong thì "Review tiếp" để biết điểm nào đã sửa. Comment viết sẵn tiếng Việt, bấm Copy là dán vào PR.',
+    nav: { href: '/m/code-review', label: 'Code review' },
+    status: 'ready',
+    tables: ['review_items', 'review_rounds', 'review_findings'],
+    configHint: 'cần Claude Code CLI đã đăng nhập · clone repo',
   },
 ]
 

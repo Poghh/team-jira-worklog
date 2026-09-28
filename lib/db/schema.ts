@@ -2,6 +2,7 @@ import { sql } from "drizzle-orm";
 import {
   index,
   integer,
+  real,
   sqliteTable,
   text,
   uniqueIndex,
@@ -295,3 +296,115 @@ export type ProgressItem = typeof progressItems.$inferSelect;
 export type IosPublishLog = typeof iosPublishLog.$inferSelect;
 export type ReleaseTask = typeof releaseTasks.$inferSelect;
 export type SdkReleaseRun = typeof sdkReleaseRun.$inferSelect;
+
+/**
+ * `code-review` module — one row per thing under review: a pull request, or a
+ * set of documents. Rounds hang off it (one per "Review" / "Review tiếp"), and
+ * findings hang off rounds.
+ */
+export const reviewItems = sqliteTable(
+  "review_items",
+  {
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    /** 'pr' | 'doc' */
+    kind: text("kind").notNull().default("pr"),
+    /** Repo preset id from the module config; '' for a doc reviewed without code. */
+    repoId: text("repo_id").notNull().default(""),
+    title: text("title").notNull().default(""),
+    /** GitHub PR number; null for a manual base/head pair or a doc. */
+    prNumber: integer("pr_number"),
+    baseRef: text("base_ref").notNull().default(""),
+    headRef: text("head_ref").notNull().default(""),
+    author: text("author").notNull().default(""),
+    url: text("url").notNull().default(""),
+    /** Free-text note from the reviewer, passed to Claude as extra context. */
+    note: text("note").notNull().default(""),
+    /** 'open' | 'archived' */
+    status: text("status").notNull().default("open"),
+    /** When the reviewer last opened the GitHub discussion — "new replies" are after this. */
+    seenAt: integer("seen_at"),
+    createdAt: integer("created_at").notNull().default(now),
+    updatedAt: integer("updated_at").notNull().default(now),
+  },
+  (t) => [index("review_items_status_idx").on(t.status)],
+);
+
+export const reviewRounds = sqliteTable(
+  "review_rounds",
+  {
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    itemId: integer("item_id").notNull(),
+    round: integer("round").notNull().default(1),
+    /** queued | preparing | running | done | failed | cancelled | lost */
+    state: text("state").notNull().default("queued"),
+    baseSha: text("base_sha").notNull().default(""),
+    headSha: text("head_sha").notNull().default(""),
+    /** Head reviewed by the previous round — the start of the incremental diff. */
+    prevHeadSha: text("prev_head_sha").notNull().default(""),
+    /** JSON: [{name, role, path}] — the PDFs for a doc round. */
+    docs: text("docs").notNull().default("[]"),
+    pid: integer("pid").notNull().default(0),
+    workdir: text("workdir").notNull().default(""),
+    logPath: text("log_path").notNull().default(""),
+    /** 'approve' | 'request_changes' | 'comment' | '' */
+    verdict: text("verdict").notNull().default(""),
+    /** The general comment, ready to paste — editable by the reviewer. */
+    summary: text("summary").notNull().default(""),
+    message: text("message").notNull().default(""),
+    /** What the Claude run reported it cost, USD — informational. */
+    costUsd: real("cost_usd").notNull().default(0),
+    bootAt: integer("boot_at").notNull().default(0),
+    createdAt: integer("created_at").notNull().default(now),
+    startedAt: integer("started_at"),
+    endedAt: integer("ended_at"),
+  },
+  (t) => [
+    index("review_rounds_item_idx").on(t.itemId),
+    index("review_rounds_state_idx").on(t.state),
+  ],
+);
+
+export const reviewFindings = sqliteTable(
+  "review_findings",
+  {
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    roundId: integer("round_id").notNull(),
+    itemId: integer("item_id").notNull(),
+    /** The finding this one continues from an earlier round, if any. */
+    prevId: integer("prev_id"),
+    file: text("file").notNull().default(""),
+    line: integer("line"),
+    endLine: integer("end_line"),
+    /** Where in a document — section / page — for doc findings. */
+    location: text("location").notNull().default(""),
+    /** blocker | major | minor | nit */
+    severity: text("severity").notNull().default("minor"),
+    /** Code: free category. Doc: missing | wrong | unreasonable | mismatch. */
+    category: text("category").notNull().default(""),
+    title: text("title").notNull().default(""),
+    body: text("body").notNull().default(""),
+    /** Code lines around the finding, captured at the reviewed sha. */
+    snippet: text("snippet").notNull().default(""),
+    snippetStart: integer("snippet_start").notNull().default(0),
+    /** Whether GitHub would accept an inline comment on this line. */
+    inDiff: integer("in_diff", { mode: "boolean" }).notNull().default(false),
+    /** new | carried */
+    origin: text("origin").notNull().default("new"),
+    /** open | fixed | partial | not_fixed | dismissed */
+    status: text("status").notNull().default("open"),
+    /** Claude's note on how an earlier finding was (not) addressed. */
+    followNote: text("follow_note").notNull().default(""),
+    /** GitHub comment this finding was posted as (review or issue comment). */
+    ghCommentId: integer("gh_comment_id"),
+    ghUrl: text("gh_url").notNull().default(""),
+    position: integer("position").notNull().default(0),
+  },
+  (t) => [
+    index("review_findings_round_idx").on(t.roundId),
+    index("review_findings_item_idx").on(t.itemId),
+  ],
+);
+
+export type ReviewItem = typeof reviewItems.$inferSelect;
+export type ReviewRound = typeof reviewRounds.$inferSelect;
+export type ReviewFinding = typeof reviewFindings.$inferSelect;
