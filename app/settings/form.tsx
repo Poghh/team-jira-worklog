@@ -19,6 +19,7 @@ const K = {
   jiraProjectKey: 'jira_project_key',
   jiraBoardId: 'jira_board_id',
   googleApiKey: 'google_api_key',
+  githubToken: 'github_token',
   geminiModel: 'gemini_model',
   geminiFallbackModels: 'gemini_fallback_models',
   dailyQuotaHours: 'daily_quota_hours',
@@ -84,6 +85,20 @@ export function SettingsForm({ initial }: { initial: Record<string, string> }) {
             hint="Dùng lần lượt khi model chính hết quota. Cách nhau bằng dấu phẩy."
           />
           <ConnectionTest label="Test Gemini" run={testGeminiConnection} />
+        </Card>
+
+        {/* Token của module "Nhánh & ghi chú" nằm trong tab GitHub của chính
+            module đó, không phải ở đây: nó là cấu hình của một module, và để
+            lẫn vào đây thì không ai biết cái nào đang được dùng. Ô này là token
+            chung, cho module Review code. */}
+        <Card title="GitHub">
+          <Field
+            label="Personal access token"
+            name={K.githubToken}
+            defaultValue={initial[K.githubToken]}
+            type="password"
+            hint="Scope repo. Seed lần đầu từ GITHUB_TOKEN trong .env.local. Module Review code dùng để đọc PR và gửi comment."
+          />
         </Card>
 
       </div>
