@@ -1,8 +1,8 @@
 "use client";
 
-import { useState, useTransition } from "react";
+import { useEffect, useState, useTransition } from "react";
 
-import { logWorkAction } from "@/app/actions";
+import { deleteWorklogsAction, logWorkAction } from "@/app/actions";
 // Import from types.ts, never issues.ts — the latter pulls in the DB layer and
 // would end up in the browser bundle.
 import type { BoardSubtask } from "@/lib/jira/types";
@@ -15,12 +15,14 @@ import {
 import type { StageConfig, TaskNoteRow } from "@/lib/modules/branches/model";
 import type { DayOffKind } from "@/lib/quota";
 import {
+  type BusySpan,
   DEFAULT_SCHEDULE,
+  type Placement,
   type WorkSchedule,
   formatClock,
   formatDuration,
   formatSlices,
-  placeWorklog,
+  placementChoices,
   sliceWorklog,
 } from "@/lib/time";
 
@@ -54,7 +56,7 @@ export function SubtaskRow({
   sprintEnd = null,
   team = { label: null, prefix: null },
   datesSupported = true,
-  dayLoggedMinutes = 0,
+  dayBusy = [],
   schedule = DEFAULT_SCHEDULE,
   dayOff = null,
   note = null,
@@ -77,8 +79,13 @@ export function SubtaskRow({
   team?: { label: string | null; prefix: string | null };
   /** False on a project with neither date field — hides the chip entirely. */
   datesSupported?: boolean;
-  /** Logged across the whole day, which is what decides where this entry lands. */
-  dayLoggedMinutes?: number;
+  /**
+   * Các khoảng giờ đã bận trong cả ngày — thứ quyết định entry này nằm ở đâu.
+   *
+   * Là khoảng chứ không phải tổng: xoá một worklog giữa ngày rồi log lại, tổng
+   * không nói được chỗ vừa trống ra nằm ở đâu.
+   */
+  dayBusy?: BusySpan[];
   schedule?: WorkSchedule;
   /**
    * Leave marked on the day being logged into. Not used to place the entry —
@@ -101,20 +108,39 @@ export function SubtaskRow({
   const [result, setResult] = useState<{ ok: boolean; message: string } | null>(
     null,
   );
+  /** Danh sách worklog của ngày đang xem, mở ra để xoá. */
+  const [logsOpen, setLogsOpen] = useState(false);
+  /**
+   * Chỗ đặt người dùng đã chọn, khi ngày có nhiều hơn một chỗ đặt đúng.
+   *
+   * Giữ lựa chọn thay vì hỏi lại ở mỗi lần bấm, để còn xem trước được khung giờ
+   * đã chọn ngay trên dòng. Xoá sau mỗi lần log xong: ngày đã đổi, câu hỏi cũ
+   * không còn nói về ngày đó nữa.
+   */
+  const [pick, setPick] = useState<"gap" | "after" | null>(null);
+  const [askOpen, setAskOpen] = useState(false);
   const [detailOpen, setDetailOpen] = useState(false);
   const [pending, startTransition] = useTransition();
   const { refresh } = useNav();
 
-  function submit() {
+  function submit(where: Placement) {
+    setAskOpen(false);
     startTransition(async () => {
       const res = await logWorkAction({
         issueKey: subtask.key,
         hours,
         date,
         comment,
+        // Chỉ ghim giờ khi màn hình thật sự đã hỏi. Ngày chỉ có một chỗ đặt thì
+        // để server tự tính — ghim một con số client đọc được từ dữ liệu có thể
+        // đã cũ chỉ tạo ra lỗi "tải lại trang" cho một câu không có gì để chọn.
+        startMinute: choices.gap ? where.start : undefined,
       });
       setResult(res);
-      if (res.ok) setComment("");
+      if (res.ok) {
+        setComment("");
+        setPick(null);
+      }
       // `partial` means part of the entry did reach Jira — the totals on screen
       // are already wrong, so refresh even though the action reports a failure.
       if (res.ok || res.partial) refresh();
@@ -122,6 +148,7 @@ export function SubtaskRow({
   }
 
   const today = subtask.loggedTodaySeconds;
+  const entries = subtask.todayEntries ?? [];
   const total = subtask.timeSpentSeconds;
   const hygiene = issueHygiene(subtask, team);
   /**
@@ -155,12 +182,28 @@ export function SubtaskRow({
   // Where this entry will land, worked out with the same function the server
   // uses. Shown before the click, because "log 6h" reading back as 11:00–18:00
   // is the difference between trusting the timesheet and re-checking it in Jira.
-  const slot = placeWorklog(dayLoggedMinutes, hours * 60, schedule);
+  const choices = placementChoices(dayBusy, hours * 60, schedule);
+  /**
+   * Chỗ đã chốt cho lần log này. `null` nghĩa là còn phải hỏi.
+   *
+   * Không có khe trống thì chỉ có một chỗ đặt, không hỏi gì — đó là mọi ngày
+   * bình thường. Có khe trống (thường vì vừa xoá một worklog) thì có hai chỗ
+   * đúng theo hai nghĩa khác nhau, và không có chỗ nào app được tự chọn thay:
+   * lấp lại chỗ vừa xoá, hay log tiếp sau phần đã có.
+   */
+  const chosen: Placement | null = !choices.gap
+    ? choices.after
+    : pick === "gap"
+      ? choices.gap
+      : pick === "after"
+        ? choices.after
+        : null;
+  const slot = chosen ?? choices.after;
   const slotLabel = `${formatClock(slot.start)}–${formatClock(slot.end)}`;
   // The same cut the server will make. The label above stays the span as a
   // human reads it (11:00–14:00); this is what Jira will actually hold, and the
   // two only differ when the entry crosses the break.
-  const slices = sliceWorklog(dayLoggedMinutes, hours * 60, schedule);
+  const slices = sliceWorklog(slot.at, hours * 60, schedule);
   /**
    * Why the clock reads the way it does.
    *
@@ -175,15 +218,32 @@ export function SubtaskRow({
       : dayOff === "afternoon"
         ? `Ngày này nghỉ chiều — buổi làm kết thúc lúc ${formatClock(schedule.end)}.\n`
         : "";
+  /** Đang lấp khe trống, chứ không phải xếp nối tiếp như thường lệ. */
+  const filling = Boolean(choices.gap) && pick === "gap";
+  /**
+   * Chỗ đặt này là một lựa chọn, và lựa chọn kia là gì.
+   *
+   * Chỉ nói khi thật sự có hai chỗ. Ngày bình thường chỉ có một chỗ đặt đúng,
+   * và mời người đọc cân nhắc một lựa chọn không tồn tại là tự tạo nghi ngờ.
+   */
+  const placeNote = !choices.gap
+    ? ""
+    : filling
+      ? `Lấp vào khe trống lúc ${formatClock(choices.gap.start)}.\n`
+      : `Nối sau phần đã log — khe trống lúc ${formatClock(choices.gap.start)} vẫn để nguyên.\n`;
   const slotTitle =
     offNote +
+    placeNote +
     (slices.length > 1
       ? `Vắt qua giờ nghỉ — Jira sẽ nhận ${slices.length} entry: ${formatSlices(slices)}`
-      : `Worklog sẽ bắt đầu lúc ${formatClock(slot.start)} — xếp nối tiếp` +
-        // A half day is worked straight through, so there is no break left for
-        // an entry to step over and saying otherwise would be describing the
-        // behaviour this change removed.
-        (offNote ? " trong buổi." : " trong ngày, nhảy qua giờ nghỉ"));
+      : `Worklog sẽ bắt đầu lúc ${formatClock(slot.start)}` +
+        (filling
+          ? "."
+          : " — xếp nối tiếp" +
+            // A half day is worked straight through, so there is no break left
+            // for an entry to step over and saying otherwise would be
+            // describing the behaviour this change removed.
+            (offNote ? " trong buổi." : " trong ngày, nhảy qua giờ nghỉ")));
 
   return (
     <div
@@ -308,14 +368,42 @@ export function SubtaskRow({
           )}
 
           <span
-            className="min-w-[62px] text-right font-mono text-[11px] text-ink-3"
+            className="relative min-w-[62px] text-right font-mono text-[11px] text-ink-3"
             title={`${isToday ? "Hôm nay" : dateLabel}: ${formatDuration(today)} · tổng: ${formatDuration(total)}`}
           >
-            <span className={today > 0 ? "font-semibold text-accent-ink" : ""}>
-              {today > 0 ? formatDuration(today) : "—"}
-            </span>
+            {/* Con số hôm nay bấm được khi có log: đó là chỗ người ta nhìn khi
+                nghi mình log nhầm, nên cũng là chỗ để sửa. Đọc từ Jira chứ
+                không từ state, nên chuyển tab rồi quay lại vẫn xoá được. */}
+            {entries.length > 0 ? (
+              <button
+                type="button"
+                onClick={() => setLogsOpen((v) => !v)}
+                title="Xem và xoá từng worklog của ngày này"
+                className="font-semibold text-accent-ink underline decoration-dotted underline-offset-2"
+              >
+                {formatDuration(today)}
+              </button>
+            ) : (
+              <span>{today > 0 ? formatDuration(today) : "—"}</span>
+            )}
             <span className="opacity-60"> · </span>
             {total > 0 ? formatDuration(total) : "—"}
+            {logsOpen && (
+              <WorklogList
+                issueKey={subtask.key}
+                entries={entries}
+                pending={pending}
+                onClose={() => setLogsOpen(false)}
+                onDelete={(id: string) =>
+                  startTransition(async () => {
+                    const res = await deleteWorklogsAction(subtask.key, [id]);
+                    setResult(res);
+                    if (res.ok) setLogsOpen(false);
+                    refresh();
+                  })
+                }
+              />
+            )}
           </span>
 
           <HourStepper
@@ -328,17 +416,60 @@ export function SubtaskRow({
           {/* Directly after the stepper that determines it: the slot is the one
               thing about a log that used to be invisible and wrong at the same
               time, and seeing it move as the hours change is the explanation. */}
-          <span
-            className="min-w-[76px] text-right font-mono text-[10.5px] tabular text-ink-3"
-            title={slotTitle}
-          >
-            {slotLabel}
-            {/* The split is invisible in the span above — 11:00–14:00 reads the
-                same whether it is one record or two — so it gets a mark. */}
-            {slices.length > 1 && (
-              <sup className="ml-px text-ot" title={slotTitle}>
-                ×2
-              </sup>
+          <span className="relative min-w-[76px] text-right font-mono text-[10.5px] tabular text-ink-3">
+            {/* Không có khe trống: một chỗ đặt duy nhất, hiện thẳng như cũ.
+                Có khe trống: bấm được, vì lúc này khung giờ là một lựa chọn. */}
+            {!choices.gap ? (
+              <span title={slotTitle}>
+                {slotLabel}
+                {/* The split is invisible in the span above — 11:00–14:00 reads
+                    the same whether it is one record or two — so it gets a mark. */}
+                {slices.length > 1 && (
+                  <sup className="ml-px text-ot" title={slotTitle}>
+                    ×2
+                  </sup>
+                )}
+              </span>
+            ) : (
+              <button
+                type="button"
+                onClick={() => setAskOpen((v) => !v)}
+                title={
+                  chosen
+                    ? `${slotTitle}\n\nBấm để đổi sang "${
+                        filling
+                          ? `log tiếp sau, từ ${formatClock(choices.after.start)}`
+                          : `log từ ${formatClock(choices.gap.start)}`
+                      }".`
+                    : `Ngày này có khe trống lúc ${formatClock(choices.gap.start)} — bấm để chọn log vào đâu.`
+                }
+                className={
+                  "rounded-[4px] border px-1 py-px " +
+                  (chosen
+                    ? "border-line text-ink-2 hover:border-line-strong"
+                    : "border-warn bg-warn-soft font-semibold text-warn")
+                }
+              >
+                {chosen ? slotLabel : "chọn chỗ"}
+                <span className="ml-0.5 opacity-70">▾</span>
+                {chosen && slices.length > 1 && (
+                  <sup className="ml-px text-ot">×2</sup>
+                )}
+              </button>
+            )}
+            {askOpen && choices.gap && (
+              <PlacePicker
+                hours={hours}
+                dateLabel={dateLabel}
+                gap={choices.gap}
+                after={choices.after}
+                schedule={schedule}
+                onClose={() => setAskOpen(false)}
+                onPick={(which) => {
+                  setPick(which);
+                  setAskOpen(false);
+                }}
+              />
             )}
           </span>
 
@@ -350,10 +481,15 @@ export function SubtaskRow({
 
           <button
             type="button"
-            onClick={submit}
+            // Chưa chốt chỗ đặt thì bấm Log là mở câu hỏi, không phải log. Đây
+            // là chỗ duy nhất app được phép không tự quyết: hai chỗ đặt đều
+            // đúng, chỉ người log biết mình muốn cái nào.
+            onClick={() => (chosen ? submit(chosen) : setAskOpen(true))}
             disabled={pending}
             title={
-              `Ghi ${hours}h vào ${dateLabel}, ${formatSlices(slices)}` +
+              (chosen
+                ? `Ghi ${hours}h vào ${dateLabel}, ${formatSlices(slices)}`
+                : `Ngày này có khe trống — bấm để chọn ghi ${hours}h vào đâu`) +
               // Before the entry exists, not only after: the cheapest moment
               // to notice a wrong day is before pressing.
               (pastDue
@@ -391,6 +527,7 @@ export function SubtaskRow({
           }
         >
           {result.message}
+
           {/* Said at the moment it happened, once. A permanent mark on every
               Done row whose due date has passed would be on most rows most
               days, and a warning that is always on is not read. */}
@@ -469,6 +606,160 @@ function HourStepper({
         +
       </button>
     </span>
+  );
+}
+
+/**
+ * Từng worklog của ngày đang xem, xoá được.
+ *
+ * Đọc từ Jira qua dữ liệu trang đã fetch, không phải từ state sau khi log —
+ * bản đầu giữ id ở state và người dùng chuyển tab một cái là mất nút, mà đó
+ * đúng là lúc người ta nhận ra mình log nhầm.
+ *
+ * Liệt kê từng cái thay vì một nút "xoá lần vừa rồi": nửa ngày vắt qua giờ
+ * nghỉ nằm trong Jira thành hai worklog, và sau khi tải lại trang thì không có
+ * gì nói cái nào đi với cái nào. Người dùng nhìn giờ là biết cái nào sai.
+ */
+/**
+ * Ngày này có hai chỗ đặt đúng — hỏi người log muốn chỗ nào.
+ *
+ * Chỉ mở ra khi có khe trống, gần như luôn là vì vừa xoá một worklog để log
+ * lại. Trước đây app tự chọn, và chọn sai: chỗ đặt tính từ **tổng** số phút đã
+ * log, nên xoá lát 09:00–11:00 của một ngày đã có 11:00–12:00 + 13:00–14:00 làm
+ * entry mới rơi đúng vào 11:00, trùng giờ với cái đang có, còn 09:00 vẫn trống.
+ *
+ * Không có chỗ nào để app đoán cho đúng: "log lại đúng chỗ vừa xoá" và "log
+ * thêm một việc nữa" là hai ý khác nhau, cùng một cú bấm. Nên hỏi.
+ */
+function PlacePicker({
+  hours,
+  dateLabel,
+  gap,
+  after,
+  schedule,
+  onClose,
+  onPick,
+}: {
+  hours: number;
+  dateLabel: string;
+  gap: Placement;
+  after: Placement;
+  schedule: WorkSchedule;
+  onClose: () => void;
+  onPick: (which: "gap" | "after") => void;
+}) {
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
+  const option = (
+    which: "gap" | "after",
+    place: Placement,
+    label: string,
+    why: string,
+  ) => {
+    const cut = sliceWorklog(place.at, hours * 60, schedule);
+    return (
+      <button
+        type="button"
+        onClick={() => onPick(which)}
+        className="flex flex-col items-start gap-px rounded-md border border-line px-2 py-1.5 text-left hover:border-accent hover:bg-accent-soft"
+      >
+        <span className="font-sans text-[12px] font-medium text-ink">
+          {label}
+        </span>
+        <span className="font-mono text-[10.5px] text-ink-3">
+          {cut.length > 1 ? formatSlices(cut) : `${formatClock(place.start)}–${formatClock(place.end)}`}
+          <span className="font-sans"> · {why}</span>
+        </span>
+      </button>
+    );
+  };
+
+  return (
+    <>
+      <span
+        className="fixed inset-0 z-20 cursor-default"
+        onClick={onClose}
+        aria-hidden
+      />
+      <span className="absolute right-0 top-[calc(100%+4px)] z-30 flex w-[244px] flex-col gap-1 rounded-md border border-line-strong bg-surface p-1.5 text-left shadow-lg">
+        <span className="px-1 font-sans text-[10px] uppercase tracking-[0.06em] text-ink-3">
+          {dateLabel} còn khe trống · log {hours}h vào đâu?
+        </span>
+        {option(
+          "gap",
+          gap,
+          `Log từ ${formatClock(gap.start)}`,
+          "lấp lại khe đang trống",
+        )}
+        {option(
+          "after",
+          after,
+          `Log tiếp sau, từ ${formatClock(after.start)}`,
+          "nối sau phần đã log",
+        )}
+      </span>
+    </>
+  );
+}
+
+function WorklogList({
+  issueKey,
+  entries,
+  pending,
+  onClose,
+  onDelete,
+}: {
+  issueKey: string;
+  entries: Array<{ id: string; seconds: number; started: string }>;
+  pending: boolean;
+  onClose: () => void;
+  onDelete: (id: string) => void;
+}) {
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
+  return (
+    <>
+      {/* Bấm ra ngoài là đóng. Không dùng `onBlur` vì nút xoá nằm bên trong,
+          và blur sẽ đóng trước khi cú bấm kịp tới nó. */}
+      <span
+        className="fixed inset-0 z-20 cursor-default"
+        onClick={onClose}
+        aria-hidden
+      />
+      <span className="absolute right-0 top-[calc(100%+4px)] z-30 flex w-[212px] flex-col gap-1 rounded-md border border-line-strong bg-surface p-1.5 text-left shadow-lg">
+        <span className="px-1 text-[10px] uppercase tracking-[0.06em] text-ink-3">
+          Worklog ngày này · {issueKey}
+        </span>
+        {entries.map((e) => (
+          <span key={e.id} className="flex items-center gap-1.5">
+            <span className="flex-1 font-mono text-[11px] text-ink-2">
+              {e.started.slice(11, 16)} · {formatDuration(e.seconds)}
+            </span>
+            <button
+              type="button"
+              onClick={() => onDelete(e.id)}
+              disabled={pending}
+              title="Xoá worklog này khỏi Jira"
+              className="rounded border border-line px-1.5 py-px font-sans text-[11px] text-ink-2 hover:border-crit hover:text-crit disabled:opacity-50"
+            >
+              {pending ? "…" : "Xoá"}
+            </button>
+          </span>
+        ))}
+      </span>
+    </>
   );
 }
 

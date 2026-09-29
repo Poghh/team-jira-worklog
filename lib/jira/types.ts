@@ -28,6 +28,14 @@ export interface BoardSubtask {
    * happened on.
    */
   lastLogDate: string | null;
+  /**
+   * Từng worklog của ngày đang xem, để xoá lại được khi log nhầm.
+   *
+   * Lấy từ đợt fetch worklog mà trang đã chạy sẵn, không thêm request.
+   * Bản đầu chỉ giữ id ở state trình duyệt sau khi log, và chuyển tab
+   * một cái là mất — mà đó đúng là lúc người ta nhận ra log nhầm.
+   */
+  todayEntries?: Array<{ id: string; seconds: number; started: string }>
   /** Creation time as epoch ms, for the board's created-date sort. 0 if unknown. */
   created: number;
   /** Planned start, YYYY-MM-DD. Null when the team has not filled it in. */

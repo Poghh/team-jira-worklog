@@ -52,6 +52,23 @@ export function todayIn(tz = DEFAULT_TZ, at = new Date()): string {
   }).format(at)
 }
 
+/**
+ * Giờ trong ngày của một mốc thời gian, theo `tz`, tính bằng phút từ nửa đêm.
+ *
+ * Worklog của Jira mang sẵn offset của nó (`…+0700`), có thể khác offset của
+ * người đọc. Đọc qua `Intl` với `tz` nên `13:00` luôn là 13:00 ở múi giờ của
+ * người dùng, chứ không phải 13:00 ở múi giờ đã ghi.
+ */
+export function clockMinuteIn(iso: string, tz = DEFAULT_TZ): number {
+  const parts = new Intl.DateTimeFormat('en-GB', {
+    timeZone: tz,
+    hour: '2-digit',
+    minute: '2-digit',
+    hourCycle: 'h23',
+  }).format(new Date(iso))
+  return parseClock(parts) ?? 0
+}
+
 /** Epoch ms for local midnight starting `date` (YYYY-MM-DD) in `tz`. */
 export function startOfDay(date: string, tz = DEFAULT_TZ): number {
   const [y, m, d] = date.split('-').map(Number)
@@ -138,24 +155,6 @@ export function workMinuteToClock(
   return schedule.breakEnd! + (workedMinutes - before)
 }
 
-/**
- * Start and end of one entry, given how much was already logged that day.
- *
- * The end is where the work finishes on the clock, break included — logging 6h
- * from 11:00 ends at 18:00, not 17:00. Used for the message the user reads back,
- * so it has to describe the wall clock rather than the working ribbon.
- */
-export function placeWorklog(
-  alreadyLoggedMinutes: number,
-  entryMinutes: number,
-  schedule: WorkSchedule = DEFAULT_SCHEDULE,
-): { start: number; end: number } {
-  return {
-    start: workMinuteToClock(alreadyLoggedMinutes, schedule, 'start'),
-    end: workMinuteToClock(alreadyLoggedMinutes + entryMinutes, schedule, 'end'),
-  }
-}
-
 /** One record as Jira will hold it: a start on the clock, and a length. */
 export interface WorklogSlice {
   /** Local start time as minutes from midnight — 13:00 is 780. */
@@ -201,6 +200,107 @@ export function sliceWorklog(
     { start, minutes: untilBreak },
     { start: schedule.breakEnd!, minutes: entryMinutes - untilBreak },
   ]
+}
+
+/** Một khoảng trên đồng hồ đã bị một worklog chiếm. Phút tính từ nửa đêm. */
+export interface BusySpan {
+  start: number
+  minutes: number
+}
+
+/**
+ * Giờ trên đồng hồ ứng với phút làm việc thứ mấy — nghịch đảo của
+ * {@link workMinuteToClock}.
+ *
+ * Giờ nằm trong giờ nghỉ dồn về đầu giờ nghỉ, vì ở đó không có phút làm việc
+ * nào. Giờ trước lúc bắt đầu ngày trả về số âm chứ không kẹp về 0, để người gọi
+ * phân biệt được "sớm hơn giờ làm" với "đúng phút đầu tiên của giờ làm".
+ */
+export function clockToWorkMinute(clock: number, schedule: WorkSchedule): number {
+  const before = minutesBeforeBreak(schedule)
+  if (before === null) return clock - schedule.start
+  if (clock <= schedule.breakStart!) return clock - schedule.start
+  if (clock >= schedule.breakEnd!) return before + (clock - schedule.breakEnd!)
+  return before
+}
+
+/** Các khoảng đã bận, đổi sang trục phút làm việc, gộp lại và bỏ phần ngoài ngày. */
+function workRanges(busy: BusySpan[], schedule: WorkSchedule): Array<[number, number]> {
+  const ranges = busy
+    .map(
+      (b) =>
+        [
+          Math.max(0, clockToWorkMinute(b.start, schedule)),
+          clockToWorkMinute(b.start + b.minutes, schedule),
+        ] as [number, number],
+    )
+    // Một worklog nằm hẳn trước giờ làm, hoặc gọn trong giờ nghỉ, không chiếm
+    // phút làm việc nào — bỏ đi chứ không để thành khoảng rỗng hay khoảng ngược.
+    .filter(([from, to]) => to > from)
+    .sort((x, y) => x[0] - y[0])
+
+  const out: Array<[number, number]> = []
+  for (const range of ranges) {
+    const last = out[out.length - 1]
+    if (last && range[0] <= last[1]) last[1] = Math.max(last[1], range[1])
+    else out.push(range)
+  }
+  return out
+}
+
+/** Một chỗ có thể đặt entry, tính theo phút làm việc thứ mấy. */
+export interface Placement {
+  /** Phút làm việc tính từ đầu ngày — đúng thứ {@link sliceWorklog} nhận. */
+  at: number
+  start: number
+  end: number
+}
+
+export interface PlacementChoices {
+  /** Ngay sau khoảng bận cuối cùng. Luôn có, và luôn an toàn. */
+  after: Placement
+  /** Khe trống đầu tiên đủ chỗ, nếu nó nằm trước `after`. */
+  gap: Placement | null
+}
+
+/**
+ * Hai chỗ có thể đặt một entry: nối tiếp phía sau, hoặc lấp vào khe trống.
+ *
+ * Trước đây chỗ đặt tính từ **tổng** số phút đã log trong ngày, nên xoá một
+ * worklog ở giữa rồi log lại là **trùng giờ**: xoá lát 09:00–11:00 của một ngày
+ * đã có 11:00–12:00 + 13:00–14:00 làm tổng rơi về 120, và 120 phút làm việc trỏ
+ * đúng vào 11:00 — chỗ đang có người. Tính từ các khoảng đang bận thì không thể
+ * ra kết quả đó.
+ *
+ * `gap` chỉ có khi khe trống **đủ dài** cho cả entry. Một khe 30 phút không được
+ * mời để lấp 2h, vì lấp vào là đè lên khoảng bận ngay sau nó. Và khi không có
+ * `gap` thì chỉ còn một chỗ đặt đúng — không có gì để hỏi, không hỏi.
+ */
+export function placementChoices(
+  busy: BusySpan[],
+  entryMinutes: number,
+  schedule: WorkSchedule = DEFAULT_SCHEDULE,
+): PlacementChoices {
+  const ranges = workRanges(busy, schedule)
+  const place = (at: number): Placement => ({
+    at,
+    start: workMinuteToClock(at, schedule, 'start'),
+    end: workMinuteToClock(at + entryMinutes, schedule, 'end'),
+  })
+
+  const after = ranges.length ? ranges[ranges.length - 1][1] : 0
+
+  let cursor = 0
+  let hole: number | null = null
+  for (const [from, to] of ranges) {
+    if (from - cursor >= entryMinutes) {
+      hole = cursor
+      break
+    }
+    cursor = Math.max(cursor, to)
+  }
+
+  return { after: place(after), gap: hole === null || hole === after ? null : place(hole) }
 }
 
 /** `11:00–12:00 + 13:00–14:00` — how the pieces read back to the user. */

@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useRef, useState, useTransition } from 'react'
+import { useCallback, useEffect, useRef, useState, useTransition } from 'react'
 
 import { type AdfBlock, adfToBlocks, splitDod, textToAdf } from '@/lib/jira/adf'
 import { statusTone } from '@/lib/jira/types'
@@ -8,6 +8,7 @@ import { formatDuration } from '@/lib/time'
 
 import { regenerateDescriptionAction, updateDescriptionAction, updateSummaryAction } from '../actions'
 import { Spinner } from '../spinner'
+import { useNav } from './navigation'
 import { StatusPill } from './status-pill'
 import { TypeIcon } from './type-icon'
 
@@ -66,6 +67,21 @@ export function IssueDetail({ issueKey, onClose }: { issueKey: string; onClose: 
    * trên màn hình nói ra điều đó.
    */
   const [titleDirty, setTitleDirty] = useState(false)
+  const { refresh } = useNav()
+  /**
+   * Board phía dưới đang hiện tiêu đề cũ.
+   *
+   * Sửa tiêu đề chỉ ghi lên Jira rồi cập nhật state trong hộp này; dòng task
+   * bên dưới do server render nên vẫn giữ chữ cũ cho tới khi có ai đọc lại.
+   * Đọc lại lúc **đóng** chứ không phải lúc lưu: lưu tiêu đề xong thường còn
+   * sửa tiếp phần mô tả, mà mỗi lần đọc lại là quét cả board.
+   */
+  const titleChanged = useRef(false)
+
+  const close = useCallback(() => {
+    if (titleChanged.current) refresh()
+    onClose()
+  }, [onClose, refresh])
 
   useEffect(() => {
     let alive = true
@@ -90,18 +106,18 @@ export function IssueDetail({ issueKey, onClose }: { issueKey: string; onClose: 
     function onKey(e: KeyboardEvent) {
       // Esc đầu tiên đóng ô sửa, Esc sau mới đóng modal — nếu không thì một cú
       // Esc để bỏ sửa sẽ nuốt luôn cả màn hình đang đọc dở.
-      if (e.key === 'Escape' && !titleEditing && !descEditing) onClose()
+      if (e.key === 'Escape' && !titleEditing && !descEditing) close()
     }
     document.addEventListener('keydown', onKey)
     return () => document.removeEventListener('keydown', onKey)
-  }, [onClose, titleEditing, descEditing])
+  }, [close, titleEditing, descEditing])
 
 
   return (
     <div
       className="fixed inset-0 z-[90] flex items-start justify-center overflow-auto bg-black/45 p-6 sm:p-10"
       onClick={(e) => {
-        if (e.target === e.currentTarget) onClose()
+        if (e.target === e.currentTarget) close()
       }}
     >
       <div
@@ -126,7 +142,7 @@ export function IssueDetail({ issueKey, onClose }: { issueKey: string; onClose: 
           )}
           <button
             type="button"
-            onClick={onClose}
+            onClick={close}
             aria-label="Đóng"
             className="ml-auto grid size-7 place-items-center rounded-md text-[18px] leading-none text-ink-3 hover:bg-surface-2 hover:text-ink"
           >
@@ -148,7 +164,10 @@ export function IssueDetail({ issueKey, onClose }: { issueKey: string; onClose: 
               <EditableTitle
                 issueKey={issueKey}
                 summary={detail.summary}
-                onSaved={(text) => setDetail((d) => (d ? { ...d, summary: text } : d))}
+                onSaved={(text) => {
+                  titleChanged.current = true
+                  setDetail((d) => (d ? { ...d, summary: text } : d))
+                }}
                 onEditingChange={setTitleEditing}
                 onDirtyChange={setTitleDirty}
               />

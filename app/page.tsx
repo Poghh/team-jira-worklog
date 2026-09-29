@@ -10,7 +10,7 @@ import { getWorklogs, sumByDate, sumByIssue } from '@/lib/jira/worklog'
 import { listDaysOff } from '@/lib/days-off'
 import { type QuotaRules, quotaForDate } from '@/lib/quota'
 import { SETTING_KEYS, getSetting, getTeamScope, getWorkSchedule } from '@/lib/settings'
-import { DEFAULT_TZ, formatDateVi, isWeekend, todayIn, weekOf } from '@/lib/time'
+import { DEFAULT_TZ, clockMinuteIn, formatDateVi, isWeekend, todayIn, weekOf } from '@/lib/time'
 
 import { JiraDown } from './jira-down'
 import { LinkPending } from './link-pending'
@@ -144,10 +144,26 @@ async function boardPage(props: PageProps<'/'>) {
     if (!prev || e.date > prev) lastLogByIssue.set(e.issueKey, e.date)
   }
 
+  // Từng worklog của ngày đang xem, theo issue — để dòng task xoá lại được.
+  //
+  // Lấy từ `entries` đã fetch ở trên, không thêm request nào. Bản đầu chỉ giữ
+  // id ở state trình duyệt sau khi log, và người dùng chuyển tab một cái là
+  // mất — mà đó đúng là lúc phát hiện log nhầm.
+  const entriesToday = new Map<string, Array<{ id: string; seconds: number; started: string }>>()
+  for (const e of week.entries) {
+    if (e.date !== date) continue
+    const list = entriesToday.get(e.issueKey) ?? []
+    list.push({ id: e.id, seconds: e.timeSpentSeconds, started: e.started })
+    entriesToday.set(e.issueKey, list)
+  }
+
   for (const group of board) {
     for (const st of group.subtasks) {
       st.loggedTodaySeconds = byIssueToday.get(st.key) ?? 0
       st.lastLogDate = lastLogByIssue.get(st.key) ?? null
+      st.todayEntries = (entriesToday.get(st.key) ?? []).sort((a, b) =>
+        a.started.localeCompare(b.started),
+      )
     }
   }
 
@@ -222,6 +238,17 @@ async function boardPage(props: PageProps<'/'>) {
   const isToday = date === todayIn(tz)
   const dateLabel = formatDateVi(date)
   const todaysEntries = week.entries.filter((e) => e.date === date)
+  /**
+   * Từng khoảng giờ đã bận trong ngày đang chọn, trên mọi issue.
+   *
+   * Dòng task cần biết ngày đó còn *trống chỗ nào*, không chỉ đã log bao nhiêu:
+   * xoá một worklog giữa ngày rồi log lại thì tổng không đổi được chỗ đặt, mà
+   * khe trống thì có. Dựng từ `entries` đã fetch, không thêm request nào.
+   */
+  const dayBusy = todaysEntries.map((e) => ({
+    start: clockMinuteIn(e.started, tz),
+    minutes: Math.round(e.timeSpentSeconds / 60),
+  }))
 
   return (
     <NavProvider>
@@ -297,7 +324,7 @@ async function boardPage(props: PageProps<'/'>) {
                         isToday={isToday}
                         sprintEnd={sprintEnd}
                         datesSupported={datesSupported}
-                        dayLoggedSeconds={byDate.get(date) ?? 0}
+                        dayBusy={dayBusy}
                         myAccountId={me.accountId}
                         currentSprint={
                           selectedSprint ? { id: selectedSprint.id, name: selectedSprint.name } : null
@@ -331,7 +358,7 @@ async function boardPage(props: PageProps<'/'>) {
                         isToday={isToday}
                         sprintEnd={sprintEnd}
                         datesSupported={datesSupported}
-                        dayLoggedSeconds={byDate.get(date) ?? 0}
+                        dayBusy={dayBusy}
                         myAccountId={me.accountId}
                         currentSprint={
                           selectedSprint ? { id: selectedSprint.id, name: selectedSprint.name } : null
