@@ -73,7 +73,7 @@ function parseChanges(raw: string): ChatChanges | null {
   if (!raw) return null
   try {
     const c = JSON.parse(raw) as ChatChanges
-    const empty = !c.summary_comment?.trim() && !c.update?.length && !c.add?.length
+    const empty = !c.update?.length && !c.add?.length
     return empty ? null : c
   } catch {
     return null
@@ -331,8 +331,9 @@ export async function applyChanges(messageId: number): Promise<{ ok: boolean; me
     added = rows.length
   }
 
-  if (changes.summary_comment?.trim()) updateRound(round.id, { summary: changes.summary_comment.trim() })
+  // The round note is Claude's read for the reviewer, not part of what gets
+  // posted — chat does not rewrite it.
   updateMessage(m.id, { applied: true })
-  const parts = [edited && `sửa ${edited}`, dismissed && `bỏ ${dismissed}`, added && `thêm ${added}`, changes.summary_comment?.trim() && 'viết lại comment chung']
+  const parts = [edited && `sửa ${edited}`, dismissed && `bỏ ${dismissed}`, added && `thêm ${added}`]
   return { ok: true, message: `Đã áp dụng: ${parts.filter(Boolean).join(', ') || 'không có gì thay đổi'}.` }
 }

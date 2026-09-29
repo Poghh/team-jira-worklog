@@ -68,7 +68,7 @@ const SEVERITY_CLS: Record<Severity, string> = {
 
 export function SeverityPill({ s }: { s: Severity }) {
   return (
-    <span className={`rounded px-1.5 py-[1px] font-mono text-[10.5px] font-semibold uppercase ${SEVERITY_CLS[s]}`}>
+    <span className={`whitespace-nowrap rounded px-1.5 py-[1px] text-[11px] font-semibold ${SEVERITY_CLS[s]}`}>
       {SEVERITY_LABEL[s]}
     </span>
   )

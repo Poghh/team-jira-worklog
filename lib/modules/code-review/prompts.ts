@@ -29,37 +29,51 @@ const PREVIOUS = {
   },
 } as const
 
+/**
+ * No summary comment for a PR: the reviewer does not post one. Anything that
+ * is not about a line — a question for the member, a doubt to double-check —
+ * is a finding of its own with no file ("comment rời").
+ */
+/**
+ * Claude's own read of the round, written to the reviewer — never posted,
+ * never copied into a comment. Both code and document reviews have one.
+ */
+const REVIEWER_NOTE = {
+  type: 'string',
+  description: 'Nhận xét gửi riêng cho người review (không phải comment cho member).',
+} as const
+
 export const CODE_SCHEMA = {
   type: 'object',
   properties: {
     verdict: { type: 'string', enum: ['approve', 'request_changes', 'comment'] },
-    summary_comment: { type: 'string' },
+    reviewer_note: REVIEWER_NOTE,
     findings: {
       type: 'array',
       items: {
         type: 'object',
         properties: {
-          file: { type: 'string', description: 'Đường dẫn tương đối từ gốc repo.' },
-          line: { type: 'integer', description: 'Dòng bắt đầu, theo file ở commit head.' },
+          file: { type: 'string', description: 'Đường dẫn tương đối từ gốc repo. Để trống cho comment rời không gắn với dòng code nào.' },
+          line: { type: 'integer', description: 'Dòng bắt đầu, theo file ở commit head. Bỏ trống cho comment rời.' },
           end_line: { type: 'integer' },
           severity: { type: 'string', enum: ['blocker', 'major', 'minor', 'nit'] },
           category: { type: 'string' },
           title: { type: 'string' },
           comment: { type: 'string' },
         },
-        required: ['file', 'line', 'severity', 'category', 'title', 'comment'],
+        required: ['severity', 'category', 'title', 'comment'],
       },
     },
     previous: PREVIOUS,
   },
-  required: ['verdict', 'summary_comment', 'findings'],
+  required: ['verdict', 'reviewer_note', 'findings'],
 } as const
 
 export const DOC_SCHEMA = {
   type: 'object',
   properties: {
     verdict: { type: 'string', enum: ['approve', 'request_changes', 'comment'] },
-    summary_comment: { type: 'string' },
+    reviewer_note: REVIEWER_NOTE,
     findings: {
       type: 'array',
       items: {
@@ -78,7 +92,7 @@ export const DOC_SCHEMA = {
     },
     previous: PREVIOUS,
   },
-  required: ['verdict', 'summary_comment', 'findings'],
+  required: ['verdict', 'reviewer_note', 'findings'],
 } as const
 
 const VOICE = `Cách viết comment (rất quan trọng — người review sẽ copy nguyên văn dán vào GitHub):
@@ -114,7 +128,7 @@ Với TỪNG tài liệu ở trên, đối chiếu với ĐÚNG mẫu của nó 
 - Sai cấu trúc / thứ tự / định dạng so với mẫu → \`wrong\` hoặc \`unreasonable\` tuỳ mức độ.
 - Mục mẫu đánh dấu tuỳ chọn thì chỉ nêu khi thực sự cần cho tính năng này.
 Tài liệu không có mẫu (vd mô tả chức năng) thì chỉ review nội dung và dùng làm chuẩn để đối chiếu các TDD.
-\`summary_comment\` có một câu cho mỗi tài liệu có mẫu về mức độ tuân theo (vd "TDD iOS đủ 7/9 mục bắt buộc; TDD SDK thiếu …").
+\`reviewer_note\` có một câu cho mỗi tài liệu có mẫu về mức độ tuân theo (vd "TDD iOS đủ 7/9 mục bắt buộc; TDD SDK thiếu …").
 `
 }
 
@@ -205,8 +219,7 @@ ${list}
 - PR có implement đúng các yêu cầu / luồng / edge case trong tài liệu mà thuộc phạm vi PR này không; chỗ nào làm sai hoặc khác tài liệu.
 - Yêu cầu nào trong phạm vi PR mà code chưa làm (thiếu).
 - Code có làm khác thiết kế trong TDD (API, luồng, lưu trữ, threading, tên gọi) không.
-Với những vấn đề này: \`category\` = "Lệch tài liệu" (làm khác) hoặc "Thiếu so với tài liệu" (chưa làm); comment nêu rõ tài liệu nào, mục/trang nào nói gì, code đang làm gì; gắn vào dòng code liên quan nhất (chỗ nên sửa hoặc nên thêm). Không bắt lỗi những yêu cầu rõ ràng nằm ngoài phạm vi PR. Nếu chính tài liệu có điểm sai/không hợp lý thì nêu trong \`summary_comment\`, đừng tạo finding.
-\`summary_comment\` có thêm một câu về mức độ PR đáp ứng tài liệu.
+Với những vấn đề này: \`category\` = "Lệch tài liệu" (làm khác) hoặc "Thiếu so với tài liệu" (chưa làm); comment nêu rõ tài liệu nào, mục/trang nào nói gì, code đang làm gì; gắn vào dòng code liên quan nhất (chỗ nên sửa hoặc nên thêm). Không bắt lỗi những yêu cầu rõ ràng nằm ngoài phạm vi PR. Nếu chính tài liệu có điểm sai / không hợp lý, hoặc cần member xác nhận yêu cầu, thì tạo một comment rời (không file / dòng) nêu rõ.
 `
 }
 
@@ -246,11 +259,9 @@ export function codePrompt(input: {
 - Toàn bộ PR (để hiểu ngữ cảnh): \`git diff ${input.baseSha} ${input.headSha}\`.
 Việc cần làm:
 1. Với MỖI vấn đề ở danh sách "vòng trước" bên dưới, kiểm tra code hiện tại và trả vào \`previous\`: fixed / partial / not_fixed kèm một câu giải thích, và nếu chưa sửa hết thì kèm \`line\` là dòng hiện tại của nó ở commit head mới.
-2. Tìm vấn đề MỚI chỉ trong phần code vừa thay đổi (không soi lại phần đã review, trừ khi phát hiện lỗi nghiêm trọng bị bỏ sót). Không lặp lại vấn đề đã có trong danh sách vòng trước.
-3. \`summary_comment\` là comment follow-up: điểm nào đã sửa ổn, điểm nào còn, có gì mới, và kết luận có merge được chưa.`
-      : `Đây là **vòng review thứ ${input.round}**, nhưng member đã force-push nên không còn commit cũ ${input.prevHeadSha} để so. Review lại toàn bộ \`git diff ${input.baseSha} ${input.headSha}\`, đánh giá lại từng vấn đề vòng trước vào \`previous\`, và chỉ đưa vào \`findings\` những vấn đề mới. \`summary_comment\` là comment follow-up.`
-    : `Diff cần review: \`git diff ${input.baseSha} ${input.headSha}\` (base là merge-base với \`${input.baseRef}\`). Danh sách commit: \`git log --oneline ${input.baseSha}..${input.headSha}\`.
-\`summary_comment\` là comment chung cho PR: 2–5 câu tóm tắt PR làm gì, đánh giá tổng thể, những điểm chính cần sửa, và kết luận.`
+2. Tìm vấn đề MỚI chỉ trong phần code vừa thay đổi (không soi lại phần đã review, trừ khi phát hiện lỗi nghiêm trọng bị bỏ sót). Không lặp lại vấn đề đã có trong danh sách vòng trước.`
+      : `Đây là **vòng review thứ ${input.round}**, nhưng member đã force-push nên không còn commit cũ ${input.prevHeadSha} để so. Review lại toàn bộ \`git diff ${input.baseSha} ${input.headSha}\`, đánh giá lại từng vấn đề vòng trước vào \`previous\`, và chỉ đưa vào \`findings\` những vấn đề mới.`
+    : `Diff cần review: \`git diff ${input.baseSha} ${input.headSha}\` (base là merge-base với \`${input.baseRef}\`). Danh sách commit: \`git log --oneline ${input.baseSha}..${input.headSha}\`.`
 
   return `Bạn đang review code cho ${pr} của repo **${input.repoName}**: "${input.title}"${input.author ? ` — tác giả ${input.author}` : ''}.
 Merge từ \`${input.headRef}\` vào \`${input.baseRef}\`. Thư mục hiện tại là worktree đang đứng đúng commit head ${input.headSha}.
@@ -262,6 +273,9 @@ Cách làm:
 - Tập trung vào đúng đắn, an toàn luồng (main thread, concurrency), vòng đời bộ nhớ, xử lý lỗi, bảo mật, tương thích API công khai, và việc code có làm đúng mục tiêu của PR không.
 - Chỉ nêu vấn đề có thật và kiểm chứng được trong code. Không đoán mò; nếu không chắc thì nói rõ là cần tác giả xác nhận.
 - \`line\`/\`end_line\` là số dòng trong file ở commit head, ưu tiên dòng nằm trong diff.
+- KHÔNG viết comment tóm tắt cho member. Mỗi điều muốn nói với member là một finding riêng.
+- \`reviewer_note\` là nhận xét RIÊNG cho người review (tech lead) — không gửi member, không xưng hô với tác giả: 3–6 câu, PR làm gì, đánh giá tổng thể, rủi ro lớn nhất, chỗ nào người review nên tự xem kỹ, kết luận merge được chưa.${input.round > 1 ? ' Vòng này: member đã sửa được bao nhiêu, còn gì đáng lo.' : ''}
+- Điều không gắn với dòng code cụ thể — câu hỏi cho member, chỗ nghi ngờ cần member kiểm tra lại (config, backend, môi trường, ý định thiết kế, phạm vi PR, commit/nhánh…) — là **comment rời**: \`file\` để trống, không có \`line\`, \`category\` = "Cần xác nhận" (hỏi / nghi ngờ) hoặc "Chung". Chỉ tạo khi thật sự cần member trả lời hoặc làm gì đó.
 - Nếu PR ổn, \`findings\` có thể rỗng và verdict = approve.
 
 ${UNTRUSTED}
@@ -304,8 +318,8 @@ export function docPrompt(input: {
       ? `Đây là **vòng review thứ ${input.round}**: tác giả đã cập nhật tài liệu.${input.prevDocs.length ? ` Bản trước để so sánh:\n${list(input.prevDocs)}` : ''}
 1. Với MỖI vấn đề ở danh sách "vòng trước", kiểm tra bản mới và trả vào \`previous\`: fixed / partial / not_fixed kèm một câu.
 2. Chỉ đưa vào \`findings\` vấn đề MỚI (ưu tiên phần vừa thêm/sửa), không lặp lại vấn đề cũ.
-3. \`summary_comment\` là nhận xét follow-up.`
-      : '`summary_comment` là nhận xét chung: tài liệu đã đủ để implement chưa, 3–5 điểm lớn nhất cần bổ sung/sửa.'
+3. \`reviewer_note\`: tác giả đã cập nhật được bao nhiêu, còn gì đáng lo, tài liệu đã đủ để implement chưa.`
+      : '`reviewer_note`: tài liệu đã đủ để implement chưa, 3–5 điểm lớn nhất cần bổ sung / sửa, chỗ nào người review nên tự đọc kỹ.'
 
   return `Bạn đang review tài liệu kỹ thuật "${input.title}" của team iOS / SDK.
 
@@ -324,6 +338,7 @@ Tìm và phân loại:
 \`location\` ghi rõ tài liệu nào, mục nào, trang nào.
 
 Chỉ đọc, không sửa file. Chỉ nêu điều có căn cứ trong tài liệu/code.
+\`reviewer_note\` là nhận xét RIÊNG cho người review (tech lead) — không gửi tác giả, không xưng hô với tác giả.
 
 ${templateBlock(input.templates)}
 ${UNTRUSTED}
@@ -349,7 +364,6 @@ export const CHAT_SCHEMA = {
       type: 'object',
       description: 'Chỉ khi cần sửa bản review. Bỏ trống nếu không.',
       properties: {
-        summary_comment: { type: 'string', description: 'Comment chung viết lại hoàn chỉnh.' },
         update: {
           type: 'array',
           items: {
@@ -415,7 +429,7 @@ export function chatPrompt(input: {
 
   return `${context}Người review đang trao đổi với bạn về kết quả review. Trạng thái HIỆN TẠI của bản review (người review có thể đã sửa tay — dùng bản này, không dùng bản bạn nhớ):
 
-## Comment chung
+## Nhận xét nội bộ của bạn cho người review (không gửi member)
 ${input.summary.trim() || '(trống)'}
 
 ## Findings
@@ -428,8 +442,7 @@ ${input.message.trim()}
 
 Trả lời trong \`reply\`: tiếng Việt, đi thẳng vào câu hỏi; mở lại code / tài liệu để kiểm chứng khi cần, đừng trả lời theo trí nhớ nếu không chắc. Nếu người review yêu cầu (hoặc bạn thấy rõ là cần) sửa bản review, đề xuất trong \`changes\`:
 - \`update\`: sửa title / comment / severity của finding theo id, hoặc \`dismiss: true\` nếu nó sai; kèm \`reason\`.
-- \`add\`: finding mới (cùng dạng như lúc review).
-- \`summary_comment\`: comment chung viết lại hoàn chỉnh.
+- \`add\`: finding mới (cùng dạng như lúc review${input.kind === 'pr' ? '; điều không gắn với dòng code nào là comment rời — bỏ trống file / line' : ''}).
 Comment đề xuất giữ đúng giọng văn đã quy định (tiếng Việt, paste thẳng lên GitHub được). Không có gì cần đổi thì bỏ \`changes\`. Người review sẽ tự bấm áp dụng.
 ${addressBlock(input.addressee)}
 ${UNTRUSTED}`

@@ -33,10 +33,10 @@ export const ROUND_LABEL: Record<RoundState, string> = {
 export type Severity = 'blocker' | 'major' | 'minor' | 'nit'
 export const SEVERITIES: Severity[] = ['blocker', 'major', 'minor', 'nit']
 export const SEVERITY_LABEL: Record<Severity, string> = {
-  blocker: 'Blocker',
-  major: 'Major',
-  minor: 'Minor',
-  nit: 'Nit',
+  blocker: 'Chặn merge',
+  major: 'Quan trọng',
+  minor: 'Nhỏ',
+  nit: 'Góp ý vặt',
 }
 
 export type DocCategory = 'missing' | 'wrong' | 'unreasonable' | 'mismatch'
@@ -59,9 +59,9 @@ export const FINDING_STATUS_LABEL: Record<FindingStatus, string> = {
 
 export type Verdict = 'approve' | 'request_changes' | 'comment'
 export const VERDICT_LABEL: Record<Verdict, string> = {
-  approve: 'Approve',
-  request_changes: 'Request changes',
-  comment: 'Comment',
+  approve: 'Ổn, có thể duyệt',
+  request_changes: 'Cần sửa',
+  comment: 'Góp ý',
 }
 
 export type DocRole = 'spec' | 'tdd' | 'other'
@@ -279,14 +279,9 @@ export function findingClipboard(f: FindingView, kind: ItemKind): string {
  * Every still-relevant finding as one markdown comment, for reviewers who would
  * rather paste once than twenty times. Inline-able findings go first by file.
  */
-export function allClipboard(
-  kind: ItemKind,
-  summary: string,
-  findings: FindingView[],
-): string {
+export function allClipboard(kind: ItemKind, findings: FindingView[]): string {
   const live = findings.filter((f) => f.status !== 'dismissed' && f.status !== 'fixed')
   const parts: string[] = []
-  if (summary.trim()) parts.push(summary.trim())
   if (live.length) {
     const lines = live.map((f, i) => {
       const loc = kind === 'doc' ? f.location : where(f)

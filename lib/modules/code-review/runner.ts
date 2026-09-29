@@ -380,6 +380,8 @@ function parseDocs(raw: string): DocFile[] {
 
 interface Output {
   verdict?: string
+  reviewer_note?: string
+  /** Older rounds / older prompts. */
   summary_comment?: string
   findings?: RawFinding[]
   previous?: Array<{ id?: number; status?: string; note?: string; line?: number; end_line?: number }>
@@ -429,7 +431,7 @@ async function finalize(r: RoundRow) {
   const verdict = ['approve', 'request_changes', 'comment'].includes(out.verdict ?? '') ? out.verdict! : 'comment'
   finishRound(r.id, 'done', {
     verdict,
-    summary: (out.summary_comment ?? '').trim(),
+    summary: (out.reviewer_note ?? out.summary_comment ?? '').trim(),
     costUsd: result.total_cost_usd ?? 0,
     sessionId: result.session_id ?? '',
     message: '',

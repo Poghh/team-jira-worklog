@@ -71,7 +71,7 @@ export const ChatPanel = forwardRef<
     const rewriteAddress = () =>
       addressee &&
       send(
-        `Viết lại comment chung và nội dung các finding còn mở để xưng hô với tác giả đúng quy định: gọi là "${addressOf(addressee)}", thay mọi chỗ "tác giả", "bạn", "author". Chỉ đổi xưng hô và câu chữ đi kèm cho tự nhiên, KHÔNG đổi nội dung kỹ thuật. Đề xuất trong changes (update từng finding cần đổi + summary_comment), không cần đọc lại code.`,
+        `Viết lại nội dung các finding còn mở (và nhận xét chung nếu có) để xưng hô với tác giả đúng quy định: gọi là "${addressOf(addressee)}", thay mọi chỗ "tác giả", "bạn", "author". Chỉ đổi xưng hô và câu chữ đi kèm cho tự nhiên, KHÔNG đổi nội dung kỹ thuật. Đề xuất trong changes (update từng finding cần đổi), không cần đọc lại code.`,
       )
 
     const byId = new Map(findings.map((f) => [f.id, f]))
@@ -196,7 +196,6 @@ function Proposal({
             updates.filter((u) => !u.dismiss).length && `sửa ${updates.filter((u) => !u.dismiss).length}`,
             updates.filter((u) => u.dismiss).length && `bỏ ${updates.filter((u) => u.dismiss).length}`,
             adds.length && `thêm ${adds.length}`,
-            changes.summary_comment && 'comment chung mới',
           ]
             .filter(Boolean)
             .join(' · ')}
@@ -245,12 +244,7 @@ function Proposal({
               <div className="mt-0.5 whitespace-pre-wrap text-ink-2">{a.comment}</div>
             </div>
           ))}
-          {changes.summary_comment && (
-            <div className="border-l-2 border-blue pl-2">
-              <div className="font-medium">📝 Comment chung mới</div>
-              <div className="mt-0.5 whitespace-pre-wrap text-ink-2">{changes.summary_comment}</div>
-            </div>
-          )}
+
         </div>
       )}
     </div>

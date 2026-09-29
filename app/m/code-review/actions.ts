@@ -397,7 +397,7 @@ export async function submitReviewAction(input: {
   const body = [
     input.body.trim(),
     rest.length
-      ? `**Các điểm khác:**\n\n${rest.map((f, i) => `${i + 1}. ${f.file ? `${locationLine(f)} ` : ''}**${f.title}**\n${f.body.trim().replace(/^/gm, '   ')}`).join('\n\n')}`
+      ? rest.map((f, i) => `${rest.length > 1 ? `${i + 1}. ` : ''}${f.file ? `${locationLine(f)} ` : ''}**${f.title}**\n${f.body.trim().replace(/^/gm, rest.length > 1 ? '   ' : '')}`).join('\n\n')
       : '',
   ]
     .filter(Boolean)
@@ -417,7 +417,7 @@ export async function submitReviewAction(input: {
     })
     inline.forEach((f, i) => patchFinding(f.id, { ghCommentId: res.comments[i]?.id || null, ghUrl: res.comments[i]?.url || res.url }))
     for (const f of rest) patchFinding(f.id, { ghUrl: res.url })
-    return { ok: true, message: `Đã gửi review: ${inline.length} comment inline${rest.length ? ` + ${rest.length} điểm trong nội dung` : ''}.`, url: res.url }
+    return { ok: true, message: `Đã gửi review: ${inline.length} comment trên dòng code${rest.length ? ` + ${rest.length} điểm trong nội dung` : ''}.`, url: res.url }
   } catch (err) {
     return failure(err)
   }

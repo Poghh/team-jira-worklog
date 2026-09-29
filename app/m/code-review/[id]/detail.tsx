@@ -549,6 +549,9 @@ function LogView({ lines, live }: { lines: ItemDetail['log']; live: boolean }) {
 
 type Filter = 'live' | 'all' | 'fixed' | 'dismissed'
 
+/** Group of PR findings not tied to a line — questions and doubts for the member. */
+const LOOSE = '💬 Comment rời (không gắn với dòng code)'
+
 function DoneRound({
   item,
   round,
@@ -609,14 +612,15 @@ function DoneRound({
       const key =
         item.kind === 'doc'
           ? DOC_CATEGORY_LABEL[f.category as DocCategory] ?? f.category
-          : f.file || 'Chung'
+          : f.file || LOOSE
       m.set(key, [...(m.get(key) ?? []), f])
     }
     if (item.kind === 'doc') {
       const order = DOC_CATEGORIES.map((c) => DOC_CATEGORY_LABEL[c])
       return [...m].sort((a, b) => order.indexOf(a[0]) - order.indexOf(b[0]))
     }
-    return [...m]
+    // Loose comments first: they are usually questions the member must answer.
+    return [...m].sort((a, b) => Number(b[0] === LOOSE) - Number(a[0] === LOOSE))
   }, [visible, item.kind])
 
   const count = (f: Filter) =>
@@ -626,34 +630,34 @@ function DoneRound({
 
   return (
     <>
-      <div className={CARD}>
-        <div className="mb-2 flex flex-wrap items-center gap-2">
-          <div className={CTITLE}>{round.round > 1 ? 'Comment follow-up' : 'Comment chung cho PR'}</div>
-          {round.round > 1 && (
-            <span className="text-[12px] text-ink-2">
-              <span className="text-good">✓ {tally.fixed} đã sửa</span>
-              {tally.partial > 0 && <span className="text-warn"> · ◐ {tally.partial} sửa chưa hết</span>}
-              {tally.notFixed > 0 && <span className="text-crit"> · ✗ {tally.notFixed} chưa sửa</span>}
-              <span> · {tally.fresh} vấn đề mới</span>
-            </span>
-          )}
-          <div className="ml-auto flex gap-1.5">
-            <ChatShortcut />
-            <CopyButton text={summary} />
-            <CopyButton text={allClipboard(item.kind, summary, findings)} label="Copy tất cả (markdown)" className={BTN_PRI} />
-          </div>
+      <div className="flex flex-wrap items-center gap-2">
+        {round.round > 1 && item.kind === 'pr' && (
+          <span className="text-[12px] text-ink-2">
+            Vòng {round.round}: <span className="text-good">✓ {tally.fixed} đã sửa</span>
+            {tally.partial > 0 && <span className="text-warn"> · ◐ {tally.partial} sửa chưa hết</span>}
+            {tally.notFixed > 0 && <span className="text-crit"> · ✗ {tally.notFixed} chưa sửa</span>}
+            <span> · {tally.fresh} vấn đề mới</span>
+          </span>
+        )}
+        {!isLatest && <span className="text-[11.5px] text-ink-3">Đây là vòng cũ — kết quả mới nhất ở vòng sau.</span>}
+        <div className="ml-auto flex gap-1.5">
+          <ChatShortcut />
+          <CopyButton text={allClipboard(item.kind, findings)} label="Copy tất cả comment (markdown)" className={BTN_PRI} />
         </div>
-        <textarea
-          value={summary}
-          onChange={(e) => setSummary(e.target.value)}
-          onBlur={() => summary !== round.summary && void updateSummaryAction(round.id, summary)}
-          rows={Math.min(16, Math.max(4, summary.split('\n').reduce((n, l) => n + Math.ceil((l.length || 1) / 140), 0) + 1))}
-          className={INPUT + ' leading-relaxed'}
-        />
-        {!isLatest && <p className="mt-1 text-[11.5px] text-ink-3">Đây là vòng cũ — kết quả mới nhất ở vòng sau.</p>}
       </div>
 
-      {isLatest && <SubmitReview round={round} findings={findings} summary={summary} onDone={onChanged} />}
+      {/* Claude's read of the round, for the reviewer only: no Copy, never posted. */}
+      {summary.trim() && (
+        <div className="rounded-[9px] border border-dashed border-line-strong bg-surface-2 px-4 py-3">
+          <div className="mb-1 flex items-center gap-2">
+            <span className={CTITLE}>📝 Nhận xét của Claude</span>
+            <span className="text-[11px] text-ink-3">chỉ để bạn xem — không gửi cho member</span>
+          </div>
+          <div className="whitespace-pre-wrap text-[13px] leading-relaxed text-ink-2">{summary}</div>
+        </div>
+      )}
+
+      {isLatest && <SubmitReview round={round} findings={findings} onDone={onChanged} />}
       {isLatest && <AccessNote onGithub={item.kind === 'pr' && Boolean(item.prNumber) && Boolean(githubRepo)} />}
 
       <div className="flex flex-wrap items-center gap-1.5 text-[12.5px]">
@@ -763,7 +767,7 @@ function FindingCard({
           )}
           {kind === 'pr' && f.line && (
             <span className={f.inDiff ? 'text-good' : 'text-warn'} title={f.inDiff ? 'Dòng này nằm trong diff — comment inline được' : 'Dòng này ngoài diff — GitHub không cho comment inline, nên dán vào comment chung'}>
-              {f.inDiff ? '● inline được' : '○ ngoài diff'}
+              {f.inDiff ? '● comment được trên dòng này' : '○ ngoài diff — gửi thành comment chung'}
             </span>
           )}
         </div>
