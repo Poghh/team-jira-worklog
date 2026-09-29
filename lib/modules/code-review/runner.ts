@@ -6,7 +6,7 @@ import path from 'node:path'
 
 import { reapChats } from './chat'
 import { checkClaude } from './claude'
-import { getRepo, getReviewConfig } from './config'
+import { getRepo, getReviewConfig, resolveAddressee, templatesForDocs } from './config'
 import {
   addWorktree,
   commitExists,
@@ -24,7 +24,8 @@ import {
 } from './git'
 import { type RawFinding, buildFreshRows } from './findings'
 import { getPull, listPullComments } from './github'
-import type { DocFile, FindingStatus } from './model'
+import { cleanupLinks, linkDirs, prepareLinks } from './links'
+import type { DocFile, FindingStatus, RoundLink } from './model'
 import { ALLOWED_TOOLS, DISALLOWED_TOOLS, ISOLATION_FLAGS, reviewEnv } from './guard'
 import { CODE_SCHEMA, DOC_SCHEMA, codePrompt, docPrompt } from './prompts'
 import { type LogLine, bootTime, lastResult, parseLog, pidAlive, readLog, strayLines } from './proc'
@@ -40,6 +41,7 @@ import {
   openFindings,
   patchItem,
   roundsIn,
+  toRound,
   transitionRound,
   updateRound,
 } from './store'
@@ -70,8 +72,11 @@ const g = globalThis as unknown as {
   __crTicking?: boolean
   /** Rounds this server process is preparing right now. */
   __crPreparing?: Set<number>
+  /** Rounds this server process is storing the result of right now. */
+  __crFinalizing?: Set<number>
 }
 const preparing = (g.__crPreparing ??= new Set())
+const finalizing = (g.__crFinalizing ??= new Set())
 const OWNER = Symbol('code-review-ticker')
 
 /**
@@ -106,8 +111,16 @@ export async function tick(): Promise<void> {
 async function reap() {
   // A round left in `preparing` by a server that has since restarted will
   // never finish preparing — nobody is doing it. Put it back in line.
+  // More than one server process can share this database (a dev server and a
+  // `next start`, or a script). A round claimed by another process is not
+  // this one's to touch — only one that has sat claimed for far too long,
+  // which means its process died mid-way.
+  const now = Math.floor(Date.now() / 1000)
   for (const r of roundsIn(['preparing'])) {
-    if (!preparing.has(r.id)) transitionRound(r.id, ['preparing'], 'queued')
+    if (!preparing.has(r.id) && (r.startedAt ?? 0) < now - 600) transitionRound(r.id, ['preparing'], 'queued')
+  }
+  for (const r of roundsIn(['finalizing'])) {
+    if (!finalizing.has(r.id) && (r.endedAt ?? 0) < now - 180) transitionRound(r.id, ['finalizing'], 'running')
   }
 
   const running = roundsIn(['running'])
@@ -119,7 +132,15 @@ async function reap() {
       continue
     }
     if (pidAlive(r.pid)) continue
-    await finalize(r)
+    // Claim the right to store the result. Without this, two processes that
+    // both notice the same finished run each insert its findings.
+    if (!transitionRound(r.id, ['running'], 'finalizing', { endedAt: now })) continue
+    finalizing.add(r.id)
+    try {
+      await finalize(r)
+    } finally {
+      finalizing.delete(r.id)
+    }
   }
 }
 
@@ -130,7 +151,7 @@ function startQueued() {
   if (free <= 0) return
   for (const r of roundsIn(['queued'])) {
     if (free <= 0) break
-    if (!transitionRound(r.id, ['queued'], 'preparing')) continue
+    if (!transitionRound(r.id, ['queued'], 'preparing', { startedAt: Math.floor(Date.now() / 1000) })) continue
     free -= 1
     preparing.add(r.id)
     void prepareAndSpawn(r.id).finally(() => preparing.delete(r.id))
@@ -163,6 +184,7 @@ async function prepareAndSpawn(roundId: number) {
   let prompt = ''
   let schema: object = CODE_SCHEMA
   const addDirs: string[] = []
+  let links: RoundLink[] = []
 
   try {
     if (item.kind === 'pr') {
@@ -189,6 +211,11 @@ async function prepareAndSpawn(roundId: number) {
         workdir = await addWorktree(r.localPath, `r${roundId}`, headSha)
       })
 
+      // The other side of a cross-repo change (SDK ↔ iOS), read-only context.
+      links = await prepareLinks(roundId, item.links)
+      updateRound(roundId, { links: JSON.stringify(links) })
+      addDirs.push(...linkDirs(links))
+
       const prevHeadSha = prev?.headSha ?? ''
       const incremental =
         Boolean(prevHeadSha) &&
@@ -209,6 +236,8 @@ async function prepareAndSpawn(roundId: number) {
         repoName: r.name,
         docs,
         docsChanged,
+        links,
+        addressee: resolveAddressee(item),
         title: item.title,
         prNumber: item.prNumber,
         author: item.author,
@@ -236,6 +265,12 @@ async function prepareAndSpawn(roundId: number) {
         const dir = path.dirname(d.path)
         if (!addDirs.includes(dir)) addDirs.push(dir)
       }
+      // After the documents: with no repo, the first of these is the cwd.
+      const templates = templatesForDocs(docs, item.templateId)
+      for (const f of templates.flatMap((u) => u.template.files)) {
+        const dir = path.dirname(f.path)
+        if (!addDirs.includes(dir)) addDirs.push(dir)
+      }
 
       if (repo) {
         await withRepoLock(repo.localPath, async () => {
@@ -259,10 +294,13 @@ async function prepareAndSpawn(roundId: number) {
         previous,
         globalRules: cfg.globalRules,
         repoRules: repo?.rules ?? '',
+        addressee: resolveAddressee(item),
+        templates,
       })
     }
   } catch (err) {
     if (workdir && repo) await withRepoLock(repo.localPath, () => removeWorktree(repo.localPath, workdir))
+    await cleanupLinks(roundId, links)
     return fail(`Chuẩn bị thất bại: ${gitSays(err)}`)
   }
 
@@ -294,6 +332,7 @@ async function prepareAndSpawn(roundId: number) {
   // Cancelled while we were fetching? Then do not start anything.
   if (getRound(roundId)?.state !== 'preparing') {
     if (repo && workdir !== addDirs[0]) await withRepoLock(repo.localPath, () => removeWorktree(repo.localPath, workdir))
+    await cleanupLinks(roundId, links)
     return
   }
 
@@ -341,6 +380,8 @@ function parseDocs(raw: string): DocFile[] {
 
 interface Output {
   verdict?: string
+  reviewer_note?: string
+  /** Older rounds / older prompts. */
   summary_comment?: string
   findings?: RawFinding[]
   previous?: Array<{ id?: number; status?: string; note?: string; line?: number; end_line?: number }>
@@ -350,6 +391,7 @@ async function cleanup(r: RoundRow) {
   const item = getItem(r.itemId)
   const repo = item?.repoId ? getRepo(item.repoId) : undefined
   if (repo && r.workdir) await withRepoLock(repo.localPath, () => removeWorktree(repo.localPath, r.workdir))
+  await cleanupLinks(r.id, (getRound(r.id) ? toRound(getRound(r.id)!).links : []))
 }
 
 async function endRound(r: RoundRow, state: 'failed' | 'lost' | 'cancelled', message: string) {
@@ -389,7 +431,7 @@ async function finalize(r: RoundRow) {
   const verdict = ['approve', 'request_changes', 'comment'].includes(out.verdict ?? '') ? out.verdict! : 'comment'
   finishRound(r.id, 'done', {
     verdict,
-    summary: (out.summary_comment ?? '').trim(),
+    summary: (out.reviewer_note ?? out.summary_comment ?? '').trim(),
     costUsd: result.total_cost_usd ?? 0,
     sessionId: result.session_id ?? '',
     message: '',

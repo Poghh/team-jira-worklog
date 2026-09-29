@@ -467,6 +467,12 @@ export const reviewItems = sqliteTable(
     status: text("status").notNull().default("open"),
     /** When the reviewer last opened the GitHub discussion — "new replies" are after this. */
     seenAt: integer("seen_at"),
+    /** JSON: PRs in other repos reviewed alongside this one (SDK ↔ iOS). */
+    links: text("links").notNull().default("[]"),
+    /** JSON {handle, honorific}: how comments address the author; '' = default. */
+    addressee: text("addressee").notNull().default(""),
+    /** Doc reviews: the template (Cấu hình → Mẫu tài liệu) to check against; '' = none. */
+    templateId: text("template_id").notNull().default(""),
     createdAt: integer("created_at").notNull().default(now),
     updatedAt: integer("updated_at").notNull().default(now),
   },
@@ -499,6 +505,8 @@ export const reviewRounds = sqliteTable(
     costUsd: real("cost_usd").notNull().default(0),
     /** Claude Code session id — `--resume` target for the follow-up chat. */
     sessionId: text("session_id").notNull().default(""),
+    /** JSON: the linked PRs as this round saw them — shas, worktree, diff file. */
+    links: text("links").notNull().default("[]"),
     bootAt: integer("boot_at").notNull().default(0),
     createdAt: integer("created_at").notNull().default(now),
     startedAt: integer("started_at"),

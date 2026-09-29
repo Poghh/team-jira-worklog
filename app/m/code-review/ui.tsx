@@ -12,6 +12,8 @@ import {
   type Severity,
 } from '@/lib/modules/code-review/model'
 
+import { useNow } from '@/lib/use-now'
+
 import { claudeStatusAction } from './actions'
 
 export const CARD = 'rounded-[9px] border border-line bg-surface p-[17px]'
@@ -66,7 +68,7 @@ const SEVERITY_CLS: Record<Severity, string> = {
 
 export function SeverityPill({ s }: { s: Severity }) {
   return (
-    <span className={`rounded px-1.5 py-[1px] font-mono text-[10.5px] font-semibold uppercase ${SEVERITY_CLS[s]}`}>
+    <span className={`whitespace-nowrap rounded px-1.5 py-[1px] text-[11px] font-semibold ${SEVERITY_CLS[s]}`}>
       {SEVERITY_LABEL[s]}
     </span>
   )
@@ -88,6 +90,7 @@ const ROUND_CLS: Record<RoundState, string> = {
   queued: 'bg-surface-2 text-ink-2',
   preparing: 'bg-blue-soft text-blue-ink',
   running: 'bg-blue-soft text-blue-ink',
+  finalizing: 'bg-blue-soft text-blue-ink',
   done: 'bg-good-soft text-good',
   failed: 'bg-crit-soft text-crit',
   cancelled: 'bg-surface-2 text-ink-3',
@@ -95,7 +98,7 @@ const ROUND_CLS: Record<RoundState, string> = {
 }
 
 export function RoundPill({ s }: { s: RoundState }) {
-  const live = s === 'running' || s === 'preparing'
+  const live = s === 'running' || s === 'preparing' || s === 'finalizing'
   return (
     <span className={`inline-flex items-center gap-1 rounded px-1.5 py-[1px] text-[11px] font-medium ${ROUND_CLS[s]}`}>
       {live && <span className="size-1.5 animate-pulse rounded-full bg-current" />}
@@ -138,17 +141,37 @@ export function ClaudeBanner({ check: c, onChange }: { check: ClaudeCheck; onCha
   )
 }
 
-export function timeAgo(epoch: number | null | undefined): string {
+export function timeAgo(epoch: number | null | undefined, now: number): string {
   if (!epoch) return ''
-  const s = Math.max(0, Math.floor(Date.now() / 1000) - epoch)
+  const s = Math.max(0, now - epoch)
   if (s < 60) return 'vừa xong'
   if (s < 3600) return `${Math.floor(s / 60)} phút trước`
   if (s < 86400) return `${Math.floor(s / 3600)} giờ trước`
   return `${Math.floor(s / 86400)} ngày trước`
 }
 
-export function duration(from: number | null, to: number | null): string {
+export function duration(from: number | null, to: number): string {
   if (!from) return ''
-  const s = Math.max(0, (to ?? Math.floor(Date.now() / 1000)) - from)
+  const s = Math.max(0, to - from)
   return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m${String(s % 60).padStart(2, '0')}s`
+}
+
+/** "3 phút trước" — rendered only once in the browser (see useNow). */
+export function Ago({ epoch, prefix = '' }: { epoch: number | null | undefined; prefix?: string }) {
+  const now = useNow(30)
+  if (!epoch || now === null) return null
+  return (
+    <>
+      {prefix}
+      {timeAgo(epoch, now)}
+    </>
+  )
+}
+
+/** Elapsed time; ticks every second while `to` is still open. */
+export function Elapsed({ from, to }: { from: number | null; to: number | null }) {
+  const now = useNow(1)
+  if (!from) return null
+  if (to !== null) return <>{duration(from, to)}</>
+  return now === null ? null : <>{duration(from, now)}</>
 }

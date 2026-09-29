@@ -9,8 +9,12 @@ import {
   DOC_ROLE_LABEL,
   type DocFile,
   type DocRole,
+  type DocTemplate,
   type ItemSummary,
+  guessTemplate,
   LIVE_STATES,
+  type PrLink,
+  linkLabel,
   type RepoPreset,
   shortSha,
 } from '@/lib/modules/code-review/model'
@@ -30,8 +34,9 @@ import {
   reReviewAction,
   saveReposAction,
   saveRunnerAction,
+  saveTemplatesAction,
 } from './actions'
-import { BTN, BTN_PRI, CARD, CTITLE, ClaudeBanner, INPUT, RoundPill, TabBtn, timeAgo } from './ui'
+import { BTN, BTN_PRI, CARD, CTITLE, ClaudeBanner, INPUT, RoundPill, TabBtn, Ago } from './ui'
 
 type Tab = 'items' | 'pr' | 'doc' | 'config'
 
@@ -47,11 +52,13 @@ export function CodeReview({
   repos,
   runner,
   items: initialItems,
+  templates,
 }: {
   claude: ClaudeCheck
   repos: RepoPreset[]
   runner: RunnerView
   items: ItemSummary[]
+  templates: DocTemplate[]
 }) {
   const [tab, setTab] = useState<Tab>(repos.length ? 'items' : 'config')
   const [claude, setClaude] = useState(initialClaude)
@@ -83,8 +90,15 @@ export function CodeReview({
 
       {tab === 'items' && <Dashboard initial={initialItems} repos={repos} canRun={claude.ok} onNew={() => setTab('pr')} />}
       {tab === 'pr' && <NewPr repos={repos} canRun={claude.ok} onDone={() => setTab('items')} onConfig={() => setTab('config')} />}
-      {tab === 'doc' && <NewDoc repos={repos} canRun={claude.ok} />}
-      {tab === 'config' && <Config repos={repos} runner={runner} onClaude={setClaude} />}
+      {tab === 'doc' && <NewDoc repos={repos} templates={templates} canRun={claude.ok} />}
+      {tab === 'config' && (
+        <>
+          <Config repos={repos} runner={runner} onClaude={setClaude} />
+          <div className="mt-4">
+            <TemplatesManager templates={templates} repos={repos} />
+          </div>
+        </>
+      )}
     </>
   )
 }
@@ -193,7 +207,7 @@ function Dashboard({
                       </Link>
                       <div className="mt-0.5 font-mono text-[11px] text-ink-3">
                         {i.kind === 'pr'
-                          ? `${i.headRef} → ${i.baseRef}${i.author ? ` · ${i.author}` : ''}${i.latest?.docs.length ? ` · 📎 ${i.latest.docs.length} tài liệu` : ''}`
+                          ? `${i.headRef} → ${i.baseRef}${i.author ? ` · ${i.author}` : ''}${i.latest?.docs.length ? ` · 📎 ${i.latest.docs.length} tài liệu` : ''}${i.links.length ? ` · 🔗 ${i.links.length} PR liên kết` : ''}`
                           : `${i.latest?.docs.length ?? 0} file${i.headRef ? ` · đối chiếu ${i.headRef}` : ''}`}
                       </div>
                     </td>
@@ -215,7 +229,9 @@ function Dashboard({
                             💬 {replies} phản hồi mới
                           </Link>
                         )}
-                        <span className="text-[11px] text-ink-3">{timeAgo(i.latest?.endedAt ?? i.latest?.createdAt)}</span>
+                        <span className="text-[11px] text-ink-3">
+                          <Ago epoch={i.latest?.endedAt ?? i.latest?.createdAt} />
+                        </span>
                       </div>
                       {st === 'failed' && i.latest?.message && (
                         <div className="mt-0.5 max-w-[360px] truncate text-[11px] text-crit" title={i.latest.message}>
@@ -332,13 +348,14 @@ function NewPr({
     })
 
   const attach = useAttachments()
+  const [links, setLinks] = useState<PrLink[]>([])
 
   const submit = () =>
     start(async () => {
       const docs = await attach.upload()
       if (!docs) return
       const chosen = pulls.filter((p) => picked.has(p.number))
-      const r = await queuePullsAction({ repoId, pulls: chosen, note, docs })
+      const r = await queuePullsAction({ repoId, pulls: chosen, note, docs, links })
       setMsg(r.message)
       if (r.ok) {
         attach.clear()
@@ -422,6 +439,15 @@ function NewPr({
             {attach.section(
               'Mô tả chức năng, TDD… Claude sẽ kiểm tra PR có làm đúng và đủ theo tài liệu không. Áp dụng cho mọi PR đang chọn; các vòng Review tiếp tự dùng lại.',
             )}
+            <details className="mt-2 rounded-md border border-line px-3 py-2" open={links.length > 0}>
+              <summary className="cursor-pointer text-[12.5px] text-ink-2">
+                🔗 Liên kết PR ở repo khác{links.length ? ` · ${links.length}` : ' (không bắt buộc)'}
+              </summary>
+              <p className="mb-2 mt-1 text-[11.5px] text-ink-3">
+                Vd PR SDK mà PR iOS này dựa vào (hoặc ngược lại). Claude đọc thêm diff và code của PR kia để soi chỗ nối giữa hai bên. Áp dụng cho mọi PR đang chọn.
+              </p>
+              <LinkPicker repos={repos} value={links} onChange={setLinks} preferNot={repoId} />
+            </details>
             <div className="mt-2 flex items-center gap-2">
               <button type="button" className={BTN_PRI} disabled={busy || !canRun || picked.size === 0} onClick={submit}>
                 {busy && attach.count ? 'Đang tải tài liệu…' : `Review ${picked.size || ''} PR`}
@@ -434,12 +460,13 @@ function NewPr({
         )}
       </div>
 
-      {repo && <BranchForm repo={repo} canRun={canRun} onDone={onDone} />}
+      {repo && <BranchForm repo={repo} repos={repos} canRun={canRun} onDone={onDone} />}
     </div>
   )
 }
 
-function BranchForm({ repo, canRun, onDone }: { repo: RepoPreset; canRun: boolean; onDone: () => void }) {
+function BranchForm({ repo, repos, canRun, onDone }: { repo: RepoPreset; repos: RepoPreset[]; canRun: boolean; onDone: () => void }) {
+  const [links, setLinks] = useState<PrLink[]>([])
   const [branches, setBranches] = useState<string[]>([])
   const [base, setBase] = useState('')
   const [head, setHead] = useState('')
@@ -487,6 +514,14 @@ function BranchForm({ repo, canRun, onDone }: { repo: RepoPreset; canRun: boolea
       <input value={title} onChange={(e) => setTitle(e.target.value)} className={INPUT + ' mt-2'} placeholder="Tên hồ sơ (không bắt buộc)" />
       <textarea value={note} onChange={(e) => setNote(e.target.value)} rows={2} className={INPUT + ' mt-2'} placeholder="Ghi chú cho Claude (không bắt buộc)" />
       {attach.section('Mô tả chức năng, TDD… Claude sẽ kiểm tra code trên nhánh có làm đúng và đủ theo tài liệu không.')}
+      <details className="mt-2 rounded-md border border-line px-3 py-2" open={links.length > 0}>
+        <summary className="cursor-pointer text-[12.5px] text-ink-2">
+          🔗 Liên kết PR ở repo khác{links.length ? ` · ${links.length}` : ' (không bắt buộc)'}
+        </summary>
+        <div className="mt-2">
+          <LinkPicker repos={repos} value={links} onChange={setLinks} preferNot={repo.id} />
+        </div>
+      </details>
       <div className="mt-2 flex items-center gap-2">
         <button
           type="button"
@@ -496,7 +531,7 @@ function BranchForm({ repo, canRun, onDone }: { repo: RepoPreset; canRun: boolea
             start(async () => {
               const docs = await attach.upload()
               if (!docs) return
-              const r = await queueBranchesAction({ repoId: repo.id, baseRef: base, headRef: head, title, note, docs })
+              const r = await queueBranchesAction({ repoId: repo.id, baseRef: base, headRef: head, title, note, docs, links })
               setMsg(r.message)
               if (r.ok) {
                 attach.clear()
@@ -518,10 +553,29 @@ function BranchForm({ repo, canRun, onDone }: { repo: RepoPreset; canRun: boolea
 interface PickedDoc {
   file: File
   role: DocRole
+  /** Doc reviews: the template this file follows; '' = none. */
+  templateId?: string
+  /** Chosen by hand — a later default must not overwrite it. */
+  touched?: boolean
 }
 
-/** PDF picker with a role per file; the files stay in the browser until uploaded. */
-function DocPicker({ docs, setDocs }: { docs: PickedDoc[]; setDocs: React.Dispatch<React.SetStateAction<PickedDoc[]>> }) {
+/**
+ * PDF picker with a role per file — and, for doc reviews, the template each
+ * file is held to (TDD iOS → mẫu iOS, TDD SDK → mẫu SDK). The files stay in
+ * the browser until uploaded.
+ */
+function DocPicker({
+  docs,
+  setDocs,
+  templates,
+  guess,
+}: {
+  docs: PickedDoc[]
+  setDocs: React.Dispatch<React.SetStateAction<PickedDoc[]>>
+  /** Given for doc reviews only; PR attachments have no template. */
+  templates?: DocTemplate[]
+  guess?: (f: { name: string; role: DocRole }) => string
+}) {
   return (
     <div>
       <input
@@ -532,10 +586,10 @@ function DocPicker({ docs, setDocs }: { docs: PickedDoc[]; setDocs: React.Dispat
           const files = [...(e.target.files ?? [])]
           setDocs((d) => [
             ...d,
-            ...files.map((file) => ({
-              file,
-              role: (/tdd|design|thiet.?ke|thiết.?kế/i.test(file.name) ? 'tdd' : 'spec') as DocRole,
-            })),
+            ...files.map((file) => {
+              const role = (/tdd|design|thiet.?ke|thiết.?kế/i.test(file.name) ? 'tdd' : 'spec') as DocRole
+              return { file, role, templateId: guess?.({ name: file.name, role }) ?? '' }
+            }),
           ])
           e.target.value = ''
         }}
@@ -547,7 +601,15 @@ function DocPicker({ docs, setDocs }: { docs: PickedDoc[]; setDocs: React.Dispat
             <li key={i} className="flex items-center gap-2 text-[12.5px]">
               <select
                 value={d.role}
-                onChange={(e) => setDocs((all) => all.map((x, j) => (j === i ? { ...x, role: e.target.value as DocRole } : x)))}
+                onChange={(e) =>
+                  setDocs((all) =>
+                    all.map((x, j) => {
+                      if (j !== i) return x
+                      const role = e.target.value as DocRole
+                      return { ...x, role, templateId: x.touched ? x.templateId : guess?.({ name: x.file.name, role }) ?? '' }
+                    }),
+                  )
+                }
                 className="rounded-md border border-line bg-ground px-1.5 py-0.5 text-[12px]"
               >
                 {(Object.keys(DOC_ROLE_LABEL) as DocRole[]).map((r) => (
@@ -556,6 +618,21 @@ function DocPicker({ docs, setDocs }: { docs: PickedDoc[]; setDocs: React.Dispat
                   </option>
                 ))}
               </select>
+              {templates && (
+                <select
+                  value={d.templateId ?? ''}
+                  onChange={(e) => setDocs((all) => all.map((x, j) => (j === i ? { ...x, templateId: e.target.value, touched: true } : x)))}
+                  className="max-w-[180px] rounded-md border border-line bg-ground px-1.5 py-0.5 text-[12px]"
+                  title="Mẫu tài liệu file này phải theo"
+                >
+                  <option value="">📐 Không mẫu</option>
+                  {templates.map((t) => (
+                    <option key={t.id} value={t.id}>
+                      📐 {t.name}
+                    </option>
+                  ))}
+                </select>
+              )}
               <span className="truncate">{d.file.name}</span>
               <span className="text-[11px] text-ink-3">{(d.file.size / 1024 / 1024).toFixed(1)} MB</span>
               <button type="button" className="text-ink-3 hover:text-crit" onClick={() => setDocs((all) => all.filter((_, j) => j !== i))}>
@@ -622,12 +699,36 @@ export function useAttachments() {
  * Picker + upload state for PDFs, shared by the new-review form and the
  * detail page's "Review tiếp" (which needs the updated documents).
  */
-export function useDocUpload(opts: { itemId?: number; canRun: boolean; onQueued: (itemId: number) => void }) {
+export function useDocUpload(opts: {
+  itemId?: number
+  canRun: boolean
+  onQueued: (itemId: number) => void
+  templates: DocTemplate[]
+  /** Template for a TDD whose name says nothing (the repo's / item's default). */
+  fallbackTemplate: string
+  /** The last round's files: a new version of one keeps its template. */
+  previous?: DocFile[]
+}) {
   const [docs, setDocs] = useState<PickedDoc[]>([])
   const [msg, setMsg] = useState('')
   const [busy, setBusy] = useState(false)
 
-  const picker = <DocPicker docs={docs} setDocs={setDocs} />
+  const guess = (f: { name: string; role: DocRole }) => {
+    const byName = guessTemplate(f, opts.templates, '')
+    if (byName) return byName
+    // Same kind of document as last round, one template among them: keep it.
+    const prior = new Set((opts.previous ?? []).filter((p) => p.role === f.role).map((p) => p.templateId ?? ''))
+    if (prior.size === 1) return [...prior][0]
+    return f.role === 'tdd' ? opts.fallbackTemplate : ''
+  }
+
+  // The repo (hence its default template) changed: re-guess what was not chosen by hand.
+  useEffect(() => {
+    setDocs((all) => all.map((d) => (d.touched ? d : { ...d, templateId: guess({ name: d.file.name, role: d.role }) })))
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [opts.fallbackTemplate])
+
+  const picker = <DocPicker docs={docs} setDocs={setDocs} templates={opts.templates} guess={guess} />
 
   const submit = async (extra: Record<string, string>) => {
     setBusy(true)
@@ -639,6 +740,7 @@ export function useDocUpload(opts: { itemId?: number; canRun: boolean; onQueued:
       for (const d of docs) {
         form.append('files', d.file)
         form.append('roles', d.role)
+        form.append('templates', d.templateId ?? '')
       }
       const res = await fetch('/api/code-review/docs', { method: 'POST', body: form })
       const body = (await res.json()) as { ok: boolean; message: string; itemId?: number }
@@ -657,14 +759,20 @@ export function useDocUpload(opts: { itemId?: number; canRun: boolean; onQueued:
   return { picker, submit, busy, msg, ready: !busy && opts.canRun && docs.length > 0 }
 }
 
-function NewDoc({ repos, canRun }: { repos: RepoPreset[]; canRun: boolean }) {
+function NewDoc({ repos, templates, canRun }: { repos: RepoPreset[]; templates: DocTemplate[]; canRun: boolean }) {
   const router = useRouter()
   const [title, setTitle] = useState('')
   const [repoId, setRepoId] = useState(repos[0]?.id ?? '')
+  const defaultTemplate = (rid: string) => templates.find((t) => t.repoIds.includes(rid))?.id ?? ''
   const [ref, setRef] = useState('')
   const [note, setNote] = useState('')
   const [branches, setBranches] = useState<string[]>([])
-  const up = useDocUpload({ canRun, onQueued: (id) => router.push(`/m/code-review/${id}`) })
+  const up = useDocUpload({
+    canRun,
+    onQueued: (id) => router.push(`/m/code-review/${id}`),
+    templates,
+    fallbackTemplate: defaultTemplate(repoId),
+  })
 
   useEffect(() => {
     if (!repoId) return setBranches([])
@@ -679,7 +787,11 @@ function NewDoc({ repos, canRun }: { repos: RepoPreset[]; canRun: boolean }) {
         <div className="grid gap-2 sm:grid-cols-2">
           <label className="text-[12px] text-ink-2">
             Đối chiếu với code của repo
-            <select value={repoId} onChange={(e) => setRepoId(e.target.value)} className={INPUT}>
+            <select
+              value={repoId}
+              onChange={(e) => setRepoId(e.target.value)}
+              className={INPUT}
+            >
               <option value="">— Không đối chiếu code —</option>
               {repos.map((r) => (
                 <option key={r.id} value={r.id}>
@@ -700,6 +812,10 @@ function NewDoc({ repos, canRun }: { repos: RepoPreset[]; canRun: boolean }) {
             </label>
           )}
         </div>
+        <div className="text-[12px] text-ink-2">
+          Tài liệu — mỗi file chọn loại và <span className="font-medium">📐 mẫu</span> nó phải theo (vd Mô tả chức năng: không mẫu · TDD iOS: mẫu iOS · TDD SDK: mẫu SDK). Mẫu được đoán sẵn theo tên file.
+          {templates.length === 0 && <span className="text-ink-3"> Chưa có mẫu nào — thêm ở tab Cấu hình → Mẫu tài liệu.</span>}
+        </div>
         {up.picker}
         <textarea value={note} onChange={(e) => setNote(e.target.value)} rows={2} className={INPUT} placeholder="Ghi chú cho Claude (không bắt buộc) — vd: chú ý phần migration dữ liệu" />
         <div className="flex items-center gap-2">
@@ -707,7 +823,7 @@ function NewDoc({ repos, canRun }: { repos: RepoPreset[]; canRun: boolean }) {
             type="button"
             className={BTN_PRI}
             disabled={!up.ready || !title.trim() || (Boolean(repoId) && !ref.trim())}
-            onClick={() => void up.submit({ title, repoId, ref, note })}
+            onClick={() => void up.submit({ title, repoId, ref, note, templateId: defaultTemplate(repoId) })}
           >
             {up.busy ? 'Đang tải lên…' : 'Review tài liệu'}
           </button>
@@ -820,6 +936,248 @@ function Config({ repos, runner, onClaude }: { repos: RepoPreset[]; runner: Runn
             Lưu & kiểm tra CLI
           </button>
         </div>
+      </div>
+    </div>
+  )
+}
+
+/* ── linked PRs (SDK ↔ iOS) ─────────────────────────────────────────────── */
+
+/**
+ * Picks PRs in other repos to review alongside — e.g. the SDK PR an iOS PR
+ * builds on. Claude reads their diff and code; findings stay on this PR.
+ */
+export function LinkPicker({
+  repos,
+  value,
+  onChange,
+  preferNot,
+}: {
+  repos: RepoPreset[]
+  value: PrLink[]
+  onChange: (links: PrLink[]) => void
+  /** The repo being reviewed — offered last, since the pair is usually cross-repo. */
+  preferNot?: string
+}) {
+  const ordered = [...repos].sort((a, b) => Number(a.id === preferNot) - Number(b.id === preferNot))
+  const [repoId, setRepoId] = useState(ordered[0]?.id ?? '')
+  const repo = repos.find((r) => r.id === repoId)
+  const [pulls, setPulls] = useState<PullRow[]>([])
+  const [pick, setPick] = useState('')
+  const [head, setHead] = useState('')
+  const [base, setBase] = useState('')
+  const [msg, setMsg] = useState('')
+
+  useEffect(() => {
+    setPulls([])
+    setPick('')
+    if (!repo?.githubRepo) return
+    void listPullsAction(repo.id).then((r) => {
+      setPulls(r.pulls)
+      setMsg(r.ok ? '' : r.message)
+    })
+  }, [repo?.id, repo?.githubRepo])
+
+  const name = (id: string) => repos.find((r) => r.id === id)?.name ?? '?'
+  const add = (l: PrLink) => {
+    if (value.some((v) => v.repoId === l.repoId && (l.prNumber ? v.prNumber === l.prNumber : v.headRef === l.headRef))) return
+    onChange([...value, l])
+    setPick('')
+    setHead('')
+    setBase('')
+  }
+
+  return (
+    <div>
+      {value.length > 0 && (
+        <ul className="mb-2 flex flex-wrap gap-1.5">
+          {value.map((l, i) => (
+            <li key={i} className="flex items-center gap-1.5 rounded-md border border-line bg-surface-2 px-2 py-0.5 text-[12px]">
+              🔗 <span className="font-medium">{linkLabel(l, name(l.repoId))}</span>
+              <span className="max-w-[260px] truncate text-ink-3">{l.title}</span>
+              <button type="button" className="text-ink-3 hover:text-crit" onClick={() => onChange(value.filter((_, j) => j !== i))}>
+                ✕
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+      <div className="flex flex-wrap items-center gap-2">
+        <select value={repoId} onChange={(e) => setRepoId(e.target.value)} className={INPUT + ' w-auto'}>
+          {ordered.map((r) => (
+            <option key={r.id} value={r.id}>
+              {r.name}
+              {r.id === preferNot ? ' (cùng repo)' : ''}
+            </option>
+          ))}
+        </select>
+        {repo?.githubRepo ? (
+          <>
+            <select value={pick} onChange={(e) => setPick(e.target.value)} className={INPUT + ' w-auto max-w-[420px]'}>
+              <option value="">— Chọn PR đang mở —</option>
+              {pulls.map((p) => (
+                <option key={p.number} value={p.number}>
+                  #{p.number} {p.title.slice(0, 70)}
+                </option>
+              ))}
+            </select>
+            <button
+              type="button"
+              className={BTN}
+              disabled={!pick}
+              onClick={() => {
+                const p = pulls.find((x) => String(x.number) === pick)
+                if (p) add({ repoId, prNumber: p.number, headRef: p.headRef, baseRef: p.baseRef, title: p.title, url: p.url })
+              }}
+            >
+              + Liên kết
+            </button>
+          </>
+        ) : (
+          <>
+            <input value={head} onChange={(e) => setHead(e.target.value)} className={INPUT + ' w-40'} placeholder="nhánh nguồn" />
+            <input value={base} onChange={(e) => setBase(e.target.value)} className={INPUT + ' w-32'} placeholder="nhánh đích" />
+            <button
+              type="button"
+              className={BTN}
+              disabled={!head.trim() || !base.trim()}
+              onClick={() => add({ repoId, prNumber: null, headRef: head.trim(), baseRef: base.trim(), title: `${head.trim()} → ${base.trim()}`, url: '' })}
+            >
+              + Liên kết
+            </button>
+          </>
+        )}
+        {msg && <span className="text-[12px] text-crit">{msg}</span>}
+      </div>
+    </div>
+  )
+}
+
+/* ── document templates ─────────────────────────────────────────────────── */
+
+const blankTemplate = (): DocTemplate => ({ id: '', name: '', note: '', files: [], repoIds: [] })
+
+/**
+ * What a TDD iOS / TDD SDK is supposed to look like. A doc review held to one
+ * checks the document against its files and checklist.
+ */
+function TemplatesManager({ templates, repos }: { templates: DocTemplate[]; repos: RepoPreset[] }) {
+  const router = useRouter()
+  const [list, setList] = useState<DocTemplate[]>(templates.length ? templates : [blankTemplate()])
+  const [msg, setMsg] = useState('')
+  const [uploading, setUploading] = useState<number | null>(null)
+  const [busy, start] = useTransition()
+  const patch = (i: number, p: Partial<DocTemplate>) => setList((l) => l.map((x, j) => (j === i ? { ...x, ...p } : x)))
+
+  const upload = async (i: number, files: File[]) => {
+    if (!files.length) return
+    setUploading(i)
+    setMsg('')
+    try {
+      const form = new FormData()
+      form.set('kind', 'template')
+      for (const f of files) {
+        form.append('files', f)
+        form.append('roles', 'other')
+      }
+      const res = await fetch('/api/code-review/upload', { method: 'POST', body: form })
+      const body = (await res.json()) as { ok: boolean; message: string; docs?: DocFile[] }
+      if (body.ok && body.docs) setList((l) => l.map((x, j) => (j === i ? { ...x, files: [...x.files, ...body.docs!] } : x)))
+      else setMsg(body.message)
+    } catch (err) {
+      setMsg((err as Error).message)
+    } finally {
+      setUploading(null)
+    }
+  }
+
+  return (
+    <div className={CARD}>
+      <div className={CTITLE + ' mb-1'}>📐 Mẫu tài liệu</div>
+      <p className="mb-3 text-[12px] text-ink-2">
+        Mẫu TDD iOS / TDD SDK… mà tài liệu phải theo. Khi review tài liệu và chọn mẫu, Claude đọc mẫu trước rồi kiểm tra tài liệu có đủ mục, đúng cấu trúc, mục nào để trống hay chung chung. Nhận PDF, Markdown (.md) hoặc .txt.
+      </p>
+      <div className="flex flex-col gap-3">
+        {list.map((t, i) => (
+          <div key={i} className="rounded-md border border-line p-3">
+            <input value={t.name} onChange={(e) => patch(i, { name: e.target.value })} className={INPUT} placeholder="Tên mẫu — vd: TDD iOS" />
+            <div className="mt-2 flex flex-wrap items-center gap-2 text-[12px] text-ink-2">
+              <span>Mặc định cho repo:</span>
+              {repos.map((r) => (
+                <label key={r.id} className="flex items-center gap-1">
+                  <input
+                    type="checkbox"
+                    checked={t.repoIds.includes(r.id)}
+                    onChange={(e) =>
+                      patch(i, { repoIds: e.target.checked ? [...t.repoIds, r.id] : t.repoIds.filter((x) => x !== r.id) })
+                    }
+                  />
+                  {r.name}
+                </label>
+              ))}
+            </div>
+            <div className="mt-2">
+              {t.files.length > 0 && (
+                <ul className="mb-1.5 flex flex-col gap-1">
+                  {t.files.map((f, k) => (
+                    <li key={k} className="flex items-center gap-2 text-[12.5px]">
+                      📄 <span className="truncate">{f.name}</span>
+                      <button
+                        type="button"
+                        className="text-ink-3 hover:text-crit"
+                        onClick={() => patch(i, { files: t.files.filter((_, x) => x !== k) })}
+                      >
+                        ✕
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              )}
+              <input
+                type="file"
+                accept="application/pdf,.pdf,.md,.markdown,.txt,text/markdown,text/plain"
+                multiple
+                disabled={uploading !== null}
+                onChange={(e) => {
+                  void upload(i, [...(e.target.files ?? [])])
+                  e.target.value = ''
+                }}
+                className="text-[12.5px] file:mr-2 file:rounded-md file:border file:border-line-strong file:bg-surface file:px-2.5 file:py-1 file:text-[12.5px]"
+              />
+              {uploading === i && <span className="ml-2 text-[12px] text-ink-3">Đang tải lên…</span>}
+            </div>
+            <textarea
+              value={t.note}
+              onChange={(e) => patch(i, { note: e.target.value })}
+              rows={4}
+              className={INPUT + ' mt-2'}
+              placeholder={'Checklist bắt buộc (không bắt buộc nếu file mẫu đã đủ) — vd:\n- Phải có sequence diagram cho luồng chính\n- Bảng API: endpoint, request, response, mã lỗi\n- Mục Error handling & Test plan không được để trống'}
+            />
+            <button type="button" className="mt-1.5 text-[12px] text-ink-3 hover:text-crit" onClick={() => setList((l) => l.filter((_, j) => j !== i))}>
+              Xoá mẫu này
+            </button>
+          </div>
+        ))}
+      </div>
+      <div className="mt-3 flex items-center gap-2">
+        <button type="button" className={BTN} onClick={() => setList((l) => [...l, blankTemplate()])}>
+          + Thêm mẫu
+        </button>
+        <button
+          type="button"
+          className={BTN_PRI}
+          disabled={busy || uploading !== null}
+          onClick={() =>
+            start(async () => {
+              const r = await saveTemplatesAction(list)
+              setMsg(r.message)
+              if (r.ok) router.refresh()
+            })
+          }
+        >
+          Lưu mẫu
+        </button>
+        {msg && <span className="text-[12px] text-ink-2">{msg}</span>}
       </div>
     </div>
   )

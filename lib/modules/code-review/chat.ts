@@ -5,12 +5,13 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 
 import { checkClaude } from './claude'
-import { getRepo, getReviewConfig } from './config'
+import { getRepo, getReviewConfig, resolveAddressee, templatesForDocs } from './config'
 import { type RawFinding, buildFreshRows, cleanSeverity } from './findings'
 import { addWorktree, diffRanges, gitSays, removeWorktree, withRepoLock } from './git'
 import { ALLOWED_TOOLS, DISALLOWED_TOOLS, ISOLATION_FLAGS, reviewEnv } from './guard'
 import type { DocFile, FindingView } from './model'
 import { type LogLine, bootTime, lastResult, parseLog, pidAlive, readLog, strayLines } from './proc'
+import { cleanupLinks, linkDirs, restoreLinks } from './links'
 import { CHAT_SCHEMA, chatPrompt } from './prompts'
 import {
   type MessageRow,
@@ -25,6 +26,7 @@ import {
   listRounds,
   patchFindingFull,
   runningMessages,
+  toRound,
   updateMessage,
   updateRound,
 } from './store'
@@ -71,7 +73,7 @@ function parseChanges(raw: string): ChatChanges | null {
   if (!raw) return null
   try {
     const c = JSON.parse(raw) as ChatChanges
-    const empty = !c.summary_comment?.trim() && !c.update?.length && !c.add?.length
+    const empty = !c.update?.length && !c.add?.length
     return empty ? null : c
   } catch {
     return null
@@ -119,7 +121,8 @@ async function workspace(roundId: number): Promise<{ workdir: string; addDirs: s
     if (prev) docs.push(...prev.docs)
   }
   const addDirs: string[] = []
-  for (const d of docs) {
+  const templateFiles = templatesForDocs(docs, item.templateId).flatMap((u) => u.template.files)
+  for (const d of [...docs, ...templateFiles]) {
     const dir = path.dirname(d.path)
     if (!addDirs.includes(dir)) addDirs.push(dir)
   }
@@ -134,6 +137,9 @@ async function workspace(roundId: number): Promise<{ workdir: string; addDirs: s
     // exactly that one — its recorded name, not one derived from the id.
     const name = round.workdir ? path.basename(round.workdir) : `r${roundId}`
     const workdir = await withRepoLock(repo.localPath, () => addWorktree(repo.localPath, name, round.headSha))
+    // The linked PRs, back where the session last read them.
+    const links = await restoreLinks(roundId, toRound(round).links)
+    addDirs.push(...linkDirs(links))
     return { workdir, addDirs, repoPath: repo.localPath }
   } catch (err) {
     return `Không mở lại được code của vòng này: ${gitSays(err)}`
@@ -170,6 +176,7 @@ export async function sendChat(roundId: number, text: string): Promise<{ ok: boo
     summary: round.summary,
     findings: listFindings(roundId),
     fresh: resume ? null : { title: item.title, baseSha: round.baseSha, headSha: round.headSha, docs: parseDocs(round.docs) },
+    addressee: resolveAddressee(item),
   })
 
   await fs.mkdir(LOG_DIR, { recursive: true })
@@ -218,6 +225,7 @@ async function cleanup(roundId: number, workdir: string) {
   // Another turn on the same round may already be using the worktree again.
   if (runningMessages().some((m) => m.roundId === roundId)) return
   if (repo && workdir) await withRepoLock(repo.localPath, () => removeWorktree(repo.localPath, workdir))
+  if (round) await cleanupLinks(roundId, toRound(round).links)
 }
 
 /** Called from the queue's tick: finish every turn whose process has ended. */
@@ -323,8 +331,9 @@ export async function applyChanges(messageId: number): Promise<{ ok: boolean; me
     added = rows.length
   }
 
-  if (changes.summary_comment?.trim()) updateRound(round.id, { summary: changes.summary_comment.trim() })
+  // The round note is Claude's read for the reviewer, not part of what gets
+  // posted — chat does not rewrite it.
   updateMessage(m.id, { applied: true })
-  const parts = [edited && `sửa ${edited}`, dismissed && `bỏ ${dismissed}`, added && `thêm ${added}`, changes.summary_comment?.trim() && 'viết lại comment chung']
+  const parts = [edited && `sửa ${edited}`, dismissed && `bỏ ${dismissed}`, added && `thêm ${added}`]
   return { ok: true, message: `Đã áp dụng: ${parts.filter(Boolean).join(', ') || 'không có gì thay đổi'}.` }
 }

@@ -13,6 +13,9 @@ import {
   type ItemSummary,
   type ItemView,
   LIVE_STATES,
+  type Addressee,
+  type PrLink,
+  type RoundLink,
   type RoundState,
   type RoundView,
   type Severity,
@@ -20,6 +23,33 @@ import {
 } from './model'
 
 const nowSql = sql`(strftime('%s','now'))` as unknown as number
+
+function parseAddressee(raw: string): Addressee | null {
+  if (!raw) return null
+  try {
+    const a = JSON.parse(raw) as Addressee
+    return a && typeof a.handle === 'string' && a.handle ? a : null
+  } catch {
+    return null
+  }
+}
+
+export function setItemTemplate(id: number, templateId: string) {
+  db.update(reviewItems).set({ templateId }).where(eq(reviewItems.id, id)).run()
+}
+
+export function setItemAddressee(id: number, a: Addressee | null) {
+  db.update(reviewItems).set({ addressee: a ? JSON.stringify(a) : '' }).where(eq(reviewItems.id, id)).run()
+}
+
+function parseJsonArray<T>(raw: string): T[] {
+  try {
+    const v = JSON.parse(raw)
+    return Array.isArray(v) ? (v as T[]) : []
+  } catch {
+    return []
+  }
+}
 
 function parseDocs(raw: string): DocFile[] {
   try {
@@ -43,6 +73,9 @@ const toItem = (r: typeof reviewItems.$inferSelect): ItemView => ({
   note: r.note,
   status: r.status === 'archived' ? 'archived' : 'open',
   seenAt: r.seenAt,
+  links: parseJsonArray<PrLink>(r.links),
+  addressee: parseAddressee(r.addressee),
+  templateId: r.templateId,
   updatedAt: r.updatedAt,
 })
 
@@ -55,6 +88,7 @@ export const toRound = (r: typeof reviewRounds.$inferSelect): RoundView => ({
   headSha: r.headSha,
   prevHeadSha: r.prevHeadSha,
   docs: parseDocs(r.docs),
+  links: parseJsonArray<RoundLink>(r.links),
   verdict: r.verdict as Verdict | '',
   summary: r.summary,
   message: r.message,
@@ -109,11 +143,25 @@ export function findPrItem(repoId: string, prNumber: number): ItemView | null {
   return r ? toItem(r) : null
 }
 
-export function createItem(input: Omit<ItemView, 'id' | 'status' | 'updatedAt' | 'seenAt'>): number {
-  return db.insert(reviewItems).values(input).returning({ id: reviewItems.id }).get().id
+export function createItem(
+  input: Omit<ItemView, 'id' | 'status' | 'updatedAt' | 'seenAt' | 'links' | 'addressee' | 'templateId'> & {
+    links?: PrLink[]
+    templateId?: string
+  },
+): number {
+  const { links, ...rest } = input
+  return db
+    .insert(reviewItems)
+    .values({ ...rest, links: JSON.stringify(links ?? []) })
+    .returning({ id: reviewItems.id })
+    .get().id
 }
 
-export function patchItem(id: number, patch: Partial<Omit<ItemView, 'id'>>) {
+export function setItemLinks(id: number, links: PrLink[]) {
+  db.update(reviewItems).set({ links: JSON.stringify(links) }).where(eq(reviewItems.id, id)).run()
+}
+
+export function patchItem(id: number, patch: Partial<Omit<ItemView, 'id' | 'links' | 'addressee' | 'templateId'>>) {
   db.update(reviewItems).set({ ...patch, updatedAt: nowSql }).where(eq(reviewItems.id, id)).run()
 }
 
@@ -268,10 +316,10 @@ export function transitionRound(
 
 export function finishRound(
   id: number,
-  state: Exclude<RoundState, 'queued' | 'preparing' | 'running'>,
+  state: Exclude<RoundState, 'queued' | 'preparing' | 'running' | 'finalizing'>,
   patch: Partial<Omit<RoundRow, 'id' | 'state'>> = {},
 ): boolean {
-  return transitionRound(id, ['queued', 'preparing', 'running'], state, {
+  return transitionRound(id, ['queued', 'preparing', 'running', 'finalizing'], state, {
     ...patch,
     endedAt: nowSql,
   })

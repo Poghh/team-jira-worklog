@@ -64,7 +64,11 @@ export default async function RootLayout({
         <BuildWatcher enabled={branchesOn} watching={watchBuilds}>
           <div className="grid min-h-screen grid-cols-1 md:grid-cols-[196px_1fr]">
             <Nav label={label} modules={modules} />
-            <main className="max-w-[1340px] px-6 pb-12 pt-5">{children}</main>
+            {/* `min-w-0`: the column is `1fr`, i.e. `minmax(auto, 1fr)`, so without
+                it one long unbreakable line — a code snippet in a review, a long
+                branch name — widens `main` past the viewport and the whole page
+                scrolls sideways. With it, that content scrolls in its own box. */}
+            <main className="min-w-0 max-w-[1340px] px-6 pb-12 pt-5">{children}</main>
           </div>
         </BuildWatcher>
       </body>

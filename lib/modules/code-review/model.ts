@@ -10,17 +10,20 @@ export type RoundState =
   | 'queued'
   | 'preparing'
   | 'running'
+  /** Claude has finished; one server process is storing its findings. */
+  | 'finalizing'
   | 'done'
   | 'failed'
   | 'cancelled'
   | 'lost'
 
-export const LIVE_STATES: RoundState[] = ['queued', 'preparing', 'running']
+export const LIVE_STATES: RoundState[] = ['queued', 'preparing', 'running', 'finalizing']
 
 export const ROUND_LABEL: Record<RoundState, string> = {
   queued: 'Đang chờ',
   preparing: 'Chuẩn bị',
   running: 'Đang review',
+  finalizing: 'Đang lưu',
   done: 'Xong',
   failed: 'Lỗi',
   cancelled: 'Đã huỷ',
@@ -30,10 +33,10 @@ export const ROUND_LABEL: Record<RoundState, string> = {
 export type Severity = 'blocker' | 'major' | 'minor' | 'nit'
 export const SEVERITIES: Severity[] = ['blocker', 'major', 'minor', 'nit']
 export const SEVERITY_LABEL: Record<Severity, string> = {
-  blocker: 'Blocker',
-  major: 'Major',
-  minor: 'Minor',
-  nit: 'Nit',
+  blocker: 'Chặn merge',
+  major: 'Quan trọng',
+  minor: 'Nhỏ',
+  nit: 'Góp ý vặt',
 }
 
 export type DocCategory = 'missing' | 'wrong' | 'unreasonable' | 'mismatch'
@@ -56,9 +59,9 @@ export const FINDING_STATUS_LABEL: Record<FindingStatus, string> = {
 
 export type Verdict = 'approve' | 'request_changes' | 'comment'
 export const VERDICT_LABEL: Record<Verdict, string> = {
-  approve: 'Approve',
-  request_changes: 'Request changes',
-  comment: 'Comment',
+  approve: 'Ổn, có thể duyệt',
+  request_changes: 'Cần sửa',
+  comment: 'Góp ý',
 }
 
 export type DocRole = 'spec' | 'tdd' | 'other'
@@ -73,6 +76,28 @@ export interface DocFile {
   role: DocRole
   /** Absolute path on this machine, under data/code-review/docs. */
   path: string
+  /** Doc reviews: the template this file must follow (TDD iOS / TDD SDK…); none = the item's default. */
+  templateId?: string
+}
+
+/**
+ * The template a picked file most likely follows: a TDD whose name says "sdk"
+ * gets the template whose name says "SDK", "ios" likewise; otherwise the
+ * fallback (the repo's default). Specs and other files follow none.
+ */
+export function guessTemplate(
+  file: { name: string; role: DocRole },
+  templates: Array<{ id: string; name: string }>,
+  fallback: string,
+): string {
+  if (file.role !== 'tdd') return ''
+  for (const key of ['sdk', 'ios', 'android', 'backend', 'web']) {
+    if (new RegExp(key, 'i').test(file.name)) {
+      const hit = templates.find((t) => new RegExp(key, 'i').test(t.name))
+      if (hit) return hit.id
+    }
+  }
+  return fallback
 }
 
 /** A repository the reviewer keeps a dedicated clone of. */
@@ -85,6 +110,78 @@ export interface RepoPreset {
   githubRepo: string
   /** Project-specific review checklist, appended to every prompt for this repo. */
   rules: string
+}
+
+/**
+ * A PR in another repo reviewed alongside this one — typically the SDK change
+ * an iOS PR builds on, or the other way round. Claude reads its code and diff
+ * for context; findings still land on this PR.
+ */
+export interface PrLink {
+  repoId: string
+  /** GitHub PR number; null for a branch pair picked by hand. */
+  prNumber: number | null
+  baseRef: string
+  headRef: string
+  title: string
+  url: string
+}
+
+/** A link as one round resolved it: what was actually compared, and where. */
+export interface RoundLink extends PrLink {
+  repoName: string
+  baseSha: string
+  headSha: string
+  /** Worktree of the linked PR's head, readable by Claude via --add-dir. */
+  workdir: string
+  /** `git diff base head` of the linked PR, written out for Claude to Read. */
+  diffPath: string
+  /** Why it could not be prepared, when it could not. */
+  error: string
+}
+
+export function linkLabel(l: Pick<PrLink, 'prNumber' | 'headRef' | 'title'>, repoName: string): string {
+  return `${repoName} ${l.prNumber ? `#${l.prNumber}` : l.headRef}`
+}
+
+/**
+ * How a comment speaks to the PR author. Vietnamese needs a pronoun that
+ * encodes seniority: someone younger is simply mentioned (`@login`), someone
+ * older gets "anh" / "chị" before the mention.
+ */
+export type Honorific = 'em' | 'anh' | 'chi'
+export const HONORIFICS: Honorific[] = ['em', 'anh', 'chi']
+export const HONORIFIC_LABEL: Record<Honorific, string> = { em: 'Em', anh: 'Anh', chi: 'Chị' }
+
+export interface Addressee {
+  /** GitHub username, without the @. */
+  handle: string
+  honorific: Honorific
+}
+
+/** The words that stand for the author in a comment: "@x", "anh @x", "chị @x". */
+export function addressOf(a: Addressee): string {
+  const at = `@${a.handle}`
+  return a.honorific === 'anh' ? `anh ${at}` : a.honorific === 'chi' ? `chị ${at}` : at
+}
+
+export const cleanHandle = (h: string) => h.trim().replace(/^@+/, '')
+export const validHandle = (h: string) => /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/.test(h)
+
+/**
+ * A document template — what a TDD iOS / TDD SDK is supposed to look like.
+ * A doc review checks the document against it: sections present, in order,
+ * filled in, and the checklist met.
+ */
+export interface DocTemplate {
+  id: string
+  name: string
+  /** Required sections / rules in prose — the checklist the files may not spell out. */
+  note: string
+  /** The template itself: PDF / Markdown / text, stored under data/code-review/docs/templates. */
+  files: DocFile[]
+  /** Repos this template is the default for when reviewing their documents. */
+  repoIds: string[]
 }
 
 export interface FindingView {
@@ -119,6 +216,7 @@ export interface RoundView {
   headSha: string
   prevHeadSha: string
   docs: DocFile[]
+  links: RoundLink[]
   verdict: Verdict | ''
   summary: string
   message: string
@@ -141,6 +239,11 @@ export interface ItemView {
   note: string
   status: 'open' | 'archived'
   seenAt: number | null
+  links: PrLink[]
+  /** Set on this PR; null = fall back to what is remembered for the author. */
+  addressee: Addressee | null
+  /** Doc reviews: the template it is checked against; '' = none. */
+  templateId: string
   updatedAt: number
 }
 
@@ -176,14 +279,9 @@ export function findingClipboard(f: FindingView, kind: ItemKind): string {
  * Every still-relevant finding as one markdown comment, for reviewers who would
  * rather paste once than twenty times. Inline-able findings go first by file.
  */
-export function allClipboard(
-  kind: ItemKind,
-  summary: string,
-  findings: FindingView[],
-): string {
+export function allClipboard(kind: ItemKind, findings: FindingView[]): string {
   const live = findings.filter((f) => f.status !== 'dismissed' && f.status !== 'fixed')
   const parts: string[] = []
-  if (summary.trim()) parts.push(summary.trim())
   if (live.length) {
     const lines = live.map((f, i) => {
       const loc = kind === 'doc' ? f.location : where(f)

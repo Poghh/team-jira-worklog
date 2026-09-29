@@ -4,6 +4,8 @@ import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import { useState, useTransition } from 'react'
 
+import { formatDayMonth } from '@/lib/time'
+
 import { LinkPending } from '../link-pending'
 import { Working } from '../spinner'
 import { deleteDraftAction } from './actions'
@@ -14,12 +16,8 @@ export interface DraftSummary {
   updatedAt: number
 }
 
-function when(epochSeconds: number) {
-  return new Date(epochSeconds * 1000).toLocaleDateString('vi-VN', {
-    day: '2-digit',
-    month: '2-digit',
-  })
-}
+/** Same string on the server and in the browser — see formatDayMonth. */
+const when = (epochSeconds: number) => formatDayMonth(epochSeconds)
 
 export function DraftList({
   drafts,

@@ -155,6 +155,11 @@ export async function removeWorktree(repoPath: string, dir: string) {
   }
 }
 
+/** The whole diff as text — handed to Claude as a file when it is another repo's PR. */
+export async function diffText(repoPath: string, from: string, to: string): Promise<string> {
+  return git(repoPath, ['diff', '--no-color', '--no-ext-diff', from, to], 120_000)
+}
+
 export async function diffStat(repoPath: string, from: string, to: string): Promise<string> {
   return (await git(repoPath, ['diff', '--stat=120', from, to])).trim()
 }

@@ -14,7 +14,7 @@ import {
   resolveThreadAction,
   submitReviewAction,
 } from '../actions'
-import { BTN, BTN_PRI, CARD, CTITLE, INPUT, SeverityPill, timeAgo } from '../ui'
+import { BTN, BTN_PRI, CARD, CTITLE, INPUT, SeverityPill, Ago } from '../ui'
 
 /**
  * Talking to the PR from inside the module: post findings, submit a review,
@@ -216,7 +216,7 @@ function CommentView({ c, viewer }: { c: GhComment; viewer: string }) {
         <span className="font-semibold">{c.author}</span>
         {mine && <span className="text-ink-3">(bạn)</span>}
         <a href={c.url} target="_blank" rel="noreferrer" className="text-ink-3 hover:underline">
-          {timeAgo(Math.floor(Date.parse(c.createdAt) / 1000))}
+          <Ago epoch={Math.floor(Date.parse(c.createdAt) / 1000)} />
         </a>
       </div>
       <div className="whitespace-pre-wrap text-[12.5px] leading-relaxed">{c.body}</div>
@@ -278,15 +278,15 @@ export function ThreadView({ thread, skipFirst, compact }: { thread: GhThread; s
             {thread.line ? `:${thread.line}` : ''}
           </span>
         )}
-        {thread.isResolved && <span className="rounded bg-good-soft px-1.5 text-good">Resolved</span>}
-        {thread.isOutdated && <span className="rounded bg-surface-2 px-1.5 text-ink-3">Outdated</span>}
+        {thread.isResolved && <span className="rounded bg-good-soft px-1.5 text-good">Đã xong</span>}
+        {thread.isOutdated && <span className="rounded bg-surface-2 px-1.5 text-ink-3">Code đã đổi</span>}
         {pending && !thread.isResolved && <span className="rounded bg-blue-soft px-1.5 text-blue-ink">Chờ bạn trả lời</span>}
         <button type="button" className="ml-auto text-ink-3 hover:text-ink" onClick={() => setOpen((v) => !v)}>
           {open ? 'Thu gọn' : 'Mở'}
         </button>
         {gh.canWrite && (
           <button type="button" className="text-ink-3 hover:text-ink disabled:opacity-50" disabled={busy} onClick={toggleResolve}>
-            {thread.isResolved ? 'Mở lại' : 'Resolve'}
+            {thread.isResolved ? 'Mở lại' : 'Đánh dấu xong'}
           </button>
         )}
       </div>
@@ -314,10 +314,10 @@ export function ThreadView({ thread, skipFirst, compact }: { thread: GhThread; s
 /* ── the whole discussion ───────────────────────────────────────────────── */
 
 const REVIEW_STATE: Record<string, string> = {
-  APPROVED: '✅ Approved',
-  CHANGES_REQUESTED: '✋ Request changes',
-  COMMENTED: '💬 Comment',
-  DISMISSED: 'Dismissed',
+  APPROVED: '✅ Đã duyệt',
+  CHANGES_REQUESTED: '✋ Yêu cầu sửa',
+  COMMENTED: '💬 Góp ý',
+  DISMISSED: 'Đã gỡ',
 }
 
 export function DiscussionPanel() {
@@ -346,11 +346,11 @@ export function DiscussionPanel() {
       <div className={CARD}>
         <div className="mb-2 flex flex-wrap items-center gap-2">
           <div className={CTITLE}>
-            Thread trên code · {d.threads.length - resolved} đang mở{resolved ? ` · ${resolved} resolved` : ''}
+            Thread trên code · {d.threads.length - resolved} đang mở{resolved ? ` · ${resolved} đã xong` : ''}
           </div>
           <label className="ml-auto flex items-center gap-1.5 text-[12px] text-ink-2">
             <input type="checkbox" checked={showResolved} onChange={(e) => setShowResolved(e.target.checked)} />
-            Hiện resolved
+            Hiện thread đã xong
           </label>
           <button type="button" className={BTN} disabled={gh.loading} onClick={() => void gh.reload()}>
             {gh.loading ? 'Đang tải…' : 'Tải lại'}
@@ -381,7 +381,7 @@ export function DiscussionPanel() {
                 <div className="text-[11.5px]">
                   <span className="font-semibold">{e.r!.author}</span> · {REVIEW_STATE[e.r!.state] ?? e.r!.state} ·{' '}
                   <a href={e.r!.url} target="_blank" rel="noreferrer" className="text-ink-3 hover:underline">
-                    {timeAgo(Math.floor(Date.parse(e.r!.submittedAt) / 1000))}
+                    <Ago epoch={Math.floor(Date.parse(e.r!.submittedAt) / 1000)} />
                   </a>
                 </div>
                 {e.r!.body && <div className="mt-0.5 whitespace-pre-wrap text-[12.5px] leading-relaxed">{e.r!.body}</div>}
@@ -409,12 +409,10 @@ export function DiscussionPanel() {
 export function SubmitReview({
   round,
   findings,
-  summary,
   onDone,
 }: {
   round: RoundView
   findings: FindingView[]
-  summary: string
   onDone: () => void
 }) {
   const gh = useGh()
@@ -422,6 +420,9 @@ export function SubmitReview({
   const [picked, setPicked] = useState<Set<number>>(() => new Set(candidates.map((f) => f.id)))
   const [event, setEvent] = useState<'COMMENT' | 'REQUEST_CHANGES'>(round.verdict === 'request_changes' ? 'REQUEST_CHANGES' : 'COMMENT')
   const [open, setOpen] = useState(false)
+  // Empty by default: the reviewer rarely writes a summary. Loose comments
+  // (no line) are listed in the body on their own.
+  const [body, setBody] = useState('')
   const [msg, setMsg] = useState<{ ok: boolean; text: string; url?: string } | null>(null)
   const [busy, start] = useTransition()
   if (!gh.canWrite) return null
@@ -453,7 +454,7 @@ export function SubmitReview({
       {open && (
         <div className="mt-3">
           <p className="mb-2 text-[12px] text-ink-3">
-            Gửi một lần: comment chung ở trên làm nội dung review, các điểm đã chọn thành comment inline (điểm ngoài diff được liệt kê trong nội dung). Tác giả nhận một thông báo.
+            Gửi một lần: các điểm đã chọn thành comment inline; comment rời và điểm ngoài diff được liệt kê trong nội dung review. Tác giả nhận một thông báo.
           </p>
           <ul className="mb-2 max-h-[260px] overflow-y-auto rounded-md border border-line">
             {candidates.map((f) => (
@@ -474,25 +475,32 @@ export function SubmitReview({
                   <SeverityPill s={f.severity} />
                   <span className="truncate">{f.title}</span>
                   <span className="ml-auto shrink-0 font-mono text-[11px] text-ink-3">
-                    {where(f)} {f.inDiff ? '· inline' : '· trong nội dung'}
+                    {where(f) || 'comment rời'} {f.inDiff ? '· trên dòng code' : '· trong nội dung'}
                   </span>
                 </label>
               </li>
             ))}
           </ul>
+          <textarea
+            value={body}
+            onChange={(e) => setBody(e.target.value)}
+            rows={2}
+            className={INPUT + ' mb-2'}
+            placeholder="Lời nhắn đầu review (không bắt buộc)"
+          />
           <div className="flex flex-wrap items-center gap-2">
             <select value={event} onChange={(e) => setEvent(e.target.value as typeof event)} className={INPUT + ' w-auto'}>
-              <option value="COMMENT">💬 Comment</option>
-              <option value="REQUEST_CHANGES">✋ Request changes</option>
+              <option value="COMMENT">💬 Góp ý (Comment)</option>
+              <option value="REQUEST_CHANGES">✋ Yêu cầu sửa (Request changes)</option>
             </select>
             <ConfirmButton
               primary
-              label={`Gửi review (${inline} inline${chosen.length - inline ? ` + ${chosen.length - inline} trong nội dung` : ''})`}
-              confirm={event === 'REQUEST_CHANGES' ? 'Xác nhận gửi Request changes?' : 'Xác nhận gửi review?'}
-              disabled={busy || (!chosen.length && !summary.trim())}
+              label={`Gửi review (${inline} comment trên dòng code${chosen.length - inline ? ` + ${chosen.length - inline} trong nội dung` : ''})`}
+              confirm={event === 'REQUEST_CHANGES' ? 'Xác nhận gửi "Yêu cầu sửa"?' : 'Xác nhận gửi review?'}
+              disabled={busy || (!chosen.length && !body.trim())}
               onConfirm={() =>
                 start(async () => {
-                  const r = await submitReviewAction({ roundId: round.id, findingIds: [...picked], body: summary, event })
+                  const r = await submitReviewAction({ roundId: round.id, findingIds: [...picked], body, event })
                   setMsg({ ok: r.ok, text: r.message, url: r.url })
                   if (r.ok) {
                     setOpen(false)
@@ -505,7 +513,7 @@ export function SubmitReview({
             {busy && <span className="text-[12px] text-ink-3">Đang gửi…</span>}
           </div>
           <p className="mt-2 text-[11.5px] text-ink-3">
-            Không có Approve ở đây: approve có thể kích hoạt auto-merge, nên module chỉ Comment hoặc Request changes — approve thì bấm trên GitHub.
+            Không có "Duyệt" (Approve) ở đây: duyệt có thể kích hoạt auto-merge, nên module chỉ gửi Góp ý hoặc Yêu cầu sửa — duyệt thì bấm trên GitHub.
           </p>
         </div>
       )}
