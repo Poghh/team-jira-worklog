@@ -340,6 +340,8 @@ function open() {
   ensureColumn(sqlite, "review_rounds", "links", "links TEXT NOT NULL DEFAULT '[]'");
   // How comments address the PR author: {handle, honorific}, '' = not set.
   ensureColumn(sqlite, "review_items", "addressee", "addressee TEXT NOT NULL DEFAULT ''");
+  // Which document template (TDD iOS / TDD SDK…) a doc review is held to.
+  ensureColumn(sqlite, "review_items", "template_id", "template_id TEXT NOT NULL DEFAULT ''");
   return drizzle(sqlite, { schema });
 }
 

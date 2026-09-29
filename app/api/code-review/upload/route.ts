@@ -18,8 +18,11 @@ export async function POST(request: Request) {
   const files = form.getAll('files').filter((f): f is File => f instanceof File && f.size > 0)
   const roles = form.getAll('roles').map(String)
   if (!files.length) return Response.json({ ok: false, message: 'Chưa chọn file nào.' }, { status: 400 })
-  const bad = checkPdfs(files)
+  // `kind=template`: a document template (Cấu hình → Mẫu tài liệu), which
+  // may also be Markdown or plain text.
+  const template = form.get('kind') === 'template'
+  const bad = checkPdfs(files, template)
   if (bad) return Response.json({ ok: false, message: bad }, { status: 400 })
-  const docs = await savePdfs('attachments', files, roles)
+  const docs = await savePdfs(template ? 'templates' : 'attachments', files, roles)
   return Response.json({ ok: true, message: '', docs })
 }

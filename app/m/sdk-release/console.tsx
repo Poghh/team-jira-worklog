@@ -2,6 +2,8 @@
 
 import { useCallback, useEffect, useRef, useState, useTransition } from "react";
 
+import { formatDayMonth } from "@/lib/time";
+
 import {
   DEFAULT_BRANCH_SUFFIXES,
   RUN_LABEL,
@@ -603,15 +605,6 @@ function ago(at: number): string {
   return days < 30 ? `${days} ngày trước` : `${Math.floor(days / 30)} tháng trước`;
 }
 
-const DMY = new Intl.DateTimeFormat("vi-VN", {
-  timeZone: "Asia/Saigon",
-  day: "2-digit",
-  month: "2-digit",
-  hour: "2-digit",
-  minute: "2-digit",
-  hour12: false,
-});
-
 /**
  * Pick a branch by typing, not by scrolling a `<select>`.
  *
@@ -1067,7 +1060,7 @@ function RecentCard({ releases, branch }: { releases: SdkRelease[]; branch: stri
                 className="ml-auto shrink-0 font-mono text-[10.5px] text-ink-3"
                 title={r.sha}
               >
-                {DMY.format(new Date(r.at * 1000))}
+                {formatDayMonth(r.at, true)}
               </span>
             </div>
           ))}
@@ -1497,13 +1490,7 @@ function HistoryCard({ runs, onOpen }: { runs: RunRow[]; onOpen: (id: number) =>
               {RUN_LABEL[r.state as RunState]}
             </span>
             <span className="ml-auto font-mono text-[10.5px] text-ink-3">
-              {new Date(r.startedAt * 1000).toLocaleString("vi-VN", {
-                day: "2-digit",
-                month: "2-digit",
-                hour: "2-digit",
-                minute: "2-digit",
-                hour12: false,
-              })}
+              {formatDayMonth(r.startedAt, true)}
             </span>
           </button>
         ))}

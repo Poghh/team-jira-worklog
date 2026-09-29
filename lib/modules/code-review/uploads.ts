@@ -22,16 +22,17 @@ function safeName(name: string): string {
   return base || 'document.pdf'
 }
 
-/** Why these files cannot be accepted, or '' when they can. */
-export function checkPdfs(files: File[]): string {
+/** Why these files cannot be accepted, or '' when they can. Templates may also be Markdown / text. */
+export function checkPdfs(files: File[], allowText = false): string {
   for (const f of files) {
-    if (!/\.pdf$/i.test(f.name) && f.type !== 'application/pdf') return `${f.name} không phải PDF.`
+    const ok = /\.pdf$/i.test(f.name) || f.type === 'application/pdf' || (allowText && /\.(md|markdown|txt)$/i.test(f.name))
+    if (!ok) return allowText ? `${f.name}: chỉ nhận PDF, Markdown (.md) hoặc .txt.` : `${f.name} không phải PDF.`
     if (f.size > MAX_DOC_BYTES) return `${f.name} lớn hơn 40 MB.`
   }
   return ''
 }
 
-export async function savePdfs(folder: string, files: File[], roles: string[]): Promise<DocFile[]> {
+export async function savePdfs(folder: string, files: File[], roles: string[], templateIds: string[] = []): Promise<DocFile[]> {
   const dir = path.join(DOCS_DIR, folder, String(Date.now()))
   await fs.mkdir(dir, { recursive: true })
   const docs: DocFile[] = []
@@ -43,7 +44,7 @@ export async function savePdfs(folder: string, files: File[], roles: string[]): 
     const target = path.join(dir, name)
     await fs.writeFile(target, Buffer.from(await f.arrayBuffer()))
     const role = ROLES.includes(roles[i] as DocRole) ? (roles[i] as DocRole) : 'other'
-    docs.push({ name: f.name, role, path: target })
+    docs.push({ name: f.name, role, path: target, ...(templateIds[i] ? { templateId: templateIds[i] } : {}) })
   }
   return docs
 }
@@ -68,6 +69,7 @@ export async function validDocs(input: unknown): Promise<DocFile[] | null> {
       name: String(d.name ?? path.basename(p)),
       role: ROLES.includes(d.role) ? d.role : 'other',
       path: p,
+      ...(typeof d.templateId === 'string' && d.templateId ? { templateId: d.templateId } : {}),
     })
   }
   return out

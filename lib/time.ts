@@ -294,3 +294,28 @@ export function weekOf(date: string): string[] {
   const monday = addDays(date, dow === 0 ? -6 : 1 - dow)
   return Array.from({ length: 7 }, (_, i) => addDays(monday, i))
 }
+
+/**
+ * "29/09" / "29/09 08:40" for an epoch-seconds instant, in `tz`.
+ *
+ * Assembled from numeric parts rather than `toLocaleString('vi-VN', …)`:
+ * Node and the browser ship different ICU data, and the same locale call can
+ * come back with a comma in one and not the other — which, in a component
+ * rendered on both, is a hydration mismatch.
+ */
+export function formatDayMonth(epochSeconds: number, withTime = false, tz = DEFAULT_TZ): string {
+  const parts = Object.fromEntries(
+    new Intl.DateTimeFormat('en-GB', {
+      timeZone: tz,
+      day: '2-digit',
+      month: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      hourCycle: 'h23',
+    })
+      .formatToParts(new Date(epochSeconds * 1000))
+      .map((p) => [p.type, p.value]),
+  )
+  const date = `${parts.day}/${parts.month}`
+  return withTime ? `${date} ${parts.hour}:${parts.minute}` : date
+}

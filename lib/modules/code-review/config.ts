@@ -5,7 +5,7 @@ import { eq } from 'drizzle-orm'
 import { db } from '@/lib/db'
 import { settings } from '@/lib/db/schema'
 
-import type { Addressee, RepoPreset } from './model'
+import type { Addressee, DocFile, DocTemplate, RepoPreset } from './model'
 
 /**
  * Settings for the code-review module, under `mod:code-review:` in the shared
@@ -25,6 +25,8 @@ const K = {
   globalRules: `${PREFIX}global_rules`,
   /** `{githubLogin: {handle, honorific}}` — how to address each author, remembered across PRs. */
   people: `${PREFIX}people`,
+  /** Document templates (TDD iOS / TDD SDK…), JSON DocTemplate[]. */
+  templates: `${PREFIX}templates`,
 } as const
 
 export const DEFAULT_CONCURRENCY = 3
@@ -130,4 +132,50 @@ export function resolveAddressee(item: { author: string; addressee: Addressee | 
   if (item.addressee) return item.addressee
   if (!item.author) return null
   return readPeople()[item.author.toLowerCase()] ?? { handle: item.author, honorific: 'em' }
+}
+
+/* ── document templates ─────────────────────────────────────────────────── */
+
+export function getTemplates(): DocTemplate[] {
+  try {
+    const v = JSON.parse(getRaw(K.templates) ?? '[]')
+    return Array.isArray(v) ? (v as DocTemplate[]).filter((t) => t && t.id) : []
+  } catch {
+    return []
+  }
+}
+
+export function getTemplate(id: string): DocTemplate | undefined {
+  return id ? getTemplates().find((t) => t.id === id) : undefined
+}
+
+export function setTemplates(list: DocTemplate[]) {
+  setRaw(K.templates, JSON.stringify(list))
+}
+
+/** The template a repo's documents default to, if one claims it. */
+export function defaultTemplateFor(repoId: string): DocTemplate | undefined {
+  return repoId ? getTemplates().find((t) => t.repoIds.includes(repoId)) : undefined
+}
+
+export interface TemplateUse {
+  template: DocTemplate
+  /** The documents that must follow it. */
+  docs: DocFile[]
+}
+
+/**
+ * Which template each document is held to: its own, else the item's default.
+ * Specs usually have none. Grouped, so a template read once covers every file
+ * that follows it.
+ */
+export function templatesForDocs(docs: DocFile[], fallbackId: string): TemplateUse[] {
+  const out = new Map<string, TemplateUse>()
+  for (const d of docs) {
+    const id = d.templateId || (d.role === 'spec' ? '' : fallbackId)
+    const t = getTemplate(id)
+    if (!t) continue
+    out.set(t.id, { template: t, docs: [...(out.get(t.id)?.docs ?? []), d] })
+  }
+  return [...out.values()]
 }

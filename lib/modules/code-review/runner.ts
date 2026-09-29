@@ -6,7 +6,7 @@ import path from 'node:path'
 
 import { reapChats } from './chat'
 import { checkClaude } from './claude'
-import { getRepo, getReviewConfig, resolveAddressee } from './config'
+import { getRepo, getReviewConfig, resolveAddressee, templatesForDocs } from './config'
 import {
   addWorktree,
   commitExists,
@@ -265,6 +265,12 @@ async function prepareAndSpawn(roundId: number) {
         const dir = path.dirname(d.path)
         if (!addDirs.includes(dir)) addDirs.push(dir)
       }
+      // After the documents: with no repo, the first of these is the cwd.
+      const templates = templatesForDocs(docs, item.templateId)
+      for (const f of templates.flatMap((u) => u.template.files)) {
+        const dir = path.dirname(f.path)
+        if (!addDirs.includes(dir)) addDirs.push(dir)
+      }
 
       if (repo) {
         await withRepoLock(repo.localPath, async () => {
@@ -289,6 +295,7 @@ async function prepareAndSpawn(roundId: number) {
         globalRules: cfg.globalRules,
         repoRules: repo?.rules ?? '',
         addressee: resolveAddressee(item),
+        templates,
       })
     }
   } catch (err) {

@@ -14,7 +14,7 @@ import {
   resolveThreadAction,
   submitReviewAction,
 } from '../actions'
-import { BTN, BTN_PRI, CARD, CTITLE, INPUT, SeverityPill, timeAgo } from '../ui'
+import { BTN, BTN_PRI, CARD, CTITLE, INPUT, SeverityPill, Ago } from '../ui'
 
 /**
  * Talking to the PR from inside the module: post findings, submit a review,
@@ -216,7 +216,7 @@ function CommentView({ c, viewer }: { c: GhComment; viewer: string }) {
         <span className="font-semibold">{c.author}</span>
         {mine && <span className="text-ink-3">(bạn)</span>}
         <a href={c.url} target="_blank" rel="noreferrer" className="text-ink-3 hover:underline">
-          {timeAgo(Math.floor(Date.parse(c.createdAt) / 1000))}
+          <Ago epoch={Math.floor(Date.parse(c.createdAt) / 1000)} />
         </a>
       </div>
       <div className="whitespace-pre-wrap text-[12.5px] leading-relaxed">{c.body}</div>
@@ -381,7 +381,7 @@ export function DiscussionPanel() {
                 <div className="text-[11.5px]">
                   <span className="font-semibold">{e.r!.author}</span> · {REVIEW_STATE[e.r!.state] ?? e.r!.state} ·{' '}
                   <a href={e.r!.url} target="_blank" rel="noreferrer" className="text-ink-3 hover:underline">
-                    {timeAgo(Math.floor(Date.parse(e.r!.submittedAt) / 1000))}
+                    <Ago epoch={Math.floor(Date.parse(e.r!.submittedAt) / 1000)} />
                   </a>
                 </div>
                 {e.r!.body && <div className="mt-0.5 whitespace-pre-wrap text-[12.5px] leading-relaxed">{e.r!.body}</div>}

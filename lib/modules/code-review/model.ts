@@ -76,6 +76,28 @@ export interface DocFile {
   role: DocRole
   /** Absolute path on this machine, under data/code-review/docs. */
   path: string
+  /** Doc reviews: the template this file must follow (TDD iOS / TDD SDK…); none = the item's default. */
+  templateId?: string
+}
+
+/**
+ * The template a picked file most likely follows: a TDD whose name says "sdk"
+ * gets the template whose name says "SDK", "ios" likewise; otherwise the
+ * fallback (the repo's default). Specs and other files follow none.
+ */
+export function guessTemplate(
+  file: { name: string; role: DocRole },
+  templates: Array<{ id: string; name: string }>,
+  fallback: string,
+): string {
+  if (file.role !== 'tdd') return ''
+  for (const key of ['sdk', 'ios', 'android', 'backend', 'web']) {
+    if (new RegExp(key, 'i').test(file.name)) {
+      const hit = templates.find((t) => new RegExp(key, 'i').test(t.name))
+      if (hit) return hit.id
+    }
+  }
+  return fallback
 }
 
 /** A repository the reviewer keeps a dedicated clone of. */
@@ -146,6 +168,22 @@ export function addressOf(a: Addressee): string {
 export const cleanHandle = (h: string) => h.trim().replace(/^@+/, '')
 export const validHandle = (h: string) => /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/.test(h)
 
+/**
+ * A document template — what a TDD iOS / TDD SDK is supposed to look like.
+ * A doc review checks the document against it: sections present, in order,
+ * filled in, and the checklist met.
+ */
+export interface DocTemplate {
+  id: string
+  name: string
+  /** Required sections / rules in prose — the checklist the files may not spell out. */
+  note: string
+  /** The template itself: PDF / Markdown / text, stored under data/code-review/docs/templates. */
+  files: DocFile[]
+  /** Repos this template is the default for when reviewing their documents. */
+  repoIds: string[]
+}
+
 export interface FindingView {
   id: number
   roundId: number
@@ -204,6 +242,8 @@ export interface ItemView {
   links: PrLink[]
   /** Set on this PR; null = fall back to what is remembered for the author. */
   addressee: Addressee | null
+  /** Doc reviews: the template it is checked against; '' = none. */
+  templateId: string
   updatedAt: number
 }
 

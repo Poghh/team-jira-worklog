@@ -4,7 +4,7 @@ import { revalidatePath } from 'next/cache'
 
 import { type ChatMessage, applyChanges, cancelChat, listChat, sendChat } from '@/lib/modules/code-review/chat'
 import { type ClaudeCheck, checkClaude } from '@/lib/modules/code-review/claude'
-import { getRepo, rememberPerson, setRepos, setRunnerConfig } from '@/lib/modules/code-review/config'
+import { getRepo, getTemplate, rememberPerson, setRepos, setRunnerConfig, setTemplates } from '@/lib/modules/code-review/config'
 import { isRepo, listRemoteBranches, fetchAll, gitSays, withRepoLock } from '@/lib/modules/code-review/git'
 import {
   type Discussion,
@@ -24,7 +24,7 @@ import {
   viewerLogin,
 } from '@/lib/modules/code-review/github'
 import { ForbiddenAction } from '@/lib/modules/code-review/guard'
-import { type Addressee, type DocFile, type FindingStatus, HONORIFICS, type PrLink, addressOf, cleanHandle, validHandle, type FindingView, type ItemSummary, type RepoPreset, type RoundView, where } from '@/lib/modules/code-review/model'
+import { type Addressee, type DocFile, type DocTemplate, type FindingStatus, HONORIFICS, type PrLink, addressOf, cleanHandle, validHandle, type FindingView, type ItemSummary, type RepoPreset, type RoundView, where } from '@/lib/modules/code-review/model'
 import { type LogLine, cancelRound, ensureTicker, tick, updateRoundSummary, viewLog } from '@/lib/modules/code-review/runner'
 import {
   createItem,
@@ -44,6 +44,7 @@ import {
   queueRound,
   setItemAddressee,
   setItemLinks,
+  setItemTemplate,
 } from '@/lib/modules/code-review/store'
 import { validDocs } from '@/lib/modules/code-review/uploads'
 import { isModuleEnabled } from '@/lib/modules/state'
@@ -669,4 +670,41 @@ export async function setAddresseeAction(itemId: number, input: Addressee, remem
   if (remember && item.author) rememberPerson(item.author, a)
   revalidatePath(`/m/code-review/${itemId}`)
   return { ok: true, message: `Đã lưu — comment sẽ gọi "${addressOf(a)}".` }
+}
+
+/* ── document templates ─────────────────────────────────────────────────── */
+
+export async function saveTemplatesAction(list: DocTemplate[]): Promise<Result> {
+  if (!enabled()) return OFF
+  const clean: DocTemplate[] = []
+  for (const t of list) {
+    const name = String(t.name ?? '').trim()
+    if (!name) {
+      if (!t.files?.length && !t.note?.trim()) continue
+      return { ok: false, message: 'Mẫu nào cũng cần tên.' }
+    }
+    const files = await validDocs(t.files ?? [])
+    if (!files) return { ok: false, message: `${name}: file mẫu không hợp lệ — tải lên lại.` }
+    if (!files.length && !String(t.note ?? '').trim()) return { ok: false, message: `${name}: cần ít nhất một file mẫu hoặc checklist.` }
+    clean.push({
+      id: t.id || crypto.randomUUID(),
+      name,
+      note: String(t.note ?? ''),
+      files,
+      repoIds: (t.repoIds ?? []).filter((id) => getRepo(id)),
+    })
+  }
+  setTemplates(clean)
+  revalidatePath('/m/code-review')
+  return { ok: true, message: 'Đã lưu mẫu tài liệu.' }
+}
+
+export async function setTemplateAction(itemId: number, templateId: string): Promise<Result> {
+  if (!enabled()) return OFF
+  const item = getItem(itemId)
+  if (!item || item.kind !== 'doc') return { ok: false, message: 'Chỉ hồ sơ tài liệu mới gắn mẫu.' }
+  if (templateId && !getTemplate(templateId)) return { ok: false, message: 'Không thấy mẫu này.' }
+  setItemTemplate(itemId, templateId)
+  revalidatePath(`/m/code-review/${itemId}`)
+  return { ok: true, message: templateId ? 'Đã gắn mẫu — áp dụng từ vòng review tiếp theo.' : 'Đã bỏ mẫu.' }
 }

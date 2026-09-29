@@ -15,6 +15,7 @@ import {
   type ItemView,
   LIVE_STATES,
   type Addressee,
+  type DocTemplate,
   HONORIFICS,
   HONORIFIC_LABEL,
   type Honorific,
@@ -41,6 +42,7 @@ import {
   reReviewAction,
   setAddresseeAction,
   setLinksAction,
+  setTemplateAction,
   updateSummaryAction,
 } from '../actions'
 import { LinkPicker, useAttachments, useDocUpload } from '../review'
@@ -58,8 +60,8 @@ import {
   RoundPill,
   SeverityPill,
   StatusPill,
-  duration,
-  timeAgo,
+  Ago,
+  Elapsed,
 } from '../ui'
 
 export function ReviewDetail({
@@ -72,6 +74,7 @@ export function ReviewDetail({
   repos,
   linkedItems,
   addressee,
+  templates,
 }: {
   item: ItemView
   repoName: string
@@ -84,6 +87,7 @@ export function ReviewDetail({
   linkedItems: Record<string, number>
   /** Resolved: set on the item, remembered for the author, or the default. */
   addressee: Addressee | null
+  templates: DocTemplate[]
 }) {
   const [claude, setClaude] = useState(initialClaude)
   const onGithub = item.kind === 'pr' && Boolean(item.prNumber) && Boolean(githubRepo)
@@ -149,6 +153,7 @@ export function ReviewDetail({
       </header>
 
       {item.kind === 'pr' && <AddresseeBar item={item} addressee={addressee} />}
+      {item.kind === 'doc' && <TemplateBar item={item} templates={templates} />}
       {item.kind === 'pr' && <LinksBar item={item} repos={repos} linkedItems={linkedItems} />}
 
       <ClaudeBanner check={claude} onChange={setClaude} />
@@ -202,16 +207,57 @@ export function ReviewDetail({
           githubRepo={githubRepo}
           canRun={claude.ok}
           addressee={addressee}
+          templates={templates}
           onChanged={() => refresh(current.id)}
         />
       )}
 
       {loaded && !live && (
-        <NextRound item={item} latest={latest} canRun={claude.ok} onQueued={() => refresh()} />
+        <NextRound item={item} latest={latest} canRun={claude.ok} templates={templates} onQueued={() => refresh()} />
       )}
         </>
       )}
     </GhProvider>
+  )
+}
+
+/** Which document template this doc review is held to — changeable, from the next round. */
+function TemplateBar({ item, templates }: { item: ItemView; templates: DocTemplate[] }) {
+  const router = useRouter()
+  const [value, setValue] = useState(item.templateId)
+  const [msg, setMsg] = useState('')
+  const [busy, start] = useTransition()
+  const current = templates.find((t) => t.id === item.templateId)
+  return (
+    <div className="-mt-2 mb-4 flex flex-wrap items-center gap-2 text-[12px]">
+      <span className="text-ink-3" title="Dùng cho file TDD không tự chọn mẫu riêng">📐 Mẫu mặc định cho TDD chưa chọn mẫu:</span>
+      <select value={value} onChange={(e) => setValue(e.target.value)} className="rounded-md border border-line bg-ground px-2 py-[3px]">
+        <option value="">— Không dùng mẫu —</option>
+        {templates.map((t) => (
+          <option key={t.id} value={t.id}>
+            {t.name}
+          </option>
+        ))}
+      </select>
+      {item.templateId && !current && <span className="text-warn">mẫu cũ đã bị xoá khỏi Cấu hình</span>}
+      {value !== item.templateId && (
+        <button
+          type="button"
+          className={BTN}
+          disabled={busy}
+          onClick={() =>
+            start(async () => {
+              const r = await setTemplateAction(item.id, value)
+              setMsg(r.message)
+              if (r.ok) router.refresh()
+            })
+          }
+        >
+          Lưu
+        </button>
+      )}
+      {msg && <span className="text-ink-2">{msg}</span>}
+    </div>
   )
 }
 
@@ -377,6 +423,7 @@ function RoundPanel({
   githubRepo,
   canRun,
   addressee,
+  templates,
   onChanged,
 }: {
   item: ItemView
@@ -387,6 +434,7 @@ function RoundPanel({
   githubRepo: string
   canRun: boolean
   addressee: Addressee | null
+  templates: DocTemplate[]
   onChanged: () => void
 }) {
   const live = LIVE_STATES.includes(round.state)
@@ -420,7 +468,14 @@ function RoundPanel({
             </span>
           )}
           {round.docs.length > 0 && (
-            <span>{round.docs.map((d) => `${DOC_ROLE_LABEL[d.role]}: ${d.name}`).join(' · ')}</span>
+            <span>
+              {round.docs
+                .map((d) => {
+                  const t = templates.find((x) => x.id === (d.templateId || (d.role === 'spec' ? '' : item.templateId)))
+                  return `${DOC_ROLE_LABEL[d.role]}: ${d.name}${t ? ` (📐 ${t.name})` : ''}`
+                })
+                .join(' · ')}
+            </span>
           )}
           {round.links.map((l, i) => (
             <span key={i} className={l.error ? 'text-warn' : ''} title={l.error || `${l.headRef} → ${l.baseRef}`}>
@@ -429,8 +484,9 @@ function RoundPanel({
             </span>
           ))}
           <span className="text-ink-3">
-            {live ? `chạy ${duration(round.startedAt, null)}` : round.startedAt ? `mất ${duration(round.startedAt, round.endedAt)}` : ''}
-            {round.endedAt ? ` · ${timeAgo(round.endedAt)}` : ''}
+            {round.startedAt ? (live ? 'chạy ' : 'mất ') : ''}
+            <Elapsed from={round.startedAt} to={live ? null : round.endedAt} />
+            <Ago epoch={round.endedAt} prefix=" · " />
             {round.costUsd ? ` · ~$${round.costUsd.toFixed(2)}` : ''}
           </span>
           <div className="ml-auto flex gap-1.5">
@@ -789,17 +845,26 @@ function NextRound({
   item,
   latest,
   canRun,
+  templates,
   onQueued,
 }: {
   item: ItemView
   latest: RoundView | null
   canRun: boolean
+  templates: DocTemplate[]
   onQueued: () => void
 }) {
   const [note, setNote] = useState(item.note)
   const [msg, setMsg] = useState('')
   const [busy, start] = useTransition()
-  const up = useDocUpload({ itemId: item.id, canRun, onQueued: () => onQueued() })
+  const up = useDocUpload({
+    itemId: item.id,
+    canRun,
+    onQueued: () => onQueued(),
+    templates,
+    fallbackTemplate: item.templateId,
+    previous: latest?.docs,
+  })
   const attach = useAttachments()
   const done = latest?.state === 'done'
   const current = latest?.docs ?? []

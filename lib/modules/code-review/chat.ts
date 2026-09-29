@@ -5,7 +5,7 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 
 import { checkClaude } from './claude'
-import { getRepo, getReviewConfig, resolveAddressee } from './config'
+import { getRepo, getReviewConfig, resolveAddressee, templatesForDocs } from './config'
 import { type RawFinding, buildFreshRows, cleanSeverity } from './findings'
 import { addWorktree, diffRanges, gitSays, removeWorktree, withRepoLock } from './git'
 import { ALLOWED_TOOLS, DISALLOWED_TOOLS, ISOLATION_FLAGS, reviewEnv } from './guard'
@@ -121,7 +121,8 @@ async function workspace(roundId: number): Promise<{ workdir: string; addDirs: s
     if (prev) docs.push(...prev.docs)
   }
   const addDirs: string[] = []
-  for (const d of docs) {
+  const templateFiles = templatesForDocs(docs, item.templateId).flatMap((u) => u.template.files)
+  for (const d of [...docs, ...templateFiles]) {
     const dir = path.dirname(d.path)
     if (!addDirs.includes(dir)) addDirs.push(dir)
   }

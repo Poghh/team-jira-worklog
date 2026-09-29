@@ -1,5 +1,5 @@
 import { checkClaude } from '@/lib/modules/code-review/claude'
-import { getRepo } from '@/lib/modules/code-review/config'
+import { getRepo, getTemplate } from '@/lib/modules/code-review/config'
 import { ensureTicker, tick } from '@/lib/modules/code-review/runner'
 import { createItem, getItem, hasLiveRound, patchItem, queueRound } from '@/lib/modules/code-review/store'
 import { checkPdfs, savePdfs } from '@/lib/modules/code-review/uploads'
@@ -29,8 +29,13 @@ export async function POST(request: Request) {
   const repoId = String(form.get('repoId') ?? '').trim()
   const ref = String(form.get('ref') ?? '').trim()
   const note = String(form.get('note') ?? '')
+  const templateId = String(form.get('templateId') ?? '').trim()
+  if (templateId && !getTemplate(templateId)) return fail('Mẫu tài liệu không còn trong Cấu hình.')
   const files = form.getAll('files').filter((f): f is File => f instanceof File && f.size > 0)
   const roles = form.getAll('roles').map(String)
+  // One template per file (TDD iOS → mẫu iOS, TDD SDK → mẫu SDK); '' = none.
+  const templateIds = form.getAll('templates').map(String)
+  for (const t of templateIds) if (t && !getTemplate(t)) return fail('Mẫu tài liệu không còn trong Cấu hình.')
 
   if (!files.length) return fail('Chọn ít nhất một file PDF.')
   const bad = checkPdfs(files)
@@ -56,10 +61,11 @@ export async function POST(request: Request) {
       author: '',
       url: '',
       note: note.trim(),
+      templateId,
     })
   }
 
-  const docs = await savePdfs(String(itemId), files, roles)
+  const docs = await savePdfs(String(itemId), files, roles, templateIds)
 
   queueRound(itemId, docs)
   ensureTicker()

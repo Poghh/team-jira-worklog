@@ -34,6 +34,10 @@ function parseAddressee(raw: string): Addressee | null {
   }
 }
 
+export function setItemTemplate(id: number, templateId: string) {
+  db.update(reviewItems).set({ templateId }).where(eq(reviewItems.id, id)).run()
+}
+
 export function setItemAddressee(id: number, a: Addressee | null) {
   db.update(reviewItems).set({ addressee: a ? JSON.stringify(a) : '' }).where(eq(reviewItems.id, id)).run()
 }
@@ -71,6 +75,7 @@ const toItem = (r: typeof reviewItems.$inferSelect): ItemView => ({
   seenAt: r.seenAt,
   links: parseJsonArray<PrLink>(r.links),
   addressee: parseAddressee(r.addressee),
+  templateId: r.templateId,
   updatedAt: r.updatedAt,
 })
 
@@ -139,7 +144,10 @@ export function findPrItem(repoId: string, prNumber: number): ItemView | null {
 }
 
 export function createItem(
-  input: Omit<ItemView, 'id' | 'status' | 'updatedAt' | 'seenAt' | 'links' | 'addressee'> & { links?: PrLink[] },
+  input: Omit<ItemView, 'id' | 'status' | 'updatedAt' | 'seenAt' | 'links' | 'addressee' | 'templateId'> & {
+    links?: PrLink[]
+    templateId?: string
+  },
 ): number {
   const { links, ...rest } = input
   return db
@@ -153,7 +161,7 @@ export function setItemLinks(id: number, links: PrLink[]) {
   db.update(reviewItems).set({ links: JSON.stringify(links) }).where(eq(reviewItems.id, id)).run()
 }
 
-export function patchItem(id: number, patch: Partial<Omit<ItemView, 'id' | 'links' | 'addressee'>>) {
+export function patchItem(id: number, patch: Partial<Omit<ItemView, 'id' | 'links' | 'addressee' | 'templateId'>>) {
   db.update(reviewItems).set({ ...patch, updatedAt: nowSql }).where(eq(reviewItems.id, id)).run()
 }
 

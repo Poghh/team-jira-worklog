@@ -327,6 +327,8 @@ export const reviewItems = sqliteTable(
     links: text("links").notNull().default("[]"),
     /** JSON {handle, honorific}: how comments address the author; '' = default. */
     addressee: text("addressee").notNull().default(""),
+    /** Doc reviews: the template (Cấu hình → Mẫu tài liệu) to check against; '' = none. */
+    templateId: text("template_id").notNull().default(""),
     createdAt: integer("created_at").notNull().default(now),
     updatedAt: integer("updated_at").notNull().default(now),
   },
