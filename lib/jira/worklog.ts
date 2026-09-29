@@ -1,6 +1,14 @@
 import 'server-only'
 
-import { DEFAULT_TZ, endOfDay, hoursToSeconds, jiraStarted, startOfDay } from '../time'
+import {
+  type BusySpan,
+  DEFAULT_TZ,
+  clockMinuteIn,
+  endOfDay,
+  hoursToSeconds,
+  jiraStarted,
+  startOfDay,
+} from '../time'
 import { SETTING_KEYS, getSetting, requireProjectKey } from '../settings'
 import { type JiraIssue, jiraFetch, searchJql } from './client'
 
@@ -127,20 +135,28 @@ export async function getWorklogs(
 }
 
 /**
- * Working minutes this user has already logged on `date`.
+ * Các khoảng giờ user này đã chiếm trong ngày `date`.
  *
- * This is what decides where the next worklog starts, so `issueKey` is read
- * directly rather than through the index — see `alwaysInclude`.
+ * Đây là thứ quyết định worklog kế tiếp bắt đầu ở đâu, nên `issueKey` được đọc
+ * trực tiếp chứ không qua index — xem `alwaysInclude`.
+ *
+ * Trả về các khoảng chứ không phải một con tổng: tổng không nói được chỗ nào
+ * đang trống. Xoá một worklog ở giữa ngày rồi log lại, tính theo tổng sẽ đặt
+ * entry mới đè lên một khoảng vẫn còn người — xem {@link placementChoices}.
  */
-export async function loggedMinutesOnDate(
+export async function loggedSpansOnDate(
   date: string,
   accountId: string,
   tz: string,
   issueKey: string,
-): Promise<number> {
+): Promise<BusySpan[]> {
   const entries = await getWorklogs(date, date, accountId, tz, [], [issueKey])
-  const seconds = entries.reduce((total, e) => total + e.timeSpentSeconds, 0)
-  return Math.round(seconds / 60)
+  return entries
+    .map((e) => ({
+      start: clockMinuteIn(e.started, tz),
+      minutes: Math.round(e.timeSpentSeconds / 60),
+    }))
+    .filter((s) => s.minutes > 0)
 }
 
 export function sumByDate(entries: WorklogEntry[]): Map<string, number> {

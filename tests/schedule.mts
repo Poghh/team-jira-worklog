@@ -14,7 +14,7 @@ import {
   type WorkSchedule,
   formatClock,
   formatSlices,
-  placeWorklog,
+  workMinuteToClock,
   sliceWorklog,
 } from '@/lib/time'
 
@@ -40,10 +40,18 @@ const off = (kind: DayOffKind | null): Record<string, DayOffKind> =>
   kind ? { [DAY]: kind } : {}
 const sched = (kind: DayOffKind | null, base: WorkSchedule = DEFAULT_SCHEDULE) =>
   scheduleForDate(DAY, base, off(kind))
-/** The span an entry reads back as, given nothing else logged that day. */
+/**
+ * The span an entry reads back as, `already` hours into the day.
+ *
+ * The end uses the `'end'` edge and the start the `'start'` one, because work
+ * finishing at the break stops at 12:00 while work beginning there starts at
+ * 13:00 — see {@link workMinuteToClock}.
+ */
 const span = (kind: DayOffKind | null, hours: number, already = 0) => {
-  const s = placeWorklog(already * 60, hours * 60, sched(kind))
-  return `${formatClock(s.start)}–${formatClock(s.end)}`
+  const s = sched(kind)
+  const from = workMinuteToClock(already * 60, s, 'start')
+  const to = workMinuteToClock((already + hours) * 60, s, 'end')
+  return `${formatClock(from)}–${formatClock(to)}`
 }
 
 /* ── an ordinary day is untouched ───────────────────────────────────────── */

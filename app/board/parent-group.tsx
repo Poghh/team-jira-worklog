@@ -17,7 +17,7 @@ import {
   getTeamScope,
   getWorkSchedule,
 } from "@/lib/settings";
-import { formatDuration } from "@/lib/time";
+import { type BusySpan, formatDuration } from "@/lib/time";
 
 import { CreateIssueButton } from "./create-issue";
 import { DatesEditor } from "./dates-editor";
@@ -43,7 +43,7 @@ export function ParentGroup({
   isToday,
   sprintEnd = null,
   datesSupported = true,
-  dayLoggedSeconds = 0,
+  dayBusy = [],
   myAccountId = null,
   currentSprint = null,
 }: {
@@ -56,11 +56,13 @@ export function ParentGroup({
   /** False on a project with neither date field — hides the chip entirely. */
   datesSupported?: boolean;
   /**
-   * Everything this user has logged on the selected day, across every issue.
-   * Drives the "what time will this land at" preview — the placement depends on
-   * the whole day, not on this row.
+   * Từng khoảng giờ user này đã chiếm trong ngày đang chọn, trên mọi issue.
+   *
+   * Chạy phần xem trước "entry này sẽ nằm lúc mấy giờ" — chỗ đặt là chuyện của
+   * cả ngày, không phải của riêng dòng này. Là danh sách khoảng chứ không phải
+   * một con tổng, vì tổng không nói được ngày đó còn trống chỗ nào.
    */
-  dayLoggedSeconds?: number;
+  dayBusy?: BusySpan[];
   /** Whose board this is, for deciding what may be edited on the parent. */
   myAccountId?: string | null;
   /** The sprint on screen, so a sprintless parent can be put into it. */
@@ -248,7 +250,7 @@ export function ParentGroup({
             sprintEnd={sprintEnd}
             team={team}
             datesSupported={datesSupported}
-            dayLoggedMinutes={Math.round(dayLoggedSeconds / 60)}
+            dayBusy={dayBusy}
             schedule={schedule}
             dayOff={dayOff ?? null}
             note={notes[subtask.key] ?? null}

@@ -250,6 +250,7 @@ export async function getBoard(query: BoardQuery = {}): Promise<BoardParent[]> {
     timeSpentSeconds: issue.fields.timespent ?? 0,
     loggedTodaySeconds: 0,
     lastLogDate: null,
+    todayEntries: [],
     created: ms(issue.fields.created),
     startDate: meta.startDateFieldId
       ? str(issue.fields[meta.startDateFieldId])
