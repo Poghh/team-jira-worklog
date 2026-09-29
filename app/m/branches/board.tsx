@@ -954,23 +954,67 @@ function Board({
           whatever the viewport has. 340 is where the cards stop being squeezed
           — every truncation on a card at 300 was short by the same 7px, so the
           extra 40 clears them with room left rather than landing exactly on
-          the limit and breaking again at the next long branch name. */}
+          the limit and breaking again at the next long branch name.
+
+          Cột rỗng thì không cần 340px nào cả. Một pipeline đủ chi tiết có
+          mười bốn cột, và đo trên bảng thật thì mười một trong số đó rỗng —
+          2804px nội dung trong khung 1372px, gần như toàn bộ là chỗ trống có
+          viền. Thu chúng thành dải 44px: vẫn nhìn thấy, vẫn thả card vào được,
+          vẫn đếm 0 — chỉ là không ăn chỗ của cột đang có việc.
+
+          Tính trên `visible`, tức là sau bộ lọc: cột rỗng vì bộ lọc cũng là
+          cột rỗng trên màn hình, và người đọc đang hỏi về cái họ đang thấy. */}
       <div
         className="grid gap-3 overflow-x-auto pb-2"
         style={{
-          gridTemplateColumns: `repeat(${Math.max(stages.length, 1)}, minmax(340px, 1fr))`,
+          gridTemplateColumns: stages.length
+            ? stages
+                .map((s) =>
+                  visible.some((c) => c.stage === s.name)
+                    ? "minmax(340px, 1fr)"
+                    : "44px",
+                )
+                .join(" ")
+            : "minmax(340px, 1fr)",
         }}
       >
         {stages.map((stage) => {
           const col = visible.filter((c) => c.stage === stage.name);
+          const drop = {
+            onDragOver: (e: React.DragEvent) => e.preventDefault(),
+            onDrop: () => {
+              if (dragId !== null) move(dragId, stage.name);
+              setDragId(null);
+            },
+          };
+
+          // Dải hẹp, không phải cột bị ẩn: một cột biến mất thì người đọc
+          // không biết nó có tồn tại hay không, mà "không có card nào ở
+          // staging" là một câu khẳng định đáng đọc chứ không phải chỗ trống.
+          if (!col.length)
+            return (
+              <div
+                key={stage.name}
+                {...drop}
+                title={`${stage.name} · chưa có card nào\n${stageRule(stage)}`}
+                className="flex min-w-0 flex-col items-center gap-2 rounded-[10px] border border-line bg-surface-2/60 px-1 py-2.5"
+              >
+                <span className="rounded-full border border-line bg-surface px-[6px] font-mono text-[10px] text-ink-3">
+                  0
+                </span>
+                <span
+                  className="whitespace-nowrap text-[11.5px] font-medium text-ink-3"
+                  style={{ writingMode: "vertical-rl" }}
+                >
+                  {stage.name}
+                </span>
+              </div>
+            );
+
           return (
             <div
               key={stage.name}
-              onDragOver={(e) => e.preventDefault()}
-              onDrop={() => {
-                if (dragId !== null) move(dragId, stage.name);
-                setDragId(null);
-              }}
+              {...drop}
               className="min-w-0 rounded-[10px] border border-line bg-surface-2 p-2.5"
             >
               <div className="mb-2 flex items-center justify-between">
