@@ -10,17 +10,20 @@ export type RoundState =
   | 'queued'
   | 'preparing'
   | 'running'
+  /** Claude has finished; one server process is storing its findings. */
+  | 'finalizing'
   | 'done'
   | 'failed'
   | 'cancelled'
   | 'lost'
 
-export const LIVE_STATES: RoundState[] = ['queued', 'preparing', 'running']
+export const LIVE_STATES: RoundState[] = ['queued', 'preparing', 'running', 'finalizing']
 
 export const ROUND_LABEL: Record<RoundState, string> = {
   queued: 'Đang chờ',
   preparing: 'Chuẩn bị',
   running: 'Đang review',
+  finalizing: 'Đang lưu',
   done: 'Xong',
   failed: 'Lỗi',
   cancelled: 'Đã huỷ',
@@ -87,6 +90,62 @@ export interface RepoPreset {
   rules: string
 }
 
+/**
+ * A PR in another repo reviewed alongside this one — typically the SDK change
+ * an iOS PR builds on, or the other way round. Claude reads its code and diff
+ * for context; findings still land on this PR.
+ */
+export interface PrLink {
+  repoId: string
+  /** GitHub PR number; null for a branch pair picked by hand. */
+  prNumber: number | null
+  baseRef: string
+  headRef: string
+  title: string
+  url: string
+}
+
+/** A link as one round resolved it: what was actually compared, and where. */
+export interface RoundLink extends PrLink {
+  repoName: string
+  baseSha: string
+  headSha: string
+  /** Worktree of the linked PR's head, readable by Claude via --add-dir. */
+  workdir: string
+  /** `git diff base head` of the linked PR, written out for Claude to Read. */
+  diffPath: string
+  /** Why it could not be prepared, when it could not. */
+  error: string
+}
+
+export function linkLabel(l: Pick<PrLink, 'prNumber' | 'headRef' | 'title'>, repoName: string): string {
+  return `${repoName} ${l.prNumber ? `#${l.prNumber}` : l.headRef}`
+}
+
+/**
+ * How a comment speaks to the PR author. Vietnamese needs a pronoun that
+ * encodes seniority: someone younger is simply mentioned (`@login`), someone
+ * older gets "anh" / "chị" before the mention.
+ */
+export type Honorific = 'em' | 'anh' | 'chi'
+export const HONORIFICS: Honorific[] = ['em', 'anh', 'chi']
+export const HONORIFIC_LABEL: Record<Honorific, string> = { em: 'Em', anh: 'Anh', chi: 'Chị' }
+
+export interface Addressee {
+  /** GitHub username, without the @. */
+  handle: string
+  honorific: Honorific
+}
+
+/** The words that stand for the author in a comment: "@x", "anh @x", "chị @x". */
+export function addressOf(a: Addressee): string {
+  const at = `@${a.handle}`
+  return a.honorific === 'anh' ? `anh ${at}` : a.honorific === 'chi' ? `chị ${at}` : at
+}
+
+export const cleanHandle = (h: string) => h.trim().replace(/^@+/, '')
+export const validHandle = (h: string) => /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/.test(h)
+
 export interface FindingView {
   id: number
   roundId: number
@@ -119,6 +178,7 @@ export interface RoundView {
   headSha: string
   prevHeadSha: string
   docs: DocFile[]
+  links: RoundLink[]
   verdict: Verdict | ''
   summary: string
   message: string
@@ -141,6 +201,9 @@ export interface ItemView {
   note: string
   status: 'open' | 'archived'
   seenAt: number | null
+  links: PrLink[]
+  /** Set on this PR; null = fall back to what is remembered for the author. */
+  addressee: Addressee | null
   updatedAt: number
 }
 

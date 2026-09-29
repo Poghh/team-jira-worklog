@@ -335,6 +335,11 @@ function open() {
   ensureColumn(sqlite, "review_items", "seen_at", "seen_at INTEGER");
   // The Claude session a round ran in, so the reviewer can keep talking to it.
   ensureColumn(sqlite, "review_rounds", "session_id", "session_id TEXT NOT NULL DEFAULT ''");
+  // Linked PRs in other repos (SDK ↔ iOS): wanted on the item, resolved per round.
+  ensureColumn(sqlite, "review_items", "links", "links TEXT NOT NULL DEFAULT '[]'");
+  ensureColumn(sqlite, "review_rounds", "links", "links TEXT NOT NULL DEFAULT '[]'");
+  // How comments address the PR author: {handle, honorific}, '' = not set.
+  ensureColumn(sqlite, "review_items", "addressee", "addressee TEXT NOT NULL DEFAULT ''");
   return drizzle(sqlite, { schema });
 }
 

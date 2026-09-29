@@ -5,7 +5,7 @@ import { eq } from 'drizzle-orm'
 import { db } from '@/lib/db'
 import { settings } from '@/lib/db/schema'
 
-import type { RepoPreset } from './model'
+import type { Addressee, RepoPreset } from './model'
 
 /**
  * Settings for the code-review module, under `mod:code-review:` in the shared
@@ -23,6 +23,8 @@ const K = {
   model: `${PREFIX}model`,
   /** Rules applied to every review, before the per-repo ones. */
   globalRules: `${PREFIX}global_rules`,
+  /** `{githubLogin: {handle, honorific}}` — how to address each author, remembered across PRs. */
+  people: `${PREFIX}people`,
 } as const
 
 export const DEFAULT_CONCURRENCY = 3
@@ -100,4 +102,32 @@ export function setRunnerConfig(input: {
   setRaw(K.claudeBin, input.claudeBin.trim())
   setRaw(K.model, input.model.trim())
   setRaw(K.globalRules, input.globalRules)
+}
+
+/* ── how to address each author ────────────────────────────────────────── */
+
+function readPeople(): Record<string, Addressee> {
+  try {
+    const v = JSON.parse(getRaw(K.people) ?? '{}')
+    return v && typeof v === 'object' && !Array.isArray(v) ? v : {}
+  } catch {
+    return {}
+  }
+}
+
+export function rememberPerson(login: string, a: Addressee) {
+  if (!login) return
+  setRaw(K.people, JSON.stringify({ ...readPeople(), [login.toLowerCase()]: a }))
+}
+
+/**
+ * Who a comment speaks to on this item: what the reviewer set on it, else what
+ * they set for this author before, else the author's login as someone younger
+ * ("@login" — the mention alone). Null when there is no author (a doc, or a
+ * branch pair without one).
+ */
+export function resolveAddressee(item: { author: string; addressee: Addressee | null }): Addressee | null {
+  if (item.addressee) return item.addressee
+  if (!item.author) return null
+  return readPeople()[item.author.toLowerCase()] ?? { handle: item.author, honorific: 'em' }
 }

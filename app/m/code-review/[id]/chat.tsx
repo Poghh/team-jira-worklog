@@ -3,7 +3,7 @@
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState, useTransition } from 'react'
 
 import type { ChatChanges, ChatMessage } from '@/lib/modules/code-review/chat'
-import { type FindingView, SEVERITY_LABEL, type Severity, where } from '@/lib/modules/code-review/model'
+import { type Addressee, type FindingView, SEVERITY_LABEL, type Severity, addressOf, where } from '@/lib/modules/code-review/model'
 
 import { applyChatAction, cancelChatAction, chatAction, sendChatAction } from '../actions'
 import { BTN, BTN_PRI, CARD, CTITLE, INPUT } from '../ui'
@@ -18,8 +18,11 @@ export interface ChatHandle {
  * session that did the review; anything it wants to change in the review
  * arrives as a proposal with an "Áp dụng" button — nothing changes on its own.
  */
-export const ChatPanel = forwardRef<ChatHandle, { roundId: number; findings: FindingView[]; canRun: boolean; onApplied: () => void }>(
-  function ChatPanel({ roundId, findings, canRun, onApplied }, ref) {
+export const ChatPanel = forwardRef<
+  ChatHandle,
+  { roundId: number; findings: FindingView[]; canRun: boolean; addressee: Addressee | null; onApplied: () => void }
+>(
+  function ChatPanel({ roundId, findings, canRun, addressee, onApplied }, ref) {
     const [messages, setMessages] = useState<ChatMessage[]>([])
     const [text, setText] = useState('')
     const [msg, setMsg] = useState('')
@@ -56,13 +59,20 @@ export const ChatPanel = forwardRef<ChatHandle, { roundId: number; findings: Fin
       },
     }))
 
-    const send = () =>
+    const send = (override?: string) =>
       start(async () => {
-        const r = await sendChatAction(roundId, text)
+        const r = await sendChatAction(roundId, override ?? text)
         setMsg(r.ok ? '' : r.message)
-        if (r.ok) setText('')
+        if (r.ok && !override) setText('')
         await load()
       })
+
+    // Results written before the addressee was set still say "tác giả" / "bạn".
+    const rewriteAddress = () =>
+      addressee &&
+      send(
+        `Viết lại comment chung và nội dung các finding còn mở để xưng hô với tác giả đúng quy định: gọi là "${addressOf(addressee)}", thay mọi chỗ "tác giả", "bạn", "author". Chỉ đổi xưng hô và câu chữ đi kèm cho tự nhiên, KHÔNG đổi nội dung kỹ thuật. Đề xuất trong changes (update từng finding cần đổi + summary_comment), không cần đọc lại code.`,
+      )
 
     const byId = new Map(findings.map((f) => [f.id, f]))
 
@@ -141,9 +151,20 @@ export const ChatPanel = forwardRef<ChatHandle, { roundId: number; findings: Fin
           placeholder="Nhắn cho Claude… (⌘ + Enter để gửi)"
         />
         <div className="mt-1.5 flex items-center gap-2">
-          <button type="button" className={BTN_PRI} disabled={busy || running || !canRun || !text.trim()} onClick={send}>
+          <button type="button" className={BTN_PRI} disabled={busy || running || !canRun || !text.trim()} onClick={() => send()}>
             {running ? 'Claude đang trả lời…' : 'Gửi'}
           </button>
+          {addressee && (
+            <button
+              type="button"
+              className={BTN}
+              disabled={busy || running || !canRun}
+              title="Nhờ Claude đề xuất viết lại comment theo xưng hô đang chọn — bạn bấm Áp dụng mới đổi"
+              onClick={rewriteAddress}
+            >
+              🗣 Cập nhật xưng hô “{addressOf(addressee)}” vào bản review
+            </button>
+          )}
           {msg && <span className="text-[12px] text-ink-2">{msg}</span>}
         </div>
       </div>

@@ -11,6 +11,8 @@ import {
   type DocRole,
   type ItemSummary,
   LIVE_STATES,
+  type PrLink,
+  linkLabel,
   type RepoPreset,
   shortSha,
 } from '@/lib/modules/code-review/model'
@@ -193,7 +195,7 @@ function Dashboard({
                       </Link>
                       <div className="mt-0.5 font-mono text-[11px] text-ink-3">
                         {i.kind === 'pr'
-                          ? `${i.headRef} → ${i.baseRef}${i.author ? ` · ${i.author}` : ''}${i.latest?.docs.length ? ` · 📎 ${i.latest.docs.length} tài liệu` : ''}`
+                          ? `${i.headRef} → ${i.baseRef}${i.author ? ` · ${i.author}` : ''}${i.latest?.docs.length ? ` · 📎 ${i.latest.docs.length} tài liệu` : ''}${i.links.length ? ` · 🔗 ${i.links.length} PR liên kết` : ''}`
                           : `${i.latest?.docs.length ?? 0} file${i.headRef ? ` · đối chiếu ${i.headRef}` : ''}`}
                       </div>
                     </td>
@@ -332,13 +334,14 @@ function NewPr({
     })
 
   const attach = useAttachments()
+  const [links, setLinks] = useState<PrLink[]>([])
 
   const submit = () =>
     start(async () => {
       const docs = await attach.upload()
       if (!docs) return
       const chosen = pulls.filter((p) => picked.has(p.number))
-      const r = await queuePullsAction({ repoId, pulls: chosen, note, docs })
+      const r = await queuePullsAction({ repoId, pulls: chosen, note, docs, links })
       setMsg(r.message)
       if (r.ok) {
         attach.clear()
@@ -422,6 +425,15 @@ function NewPr({
             {attach.section(
               'Mô tả chức năng, TDD… Claude sẽ kiểm tra PR có làm đúng và đủ theo tài liệu không. Áp dụng cho mọi PR đang chọn; các vòng Review tiếp tự dùng lại.',
             )}
+            <details className="mt-2 rounded-md border border-line px-3 py-2" open={links.length > 0}>
+              <summary className="cursor-pointer text-[12.5px] text-ink-2">
+                🔗 Liên kết PR ở repo khác{links.length ? ` · ${links.length}` : ' (không bắt buộc)'}
+              </summary>
+              <p className="mb-2 mt-1 text-[11.5px] text-ink-3">
+                Vd PR SDK mà PR iOS này dựa vào (hoặc ngược lại). Claude đọc thêm diff và code của PR kia để soi chỗ nối giữa hai bên. Áp dụng cho mọi PR đang chọn.
+              </p>
+              <LinkPicker repos={repos} value={links} onChange={setLinks} preferNot={repoId} />
+            </details>
             <div className="mt-2 flex items-center gap-2">
               <button type="button" className={BTN_PRI} disabled={busy || !canRun || picked.size === 0} onClick={submit}>
                 {busy && attach.count ? 'Đang tải tài liệu…' : `Review ${picked.size || ''} PR`}
@@ -434,12 +446,13 @@ function NewPr({
         )}
       </div>
 
-      {repo && <BranchForm repo={repo} canRun={canRun} onDone={onDone} />}
+      {repo && <BranchForm repo={repo} repos={repos} canRun={canRun} onDone={onDone} />}
     </div>
   )
 }
 
-function BranchForm({ repo, canRun, onDone }: { repo: RepoPreset; canRun: boolean; onDone: () => void }) {
+function BranchForm({ repo, repos, canRun, onDone }: { repo: RepoPreset; repos: RepoPreset[]; canRun: boolean; onDone: () => void }) {
+  const [links, setLinks] = useState<PrLink[]>([])
   const [branches, setBranches] = useState<string[]>([])
   const [base, setBase] = useState('')
   const [head, setHead] = useState('')
@@ -487,6 +500,14 @@ function BranchForm({ repo, canRun, onDone }: { repo: RepoPreset; canRun: boolea
       <input value={title} onChange={(e) => setTitle(e.target.value)} className={INPUT + ' mt-2'} placeholder="Tên hồ sơ (không bắt buộc)" />
       <textarea value={note} onChange={(e) => setNote(e.target.value)} rows={2} className={INPUT + ' mt-2'} placeholder="Ghi chú cho Claude (không bắt buộc)" />
       {attach.section('Mô tả chức năng, TDD… Claude sẽ kiểm tra code trên nhánh có làm đúng và đủ theo tài liệu không.')}
+      <details className="mt-2 rounded-md border border-line px-3 py-2" open={links.length > 0}>
+        <summary className="cursor-pointer text-[12.5px] text-ink-2">
+          🔗 Liên kết PR ở repo khác{links.length ? ` · ${links.length}` : ' (không bắt buộc)'}
+        </summary>
+        <div className="mt-2">
+          <LinkPicker repos={repos} value={links} onChange={setLinks} preferNot={repo.id} />
+        </div>
+      </details>
       <div className="mt-2 flex items-center gap-2">
         <button
           type="button"
@@ -496,7 +517,7 @@ function BranchForm({ repo, canRun, onDone }: { repo: RepoPreset; canRun: boolea
             start(async () => {
               const docs = await attach.upload()
               if (!docs) return
-              const r = await queueBranchesAction({ repoId: repo.id, baseRef: base, headRef: head, title, note, docs })
+              const r = await queueBranchesAction({ repoId: repo.id, baseRef: base, headRef: head, title, note, docs, links })
               setMsg(r.message)
               if (r.ok) {
                 attach.clear()
@@ -820,6 +841,118 @@ function Config({ repos, runner, onClaude }: { repos: RepoPreset[]; runner: Runn
             Lưu & kiểm tra CLI
           </button>
         </div>
+      </div>
+    </div>
+  )
+}
+
+/* ── linked PRs (SDK ↔ iOS) ─────────────────────────────────────────────── */
+
+/**
+ * Picks PRs in other repos to review alongside — e.g. the SDK PR an iOS PR
+ * builds on. Claude reads their diff and code; findings stay on this PR.
+ */
+export function LinkPicker({
+  repos,
+  value,
+  onChange,
+  preferNot,
+}: {
+  repos: RepoPreset[]
+  value: PrLink[]
+  onChange: (links: PrLink[]) => void
+  /** The repo being reviewed — offered last, since the pair is usually cross-repo. */
+  preferNot?: string
+}) {
+  const ordered = [...repos].sort((a, b) => Number(a.id === preferNot) - Number(b.id === preferNot))
+  const [repoId, setRepoId] = useState(ordered[0]?.id ?? '')
+  const repo = repos.find((r) => r.id === repoId)
+  const [pulls, setPulls] = useState<PullRow[]>([])
+  const [pick, setPick] = useState('')
+  const [head, setHead] = useState('')
+  const [base, setBase] = useState('')
+  const [msg, setMsg] = useState('')
+
+  useEffect(() => {
+    setPulls([])
+    setPick('')
+    if (!repo?.githubRepo) return
+    void listPullsAction(repo.id).then((r) => {
+      setPulls(r.pulls)
+      setMsg(r.ok ? '' : r.message)
+    })
+  }, [repo?.id, repo?.githubRepo])
+
+  const name = (id: string) => repos.find((r) => r.id === id)?.name ?? '?'
+  const add = (l: PrLink) => {
+    if (value.some((v) => v.repoId === l.repoId && (l.prNumber ? v.prNumber === l.prNumber : v.headRef === l.headRef))) return
+    onChange([...value, l])
+    setPick('')
+    setHead('')
+    setBase('')
+  }
+
+  return (
+    <div>
+      {value.length > 0 && (
+        <ul className="mb-2 flex flex-wrap gap-1.5">
+          {value.map((l, i) => (
+            <li key={i} className="flex items-center gap-1.5 rounded-md border border-line bg-surface-2 px-2 py-0.5 text-[12px]">
+              🔗 <span className="font-medium">{linkLabel(l, name(l.repoId))}</span>
+              <span className="max-w-[260px] truncate text-ink-3">{l.title}</span>
+              <button type="button" className="text-ink-3 hover:text-crit" onClick={() => onChange(value.filter((_, j) => j !== i))}>
+                ✕
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+      <div className="flex flex-wrap items-center gap-2">
+        <select value={repoId} onChange={(e) => setRepoId(e.target.value)} className={INPUT + ' w-auto'}>
+          {ordered.map((r) => (
+            <option key={r.id} value={r.id}>
+              {r.name}
+              {r.id === preferNot ? ' (cùng repo)' : ''}
+            </option>
+          ))}
+        </select>
+        {repo?.githubRepo ? (
+          <>
+            <select value={pick} onChange={(e) => setPick(e.target.value)} className={INPUT + ' w-auto max-w-[420px]'}>
+              <option value="">— Chọn PR đang mở —</option>
+              {pulls.map((p) => (
+                <option key={p.number} value={p.number}>
+                  #{p.number} {p.title.slice(0, 70)}
+                </option>
+              ))}
+            </select>
+            <button
+              type="button"
+              className={BTN}
+              disabled={!pick}
+              onClick={() => {
+                const p = pulls.find((x) => String(x.number) === pick)
+                if (p) add({ repoId, prNumber: p.number, headRef: p.headRef, baseRef: p.baseRef, title: p.title, url: p.url })
+              }}
+            >
+              + Liên kết
+            </button>
+          </>
+        ) : (
+          <>
+            <input value={head} onChange={(e) => setHead(e.target.value)} className={INPUT + ' w-40'} placeholder="nhánh nguồn" />
+            <input value={base} onChange={(e) => setBase(e.target.value)} className={INPUT + ' w-32'} placeholder="nhánh đích" />
+            <button
+              type="button"
+              className={BTN}
+              disabled={!head.trim() || !base.trim()}
+              onClick={() => add({ repoId, prNumber: null, headRef: head.trim(), baseRef: base.trim(), title: `${head.trim()} → ${base.trim()}`, url: '' })}
+            >
+              + Liên kết
+            </button>
+          </>
+        )}
+        {msg && <span className="text-[12px] text-crit">{msg}</span>}
       </div>
     </div>
   )

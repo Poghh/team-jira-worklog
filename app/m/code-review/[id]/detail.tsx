@@ -1,6 +1,7 @@
 'use client'
 
 import Link from 'next/link'
+import { useRouter } from 'next/navigation'
 import { useCallback, useEffect, useMemo, useRef, useState, useTransition } from 'react'
 
 import type { ClaudeCheck } from '@/lib/modules/code-review/claude'
@@ -13,6 +14,16 @@ import {
   type FindingView,
   type ItemView,
   LIVE_STATES,
+  type Addressee,
+  HONORIFICS,
+  HONORIFIC_LABEL,
+  type Honorific,
+  type PrLink,
+  type RepoPreset,
+  addressOf,
+  cleanHandle,
+  linkLabel,
+  validHandle,
   type RoundView,
   VERDICT_LABEL,
   allClipboard,
@@ -28,9 +39,11 @@ import {
   itemDetailAction,
   patchFindingAction,
   reReviewAction,
+  setAddresseeAction,
+  setLinksAction,
   updateSummaryAction,
 } from '../actions'
-import { useAttachments, useDocUpload } from '../review'
+import { LinkPicker, useAttachments, useDocUpload } from '../review'
 import { type ChatHandle, ChatPanel, ChatShortcut } from './chat'
 import { AccessNote, DiscussionPanel, FindingGithub, GhProvider, SubmitReview, useGh } from './github'
 import {
@@ -56,6 +69,9 @@ export function ReviewDetail({
   claude: initialClaude,
   initialTab,
   access,
+  repos,
+  linkedItems,
+  addressee,
 }: {
   item: ItemView
   repoName: string
@@ -63,6 +79,11 @@ export function ReviewDetail({
   claude: ClaudeCheck
   initialTab: 'review' | 'discussion'
   access: GithubAccess
+  repos: RepoPreset[]
+  /** `${repoId}#${prNumber}` → id of the item tracking that linked PR here. */
+  linkedItems: Record<string, number>
+  /** Resolved: set on the item, remembered for the author, or the default. */
+  addressee: Addressee | null
 }) {
   const [claude, setClaude] = useState(initialClaude)
   const onGithub = item.kind === 'pr' && Boolean(item.prNumber) && Boolean(githubRepo)
@@ -127,6 +148,9 @@ export function ReviewDetail({
         </div>
       </header>
 
+      {item.kind === 'pr' && <AddresseeBar item={item} addressee={addressee} />}
+      {item.kind === 'pr' && <LinksBar item={item} repos={repos} linkedItems={linkedItems} />}
+
       <ClaudeBanner check={claude} onChange={setClaude} />
 
       {onGithub && access.read && (
@@ -177,6 +201,7 @@ export function ReviewDetail({
           log={detail.logRoundId === current.id ? detail.log : []}
           githubRepo={githubRepo}
           canRun={claude.ok}
+          addressee={addressee}
           onChanged={() => refresh(current.id)}
         />
       )}
@@ -187,6 +212,144 @@ export function ReviewDetail({
         </>
       )}
     </GhProvider>
+  )
+}
+
+/**
+ * How this PR's comments address its author: Em → "@login", Anh / Chị →
+ * "anh @login" / "chị @login". Remembered per author for their next PRs.
+ */
+function AddresseeBar({ item, addressee }: { item: ItemView; addressee: Addressee | null }) {
+  const router = useRouter()
+  const [honorific, setHonorific] = useState<Honorific>(addressee?.honorific ?? 'em')
+  const [handle, setHandle] = useState(addressee?.handle ?? item.author)
+  const [remember, setRemember] = useState(true)
+  const [msg, setMsg] = useState('')
+  const [busy, start] = useTransition()
+  const preview = cleanHandle(handle) ? addressOf({ handle: cleanHandle(handle), honorific }) : ''
+  const dirty = !addressee || addressee.honorific !== honorific || addressee.handle !== cleanHandle(handle)
+
+  return (
+    <div className="-mt-2 mb-2 flex flex-wrap items-center gap-2 text-[12px]">
+      <span className="text-ink-3">🗣 Xưng hô với tác giả:</span>
+      <div className="flex overflow-hidden rounded-md border border-line-strong">
+        {HONORIFICS.map((h) => (
+          <TabBtn key={h} on={honorific === h} onClick={() => setHonorific(h)}>
+            {HONORIFIC_LABEL[h]}
+          </TabBtn>
+        ))}
+      </div>
+      <span className="flex items-center rounded-md border border-line bg-ground pl-2 font-mono">
+        @
+        <input
+          value={cleanHandle(handle)}
+          onChange={(e) => setHandle(e.target.value)}
+          className="w-36 bg-transparent px-1 py-[3px] outline-none"
+          placeholder="username GitHub"
+        />
+      </span>
+      {preview && (
+        <span className="text-ink-2">
+          → “Nhờ <span className="font-medium text-ink">{preview}</span> xác nhận thêm…”
+        </span>
+      )}
+      {item.author && (
+        <label className="flex items-center gap-1 text-ink-3" title={`Các PR sau của ${item.author} tự dùng xưng hô này`}>
+          <input type="checkbox" checked={remember} onChange={(e) => setRemember(e.target.checked)} />
+          nhớ cho {item.author}
+        </label>
+      )}
+      <button
+        type="button"
+        className={BTN}
+        disabled={busy || !dirty || !validHandle(cleanHandle(handle))}
+        onClick={() =>
+          start(async () => {
+            const r = await setAddresseeAction(item.id, { handle, honorific }, remember)
+            setMsg(r.message)
+            if (r.ok) router.refresh()
+          })
+        }
+      >
+        Lưu
+      </button>
+      {msg && <span className="text-ink-2">{msg}</span>}
+      {!item.addressee && !msg && <span className="text-ink-3">(mặc định — chưa lưu)</span>}
+    </div>
+  )
+}
+
+/**
+ * The PRs this one is reviewed with. Editing takes effect from the next round
+ * — the current one already ran with what it had.
+ */
+function LinksBar({ item, repos, linkedItems }: { item: ItemView; repos: RepoPreset[]; linkedItems: Record<string, number> }) {
+  const [links, setLinks] = useState<PrLink[]>(item.links)
+  const [editing, setEditing] = useState(false)
+  const [msg, setMsg] = useState('')
+  const [busy, start] = useTransition()
+  const router = useRouter()
+  const name = (id: string) => repos.find((r) => r.id === id)?.name ?? '?'
+  const saved = JSON.stringify(item.links) === JSON.stringify(links)
+
+  return (
+    <div className="-mt-2 mb-4 text-[12px]">
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="text-ink-3">🔗 PR liên kết:</span>
+        {item.links.length === 0 && <span className="text-ink-3">chưa có</span>}
+        {item.links.map((l, i) => {
+          const tracked = l.prNumber ? linkedItems[`${l.repoId}#${l.prNumber}`] : 0
+          return (
+            <span key={i} className="flex items-center gap-1 rounded-md border border-line bg-surface px-2 py-0.5">
+              {tracked ? (
+                <Link href={`/m/code-review/${tracked}`} className="font-medium text-accent-ink hover:underline" title="Mở hồ sơ review của PR này">
+                  {linkLabel(l, name(l.repoId))}
+                </Link>
+              ) : (
+                <span className="font-medium">{linkLabel(l, name(l.repoId))}</span>
+              )}
+              <span className="max-w-[280px] truncate text-ink-3">{l.title}</span>
+              {l.url && (
+                <a href={l.url} target="_blank" rel="noreferrer" className="text-ink-3 hover:text-accent-ink">
+                  ↗
+                </a>
+              )}
+            </span>
+          )
+        })}
+        <button type="button" className="text-ink-3 underline-offset-2 hover:text-ink hover:underline" onClick={() => setEditing((v) => !v)}>
+          {editing ? 'Đóng' : item.links.length ? 'Sửa' : '+ Liên kết PR'}
+        </button>
+        {msg && <span className="text-ink-2">{msg}</span>}
+      </div>
+      {editing && (
+        <div className={CARD + ' mt-2 !p-3'}>
+          <p className="mb-2 text-[11.5px] text-ink-3">
+            Vd PR SDK mà PR này dựa vào (hoặc PR iOS dùng SDK này). Claude đọc thêm diff + code của PR kia để soi chỗ nối giữa hai bên. Có hiệu lực từ vòng review tiếp theo.
+          </p>
+          <LinkPicker repos={repos} value={links} onChange={setLinks} preferNot={item.repoId} />
+          <div className="mt-2 flex items-center gap-2">
+            <button
+              type="button"
+              className={BTN_PRI}
+              disabled={busy || saved}
+              onClick={() =>
+                start(async () => {
+                  const r = await setLinksAction(item.id, links)
+                  setMsg(r.message)
+                  if (r.ok) {
+                    setEditing(false)
+                    router.refresh()
+                  }
+                })
+              }
+            >
+              Lưu liên kết
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
   )
 }
 
@@ -213,6 +376,7 @@ function RoundPanel({
   log,
   githubRepo,
   canRun,
+  addressee,
   onChanged,
 }: {
   item: ItemView
@@ -222,6 +386,7 @@ function RoundPanel({
   log: ItemDetail['log']
   githubRepo: string
   canRun: boolean
+  addressee: Addressee | null
   onChanged: () => void
 }) {
   const live = LIVE_STATES.includes(round.state)
@@ -257,6 +422,12 @@ function RoundPanel({
           {round.docs.length > 0 && (
             <span>{round.docs.map((d) => `${DOC_ROLE_LABEL[d.role]}: ${d.name}`).join(' · ')}</span>
           )}
+          {round.links.map((l, i) => (
+            <span key={i} className={l.error ? 'text-warn' : ''} title={l.error || `${l.headRef} → ${l.baseRef}`}>
+              🔗 {linkLabel(l, l.repoName)}
+              {l.headSha ? <span className="font-mono text-ink-3"> @{shortSha(l.headSha)}</span> : ' (không lấy được)'}
+            </span>
+          ))}
           <span className="text-ink-3">
             {live ? `chạy ${duration(round.startedAt, null)}` : round.startedAt ? `mất ${duration(round.startedAt, round.endedAt)}` : ''}
             {round.endedAt ? ` · ${timeAgo(round.endedAt)}` : ''}
@@ -281,7 +452,7 @@ function RoundPanel({
       </div>
 
       {round.state === 'done' && (
-        <DoneRound item={item} round={round} findings={findings} githubRepo={githubRepo} isLatest={isLatest} canRun={canRun} onChanged={onChanged} />
+        <DoneRound item={item} round={round} findings={findings} githubRepo={githubRepo} isLatest={isLatest} canRun={canRun} addressee={addressee} onChanged={onChanged} />
       )}
     </div>
   )
@@ -329,6 +500,7 @@ function DoneRound({
   githubRepo,
   isLatest,
   canRun,
+  addressee,
   onChanged,
 }: {
   item: ItemView
@@ -337,6 +509,7 @@ function DoneRound({
   githubRepo: string
   isLatest: boolean
   canRun: boolean
+  addressee: Addressee | null
   onChanged: () => void
 }) {
   const [findings, setFindings] = useState(initial)
@@ -475,7 +648,7 @@ function DoneRound({
         ))
       )}
 
-      <ChatPanel ref={chat} roundId={round.id} findings={findings} canRun={canRun} onApplied={onChanged} />
+      <ChatPanel ref={chat} roundId={round.id} findings={findings} canRun={canRun} addressee={addressee} onApplied={onChanged} />
     </>
   )
 }

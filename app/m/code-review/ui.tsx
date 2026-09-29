@@ -88,6 +88,7 @@ const ROUND_CLS: Record<RoundState, string> = {
   queued: 'bg-surface-2 text-ink-2',
   preparing: 'bg-blue-soft text-blue-ink',
   running: 'bg-blue-soft text-blue-ink',
+  finalizing: 'bg-blue-soft text-blue-ink',
   done: 'bg-good-soft text-good',
   failed: 'bg-crit-soft text-crit',
   cancelled: 'bg-surface-2 text-ink-3',
@@ -95,7 +96,7 @@ const ROUND_CLS: Record<RoundState, string> = {
 }
 
 export function RoundPill({ s }: { s: RoundState }) {
-  const live = s === 'running' || s === 'preparing'
+  const live = s === 'running' || s === 'preparing' || s === 'finalizing'
   return (
     <span className={`inline-flex items-center gap-1 rounded px-1.5 py-[1px] text-[11px] font-medium ${ROUND_CLS[s]}`}>
       {live && <span className="size-1.5 animate-pulse rounded-full bg-current" />}

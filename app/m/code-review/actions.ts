@@ -4,7 +4,7 @@ import { revalidatePath } from 'next/cache'
 
 import { type ChatMessage, applyChanges, cancelChat, listChat, sendChat } from '@/lib/modules/code-review/chat'
 import { type ClaudeCheck, checkClaude } from '@/lib/modules/code-review/claude'
-import { getRepo, setRepos, setRunnerConfig } from '@/lib/modules/code-review/config'
+import { getRepo, rememberPerson, setRepos, setRunnerConfig } from '@/lib/modules/code-review/config'
 import { isRepo, listRemoteBranches, fetchAll, gitSays, withRepoLock } from '@/lib/modules/code-review/git'
 import {
   type Discussion,
@@ -24,7 +24,7 @@ import {
   viewerLogin,
 } from '@/lib/modules/code-review/github'
 import { ForbiddenAction } from '@/lib/modules/code-review/guard'
-import { type DocFile, type FindingStatus, type FindingView, type ItemSummary, type RepoPreset, type RoundView, where } from '@/lib/modules/code-review/model'
+import { type Addressee, type DocFile, type FindingStatus, HONORIFICS, type PrLink, addressOf, cleanHandle, validHandle, type FindingView, type ItemSummary, type RepoPreset, type RoundView, where } from '@/lib/modules/code-review/model'
 import { type LogLine, cancelRound, ensureTicker, tick, updateRoundSummary, viewLog } from '@/lib/modules/code-review/runner'
 import {
   createItem,
@@ -42,6 +42,8 @@ import {
   patchFinding,
   patchItem,
   queueRound,
+  setItemAddressee,
+  setItemLinks,
 } from '@/lib/modules/code-review/store'
 import { validDocs } from '@/lib/modules/code-review/uploads'
 import { isModuleEnabled } from '@/lib/modules/state'
@@ -114,6 +116,8 @@ export async function queuePullsAction(input: {
   note: string
   /** Spec / TDD PDFs to compare the implementation against, applied to every PR picked. */
   docs?: DocFile[]
+  /** PRs in other repos to read alongside (SDK ↔ iOS). */
+  links?: PrLink[]
 }): Promise<Result> {
   const blocked = await ready()
   if (blocked) return blocked
@@ -138,6 +142,10 @@ export async function queuePullsAction(input: {
         note: input.note.trim(),
       })
     if (existing && input.note.trim()) patchItem(itemId, { note: input.note.trim() })
+    if (input.links?.length) {
+      const merged = [...(existing?.links ?? []), ...input.links]
+      await setLinksAction(itemId, merged)
+    }
     if (hasLiveRound(itemId)) {
       skipped++
       continue
@@ -173,6 +181,7 @@ export async function queueBranchesAction(input: {
   title: string
   note: string
   docs?: DocFile[]
+  links?: PrLink[]
 }): Promise<Result & { itemId?: number }> {
   const blocked = await ready()
   if (blocked) return blocked
@@ -191,6 +200,7 @@ export async function queueBranchesAction(input: {
     url: '',
     note: input.note.trim(),
   })
+  if (input.links?.length) await setLinksAction(itemId, input.links)
   queueRound(itemId, docs)
   ensureTicker()
   void tick()
@@ -583,4 +593,80 @@ export async function cancelChatAction(messageId: number): Promise<Result> {
 export async function applyChatAction(messageId: number): Promise<Result> {
   if (!enabled()) return OFF
   return applyChanges(messageId)
+}
+
+/* ── linked PRs (SDK ↔ iOS) ─────────────────────────────────────────────── */
+
+/** Keeps only well-formed links to configured repos, never the item itself. */
+function cleanLinks(links: unknown, self?: { repoId: string; prNumber: number | null; headRef: string }): PrLink[] | string {
+  if (!Array.isArray(links)) return 'Liên kết không hợp lệ.'
+  const out: PrLink[] = []
+  for (const l of links as PrLink[]) {
+    const repo = getRepo(String(l?.repoId ?? ''))
+    if (!repo) return 'Repo của PR liên kết không có trong Cấu hình.'
+    const prNumber = Number.isInteger(l.prNumber) && l.prNumber! > 0 ? l.prNumber : null
+    const headRef = String(l.headRef ?? '').trim()
+    const baseRef = String(l.baseRef ?? '').trim()
+    if (!headRef || !baseRef) return 'PR liên kết cần nhánh nguồn và nhánh đích.'
+    if (self && self.repoId === repo.id && (prNumber ? prNumber === self.prNumber : headRef === self.headRef)) continue
+    if (out.some((o) => o.repoId === repo.id && (prNumber ? o.prNumber === prNumber : o.headRef === headRef))) continue
+    out.push({ repoId: repo.id, prNumber, headRef, baseRef, title: String(l.title ?? '').slice(0, 300), url: String(l.url ?? '') })
+  }
+  return out.slice(0, 5)
+}
+
+/**
+ * Sets an item's linked PRs. Where a linked PR is itself tracked here, the
+ * link is added on its side too — a pair is a pair from both ends.
+ */
+export async function setLinksAction(itemId: number, links: PrLink[]): Promise<Result> {
+  if (!enabled()) return OFF
+  const item = getItem(itemId)
+  if (!item || item.kind !== 'pr') return { ok: false, message: 'Chỉ liên kết được giữa các PR.' }
+  const clean = cleanLinks(links, item)
+  if (typeof clean === 'string') return { ok: false, message: clean }
+  setItemLinks(itemId, clean)
+
+  const selfLink: PrLink = {
+    repoId: item.repoId,
+    prNumber: item.prNumber,
+    headRef: item.headRef,
+    baseRef: item.baseRef,
+    title: item.title,
+    url: item.url,
+  }
+  let mirrored = 0
+  for (const l of clean) {
+    const other = l.prNumber ? findPrItem(l.repoId, l.prNumber) : null
+    if (!other || other.links.some((x) => x.repoId === item.repoId && x.prNumber === item.prNumber && x.headRef === item.headRef)) continue
+    setItemLinks(other.id, [...other.links, selfLink])
+    mirrored++
+  }
+  revalidatePath('/m/code-review')
+  return {
+    ok: true,
+    message: clean.length
+      ? `Đã liên kết ${clean.length} PR${mirrored ? ` (và liên kết ngược ở ${mirrored} hồ sơ)` : ''} — áp dụng từ vòng review tiếp theo.`
+      : 'Đã bỏ liên kết.',
+  }
+}
+
+/* ── how comments address the author ───────────────────────────────────── */
+
+/**
+ * Sets how this PR's comments speak to its author, and — unless told not to —
+ * remembers it for the author's next PRs too.
+ */
+export async function setAddresseeAction(itemId: number, input: Addressee, remember = true): Promise<Result> {
+  if (!enabled()) return OFF
+  const item = getItem(itemId)
+  if (!item) return { ok: false, message: 'Không thấy hồ sơ.' }
+  const handle = cleanHandle(input.handle)
+  if (!validHandle(handle)) return { ok: false, message: 'Username GitHub không hợp lệ.' }
+  if (!HONORIFICS.includes(input.honorific)) return { ok: false, message: 'Chọn Em / Anh / Chị.' }
+  const a: Addressee = { handle, honorific: input.honorific }
+  setItemAddressee(itemId, a)
+  if (remember && item.author) rememberPerson(item.author, a)
+  revalidatePath(`/m/code-review/${itemId}`)
+  return { ok: true, message: `Đã lưu — comment sẽ gọi "${addressOf(a)}".` }
 }
