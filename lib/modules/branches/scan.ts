@@ -7,6 +7,8 @@ import {
   type CardBuild,
   type CardSide,
   type StageConfig,
+  cleanupStep,
+  envBranchNames,
   envSteps,
   orderSides,
   withLocalState,
@@ -87,6 +89,20 @@ export interface ScanResult {
   mine: number;
   /** How many branches each rule claimed — so a wrong setting is visible, not guessed at. */
   mineBy: Record<string, number>;
+  /**
+   * Card cũ đang đứng trên một nhánh môi trường — dọn được, giống `gone`.
+   *
+   * Tách khỏi `gone` vì lý do khác hẳn: nhánh vẫn còn, chỉ là nó chưa bao giờ
+   * đáng có card.
+   */
+  envCards: GoneCard[];
+  /**
+   * Nhánh bị bỏ vì chính cấu hình cột gọi nó là môi trường.
+   *
+   * Nêu ra chứ không lặng lẽ bỏ: một nhánh biến mất khỏi kết quả quét mà không
+   * ai nói lý do thì không phân biệt được với một nhánh app đọc hụt.
+   */
+  envSkipped: string[];
   /** Mine, but naming no configured project key — the usual cause of an empty scan. */
   unmatched: number;
   /** Branch names behind `unmatched`, capped, so the cause is visible not inferred. */
@@ -293,17 +309,45 @@ export async function scanGitHub(): Promise<ScanResult> {
     ? await fetchPushedBranches(token, logins).catch(() => new Set<string>())
     : new Set<string>();
 
+  /**
+   * Nhánh môi trường, lấy thẳng từ cấu hình cột.
+   *
+   * Một nhánh mà cột nào đó đặt tên là môi trường thì nó là **đích đến**, không
+   * phải việc của ai — nó không bao giờ được thành card, dù luật danh tính có
+   * nhận nó.
+   *
+   * Thiếu bước này, `ctalk/develop` đã lên board thành một card `no-ticket`:
+   * feed sự kiện coi nó là của người dùng vì họ **merge một PR vào nó qua giao
+   * diện GitHub**, và GitHub ghi cú dời đầu nhánh ấy thành một PushEvent mang
+   * tên họ — dù commit đầu nhánh là của người khác. Luật `push` được kiểm trước
+   * luật tác giả nên không có gì cản lại. Điều đó đúng với mọi nhánh sống lâu
+   * mà người dùng từng merge vào: `develop`, `staging`, `main` của repo wrapper.
+   *
+   * Đọc từ cấu hình chứ không từ một danh sách tên đoán sẵn: cột nào đang là
+   * môi trường thì chính người dùng đã khai rồi.
+   */
+  const envBranches = envBranchNames(cfg.stages);
+  const envSkipped: string[] = [];
+
   const byRule: Record<string, number> = {};
   const mine = branches.filter((b) => {
     // A branch sitting in a clone on this machine is the user's by construction;
     // the identity rules exist to filter the server's shared view, not this one.
-    if (b.local?.onlyLocal) {
-      byRule.local = (byRule.local ?? 0) + 1;
-      return true;
+    const how = b.local?.onlyLocal ? "local" : mineBy(b, cfg.identity, pushed);
+    if (!how) return false;
+
+    // Cổng môi trường đặt **sau** luật danh tính, không phải trước: đặt trước
+    // thì báo cáo kể tên cả những nhánh môi trường chẳng luật nào nhận — quét
+    // thật cho ra 6 cái, trong khi chỉ 1 cái thật sự sắp thành card. Ở đây danh
+    // sách chỉ chứa thứ đã bị chặn thật.
+    if (envBranches.has(b.name.trim())) {
+      const id = `${b.repo}#${b.name}`;
+      if (!envSkipped.includes(id)) envSkipped.push(id);
+      return false;
     }
-    const how = mineBy(b, cfg.identity, pushed);
-    if (how) byRule[how] = (byRule[how] ?? 0) + 1;
-    return how !== null;
+
+    byRule[how] = (byRule[how] ?? 0) + 1;
+    return true;
   });
 
   // Newest tip wins when several branches name the same ticket: a ticket
@@ -405,8 +449,32 @@ export async function scanGitHub(): Promise<ScanResult> {
     // repository still picks its own by newest tip.
     if (pinnedHit.has(`${key}#${b.repo}`)) continue;
 
+    /**
+     * Nhánh GitHub vẫn còn thì thắng nhánh GitHub không còn, trước khi xét tip.
+     *
+     * "Tip mới nhất thắng" một mình là sai với cách team này merge: việc đi qua
+     * một nhánh resolve, nhánh resolve merge xong thì bị xoá trên remote, còn
+     * clone dưới máy vẫn giữ nó với một upstream đã chết — nên nó **không** phải
+     * `onlyLocal`, mà tip lại mới hơn nhánh gốc.
+     *
+     * Đo trên card VT-526: phép quét thay `ctalk/bugfix/VT-526` (còn trên
+     * GitHub, `master...` cho ahead=0) bằng `ctalk/bugfix/resolve_vt-526_staging`
+     * (compare trả 404). Mất ref thì không so được gì, mọi ô containment thành
+     * `null`, và card đang ở `đã build staging` bị đẩy **lùi** về
+     * `đã merge staging` thay vì về `done`.
+     *
+     * Hỏi `onServer` chứ không hỏi `local.onlyLocal`: map đó dựng từ những gì
+     * GitHub thật sự trả về, trước khi nhánh dưới clone được nhập vào, nên nó là
+     * câu trả lời đúng cho "GitHub còn nhánh này không".
+     */
+    const live = (x: RemoteBranch) => onServer.has(`${x.repo}#${x.name}`);
     const prev = best.get(key)?.get(b.repo);
-    if (!prev || b.committedAt > prev.committedAt) {
+    const better = !prev
+      ? true
+      : live(b) !== live(prev)
+        ? live(b)
+        : b.committedAt > prev.committedAt;
+    if (better) {
       putBest(key, b);
       keysOf.set(key, all);
     }
@@ -503,7 +571,20 @@ export async function scanGitHub(): Promise<ScanResult> {
       all.findIndex((o) => o.repo === t.repo && o.branch === t.branch) === i,
   );
 
-  const envState = await fetchEnvState(token, measure, envs).catch(
+  /**
+   * Đo thêm trunk mà cột cuối hỏi về, ngoài các môi trường.
+   *
+   * Không đi qua `envSteps` vì cột cuối là `reach: "gone"`, không phải
+   * `merged` — nó cố ý nằm ngoài thang môi trường vẽ trên card, mà vẫn cần
+   * đúng phép đo containment đó. Xem {@link reachedTrunk}.
+   */
+  const trunk = cleanupStep(stages)?.branch.trim();
+  const measured =
+    trunk && !envs.some((e) => e.branch === trunk)
+      ? [...envs, { branch: trunk }]
+      : envs;
+
+  const envState = await fetchEnvState(token, measure, measured).catch(
     () => ({}) as Record<string, EnvState>,
   );
 
@@ -630,6 +711,7 @@ export async function scanGitHub(): Promise<ScanResult> {
         stages,
         branch.prs,
         builtBranchesOf(card),
+        branch.name,
       );
       const side: CardSide = {
         repo: branch.repo,
@@ -667,7 +749,7 @@ export async function scanGitHub(): Promise<ScanResult> {
     computed.sort(
       (a, b) => stageNames.indexOf(b.target) - stageNames.indexOf(a.target),
     );
-    const furthest = computed[0]!;
+    void computed[0];
     // Stored in the order the repositories are configured, which is the order
     // the card is read in — one order instead of two, and the flat columns
     // then describe the repository the user put first.
@@ -678,9 +760,23 @@ export async function scanGitHub(): Promise<ScanResult> {
     const head = ordered[0]!;
     const branch = head.branch;
     const sides = ordered.map((c) => c.side);
+    /**
+     * Cột của card, từ đúng một hàm — {@link cardStage}.
+     *
+     * Chỗ này từng lấy `furthest.target`, tức là kết quả `stageFor` của nửa đi
+     * xa nhất. Nhưng `stageFor` **bỏ qua** cột `reach: "gone"` — cố ý, vì cột
+     * cuối không phải chuyện containment của một nhánh mà là chuyện của cả
+     * card — nên cột cuối không bao giờ tới được đường này. Đo trên VT-526:
+     * `cardStage` trả `done`, mà dòng kế hoạch vẫn nói "không đổi", và card
+     * nằm lại ở `đã build staging` mãi.
+     *
+     * Đường branch-matched phía dưới vốn đã gọi `cardStage`, kèm hẳn một comment
+     * nói rằng đường này cũng vậy. Giờ thì đúng.
+     */
+    const target = cardStage(sides, card?.builds ?? [], stages);
     const stage = card
-      ? advanceStage(card.stage, furthest.target, stageNames)
-      : furthest.target;
+      ? advanceStage(card.stage, target, stageNames, stages)
+      : target;
 
     if (!card) {
       return {
@@ -820,6 +916,20 @@ export async function scanGitHub(): Promise<ScanResult> {
   );
   const byRepoBranch = new Map(branches.map((b) => [`${b.repo}#${b.name}`, b]));
 
+  /**
+   * Card cũ đang nằm trên một nhánh môi trường.
+   *
+   * Cổng ở `mine` phía trên chỉ chặn việc **tạo** card. Vòng này thì duyệt
+   * `branches` chứ không duyệt `mine` — cố ý, để card trỏ vào nhánh của đồng
+   * nghiệp vẫn được cập nhật — nên một card đã lỡ sinh ra trên `ctalk/develop`
+   * vẫn được làm mới ở đây, và quét lại lần nào cũng thấy nó.
+   *
+   * Không lặng lẽ bỏ qua: bỏ qua thì card đứng im trên bảng với dữ liệu cũ dần,
+   * tệ hơn là sai. Nó đi vào danh sách dọn được, cùng lối với {@link GoneCard}
+   * — quyết định xoá vẫn là của người dùng, vì card có thể mang ghi chú.
+   */
+  const envCards: GoneCard[] = [];
+
   for (const card of allCards) {
     if (!card.repo || !card.branch.trim()) continue;
     const here = `${card.repo}#${card.branch.trim()}`;
@@ -828,6 +938,22 @@ export async function scanGitHub(): Promise<ScanResult> {
 
     const found = byRepoBranch.get(`${card.repo}#${card.branch.trim()}`);
     if (!found) continue;
+
+    if (envBranches.has(card.branch.trim())) {
+      if (!envSkipped.includes(here)) envSkipped.push(here);
+      envCards.push({
+        id: card.id,
+        issueKey: card.issueKey,
+        title: card.title,
+        branch: card.branch,
+        repo: card.repo,
+        stage: card.stage,
+        bodyLines: card.body.split("\n").filter((l) => l.trim()).length,
+        prUrl: card.prUrl,
+        prState: card.sides[0]?.prs[0]?.state ?? "",
+      });
+      continue;
+    }
     const pinned = card.sides
       .find((x) => x.repo === card.repo)
       ?.prs.find((p) => p.pinned && p.number)?.number;
@@ -844,6 +970,7 @@ export async function scanGitHub(): Promise<ScanResult> {
       stages,
       branch.prs,
       builtBranchesOf(card),
+      branch.name,
     );
 
     // Only this repository's side is re-measured here; the card's other sides
@@ -933,6 +1060,7 @@ export async function scanGitHub(): Promise<ScanResult> {
       card.stage,
       cardStage(sides, card.builds, stages),
       stageNames,
+      stages,
     );
     const fresh =
       serializeCardSides(card.sides) === serializeCardSides(sides) && !stage;
@@ -970,6 +1098,8 @@ export async function scanGitHub(): Promise<ScanResult> {
     scanned: branches.length,
     mine: mine.length,
     mineBy: byRule,
+    envSkipped,
+    envCards,
     unmatched,
     unmatchedSamples,
     skipped,

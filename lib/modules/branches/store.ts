@@ -170,6 +170,7 @@ export function saveTaskNote(
       input.stage,
       target,
       stages.map((x) => x.name),
+      stages,
     );
     return forward || input.stage;
   };
@@ -481,6 +482,7 @@ export function markBranchesGone(ids: number[]): number {
       row.stage,
       cardStage(sides, parseCardBuilds(row.builds, row), stages),
       names,
+      stages,
     );
 
     db.update(taskNotes)
@@ -514,50 +516,6 @@ export function markBranchesGone(ids: number[]): number {
  * measured things it never looked at, and would clear a gone-branch mark on
  * the strength of a query that cannot tell whether the branch exists.
  */
-/**
- * Moves cards whose tickets Jira has closed into the pipeline's last column.
- *
- * Lives here, driven by the page, because the page is the only place that
- * holds both halves — the cards and a fresh answer from Jira — and it already
- * has that answer for the drift badges, so this costs no extra call.
- *
- * Only forward, through the same `advanceStage` guard as every other automatic
- * move. A card dragged past the last column cannot exist, so in practice this
- * either moves a card to the end or does nothing; what the guard really buys
- * is that a pipeline with no terminal column is left entirely alone.
- */
-export function settleFinishedCards(ids: number[]): number {
-  const wanted = ids.filter((n) => Number.isInteger(n));
-  if (!wanted.length) return 0;
-
-  const stages = getStages();
-  const names = stages.map((s) => s.name);
-  let n = 0;
-
-  for (const id of wanted) {
-    const row = db.select().from(taskNotes).where(eq(taskNotes.id, id)).get();
-    if (!row) continue;
-    const stage = advanceStage(
-      row.stage,
-      cardStage(
-        parseCardSides(row.sides, row),
-        parseCardBuilds(row.builds, row),
-        stages,
-        true,
-      ),
-      names,
-    );
-    if (!stage) continue;
-    db.update(taskNotes)
-      .set({ stage, updatedAt: stamp() })
-      .where(eq(taskNotes.id, id))
-      .run();
-    n++;
-  }
-
-  return n;
-}
-
 export function setCardPrs(
   rows: Array<{
     id: number;
@@ -618,6 +576,7 @@ export function setCardBuilds(
       r.stage,
       cardStage(r.sides, r.builds, stages),
       names,
+      stages,
     );
     n += db
       .update(taskNotes)

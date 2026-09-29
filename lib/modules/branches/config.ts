@@ -94,6 +94,9 @@ function parseStages(raw: string): StageConfig[] {
           : s.merged
             ? "merged"
             : "queued") as StageConfig["reach"],
+        // Thiếu hẳn là bình thường: mọi cấu hình lưu trước khi có cột theo loại
+        // đều không có trường này, và '' nghĩa là không kén — đúng hành vi cũ.
+        kind: String(s.kind ?? "").trim(),
       }))
       .filter((s) => s.name);
   } catch {
@@ -126,7 +129,13 @@ export function getStages(): StageConfig[] {
  * version N+1 shipped. A token that stays applied says the narrower, truer
  * thing: this pipeline has already been offered that column.
  */
-const SHAPES = ["built-expects-test", "done-cleanup"] as const;
+const SHAPES = [
+  "built-expects-test",
+  "done-cleanup",
+  "done-master",
+  "kind-columns",
+  "task-column",
+] as const;
 
 function appliedShapes(): Set<string> {
   return new Set((getRaw(K.stagesShape) ?? "").split(" ").filter(Boolean));
@@ -148,6 +157,9 @@ function migrate(stages: StageConfig[]): StageConfig[] {
   let out = stages;
   if (!applied.has("built-expects-test")) out = addBuildColumns(out);
   if (!applied.has("done-cleanup")) out = addDoneColumn(out);
+  if (!applied.has("done-master")) out = nameDoneBranch(out);
+  if (!applied.has("kind-columns")) out = addKindColumns(out);
+  if (!applied.has("task-column")) out = orderStartColumns(out);
 
   setRaw(K.stagesShape, SHAPES.join(" "));
   if (JSON.stringify(out) !== JSON.stringify(stages))
@@ -181,6 +193,7 @@ function addBuildColumns(stages: StageConfig[]): StageConfig[] {
       branch: s.branch,
       phase: "",
       reach: "built",
+      kind: "",
     });
   }
   return out;
@@ -196,10 +209,98 @@ function addBuildColumns(stages: StageConfig[]): StageConfig[] {
  * conjure into it.
  */
 function addDoneColumn(stages: StageConfig[]): StageConfig[] {
-  if (!stages.length || stages.some((s) => s.reach === "gone" && !s.branch))
-    return stages;
+  if (!stages.length || stages.some((s) => s.reach === "gone")) return stages;
   const end = DEFAULT_STAGES.find((s) => s.reach === "gone");
   return end ? [...stages, end] : stages;
+}
+
+/**
+ * Nhánh trunk cho cột cuối, điền vào nếu nó chưa có.
+ *
+ * Cột cuối từng không cần nhánh: nó nhận card khi Jira đóng ticket, hoặc khi
+ * nhánh đã bị xoá sạch. Giờ nó hỏi một câu đo được trên đồ thị git — code đã có
+ * trong trunk chưa — nên nó phải biết trunk tên gì.
+ *
+ * Ghi đúng một lần, và chỉ khi ô đang trống: đây là câu trả lời cũ của chính
+ * app, không phải lựa chọn của ai. Ai đã tự điền tên khác thì giữ nguyên, ai
+ * xoá đi thì cột cuối không nhận card nữa — và {@link stageRule} nói ra điều
+ * đó thay vì im lặng.
+ */
+function nameDoneBranch(stages: StageConfig[]): StageConfig[] {
+  const fill = DEFAULT_STAGES.find((s) => s.reach === "gone")?.branch ?? "";
+  if (!fill) return stages;
+  return stages.map((s) =>
+    s.reach === "gone" && !s.branch.trim() ? { ...s, branch: fill } : s,
+  );
+}
+
+/**
+ * Cột điểm bắt đầu cho từng loại nhánh, chèn trước cột không kén.
+ *
+ * Chèn chứ không nối vào cuối: đây là chỗ một nhánh *bắt đầu*, mà thứ tự cột
+ * chính là thứ tự tiến triển — nối vào cuối thì `feature` sẽ nằm sau `done`.
+ *
+ * Đặt ngay trước cột "chưa mở PR" không kén đầu tiên, tức là ngay trước chỗ
+ * những nhánh này vốn đang rơi vào. Không có cột nào như vậy thì thôi, không
+ * đoán: một pipeline người dùng tự dựng khác hẳn mẫu, và chèn bừa vào giữa nó
+ * là đổi ý nghĩa bảng của họ.
+ */
+function addKindColumns(stages: StageConfig[]): StageConfig[] {
+  const seeds = DEFAULT_STAGES.filter((s) => s.kind.trim());
+  const want = seeds.filter(
+    (seed) => !stages.some((s) => s.kind.trim().toLowerCase() === seed.kind.toLowerCase()),
+  );
+  if (!stages.length || !want.length) return stages;
+
+  const at = stages.findIndex(
+    (s) => !s.branch.trim() && s.phase === "nopr" && s.reach !== "gone" && !s.kind.trim(),
+  );
+  if (at < 0) return stages;
+  return [...stages.slice(0, at), ...want, ...stages.slice(at)];
+}
+
+/**
+ * Cột `task`, và bốn cột đầu về đúng thứ tự người dùng đặt.
+ *
+ * Đây là migration duy nhất **không** chỉ-chèn, và cố ý như vậy: thứ tự bốn
+ * cột đầu là thứ tự tiến triển, mà thứ tự ấy là một quyết định người dùng nói
+ * ra thành lời — `task` → `bugfix` → `review` → `feature` — chứ không phải một
+ * mặc định cũ của app để lại.
+ *
+ * `đang code` đổi tên thành `task` chứ không thêm cột mới bên cạnh: nó vốn là
+ * cột không kén, và để cả hai thì một nhánh `ctalk/task/…` có hai chỗ hợp lệ
+ * và chỗ nào thắng là do thứ tự — đúng kiểu mập mờ mà bảng này sinh ra để dẹp.
+ *
+ * Chỉ chạy khi nhận ra đủ hình: một cột không kén tên `đang code` và các cột
+ * kén đã có. Pipeline người dùng tự dựng khác hẳn thì để nguyên, vì xếp lại
+ * cột của họ theo ý mình là đổi ý nghĩa bảng của họ.
+ */
+function orderStartColumns(stages: StageConfig[]): StageConfig[] {
+  const start = (s: StageConfig) =>
+    !s.branch.trim() && s.reach !== "gone" && s.phase === "nopr";
+  const isReview = (s: StageConfig) =>
+    !s.branch.trim() && s.reach !== "gone" && s.phase === "open";
+
+  const plain = stages.find((s) => start(s) && !s.kind.trim());
+  const review = stages.find(isReview);
+  if (!plain || !review) return stages;
+
+  const by = (kind: string) =>
+    stages.find((s) => start(s) && s.kind.trim().toLowerCase() === kind);
+
+  // Giữ **chính đối tượng** đã lấy ra, không phải tên của nó: cột không kén
+  // được đổi tên thành `task`, nên lọc phần còn lại theo tên sẽ không nhận ra
+  // nó nữa và để lại một bản `đang code` mồ côi ngay sau `feature`.
+  const picked = [plain, by("bugfix"), review, by("feature")].filter(
+    (s): s is StageConfig => Boolean(s),
+  );
+  const wanted = picked.map((s) =>
+    s === plain && s.name === "đang code"
+      ? { ...s, name: "task", kind: "task" }
+      : s,
+  );
+  const rest = stages.filter((s) => !picked.includes(s));
+  return [...wanted, ...rest];
 }
 
 export function setStages(list: StageConfig[]) {
@@ -226,6 +327,13 @@ export function setStages(list: StageConfig[]) {
         : s.reach === "gone"
           ? "gone"
           : "queued") as StageConfig["reach"],
+      // Loại nhánh chỉ có nghĩa ở cột "chưa mở PR" — đó là chỗ một nhánh bắt
+      // đầu. Trên cột môi trường hay cột PR-đang-mở thì nó là cấu hình chết mà
+      // vẫn trông như còn tác dụng, nên xoá thẳng thay vì để lại.
+      kind:
+        !s.branch.trim() && s.phase === "nopr" && s.reach !== "gone"
+          ? s.kind.trim()
+          : "",
     }))
     .filter((s) => s.name);
   setRaw(K.stages, JSON.stringify(clean));

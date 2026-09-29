@@ -3,9 +3,9 @@ import {
   type CardPr,
   type CardSide,
   type StageConfig,
-  branchesCleanedUp,
   cleanupStep,
   envSteps,
+  kindMatches,
 } from "./model";
 
 /**
@@ -782,6 +782,14 @@ export function stageFor(
   prs: PullRequest[] = pr ? [pr] : [],
   /** Environments a build carries this work in, from those builds' release notes. */
   builtBranches: readonly string[] = [],
+  /**
+   * Tên nhánh, để chọn cột điểm bắt đầu theo loại — `feature`, `bugfix`, …
+   *
+   * Chỉ dùng ở nhánh cuối của hàm, lúc chưa có PR nào. Mặc định rỗng nên mọi
+   * người gọi cũ vẫn đúng: không biết tên nhánh thì rơi vào cột không kén, y
+   * như trước khi có cột theo loại.
+   */
+  branchName: string = "",
 ): string {
   const queued = new Set(
     prs
@@ -868,11 +876,48 @@ export function stageFor(
   // otherwise read as "shipped and cleaned up", which is the far end of the
   // board. Only {@link cardStage} may put a card there.
   const pre = stages.filter((s) => !s.branch && s.reach !== "gone");
-  if (phase === "merged")
-    return pre[pre.length - 1]?.name ?? stages[0]?.name ?? "";
+  /**
+   * Đã merge mà chưa thấy ở môi trường nào — về cột "PR đang mở".
+   *
+   * Trước đây lấy cột pre **cuối cùng**, hồi đó tình cờ chính là `review`. Thứ
+   * tự cột là của người dùng, và khi họ xếp `feature` sau `review` thì "cột
+   * cuối" thành `feature` — một PR đã merge bỗng rơi vào cột của nhánh chưa mở
+   * PR. Hỏi thẳng cột nào nói về PR thay vì dựa vào chỗ nó tình cờ đứng.
+   *
+   * Vẫn lấy cái cuối cùng trong số đó: nhiều cột PR thì cái xa nhất là cái gần
+   * "đã merge" nhất.
+   */
+  if (phase === "merged") {
+    const open = pre.filter((s) => s.phase === "open");
+    return (
+      open[open.length - 1]?.name ??
+      pre[pre.length - 1]?.name ??
+      stages[0]?.name ??
+      ""
+    );
+  }
 
   const want = phase === "open" ? "open" : "nopr";
-  return (pre.find((s) => s.phase === want) ?? pre[0] ?? stages[0])?.name ?? "";
+  /**
+   * Cột kén đúng loại nhánh này thắng cột không kén.
+   *
+   * Thứ tự thử là cả luật: một nhánh `feature` chưa mở PR vào cột `feature`;
+   * một nhánh `task` không khớp cột kén nào nên rơi về cột chung. Bỏ hết cột
+   * kén đi thì dòng thứ hai là đúng hành vi cũ — nên bảng của ai chưa khai
+   * loại nào vẫn chạy y hệt.
+   */
+  const fitting = pre.find(
+    (s) => s.phase === want && s.kind.trim() && kindMatches(branchName, s.kind),
+  );
+  return (
+    (
+      fitting ??
+      pre.find((s) => s.phase === want && !s.kind.trim()) ??
+      pre.find((s) => s.phase === want) ??
+      pre[0] ??
+      stages[0]
+    )?.name ?? ""
+  );
 }
 
 /**
@@ -891,15 +936,6 @@ export function cardStage(
   sides: CardSide[],
   builds: CardBuild[],
   stages: StageConfig[],
-  /**
-   * Whether Jira says the card is over — {@link ticketsDone}.
-   *
-   * `null` means nobody asked, which is the case for every caller that has no
-   * Jira credentials in hand: the scan, the pull-request refresh, the editor.
-   * They must not be able to *un*-finish a card, and they cannot, because
-   * `advanceStage` only ever moves forward.
-   */
-  finished: boolean | null = null,
 ): string {
   const names = stages.map((s) => s.name);
   const built = builds.flatMap((b) => (b.branch ? [b.branch] : []));
@@ -912,26 +948,22 @@ export function cardStage(
       stages,
       prs,
       built,
+      side.branch,
     );
     if (names.indexOf(target) > names.indexOf(best)) best = target;
   }
 
   /**
-   * The last column, on either of two witnesses to the same fact — this work
-   * is over.
+   * Cột cuối, trên đúng một nhân chứng: code đã có trong trunk.
    *
-   * Jira closing the ticket is the primary one and the only one that needs no
-   * interpretation. It wins outright, from any column: a ticket closed while
-   * its card sat in `review` is a won't-fix or a duplicate, and those are
-   * finished in the only sense the board cares about.
+   * Trước đây có hai nhân chứng khác — Jira đóng ticket, và nhánh đã bị xoá
+   * sạch — và cả hai đều là chuyện *người ta nói* chứ không phải chuyện đo
+   * được. Jira đóng ticket rồi mở lại việc trên chính key đó là thường ở đây;
+   * nhánh bị xoá thì không phân biệt được việc đã phát hành với việc bỏ dở.
+   * Containment với trunk thì chỉ có một nghĩa, và đọc thẳng từ đồ thị git.
    *
-   * The branch being gone is the fallback, for the cards Jira cannot speak
-   * for — a branch naming a ticket in a project this app is not pointed at,
-   * which is routine here mid-migration. It is the weaker witness so it is
-   * fenced in twice: *every* side, because a fix that deleted its iOS branch
-   * while the SDK one is still open is not finished; and only from an
-   * environment, because a branch deleted from `đang code` is abandoned work
-   * rather than delivered work.
+   * Hệ quả đã biết và đã chọn: nhánh bị xoá trước khi app kịp đo thì card
+   * không về được done nữa, phải kéo tay. Sai kiểu nhìn thấy được.
    */
   const end = cleanupStep(stages);
   // The terminal column's own request condition, if it names one. Same rule as
@@ -942,39 +974,41 @@ export function cardStage(
       const p = prPhase(pickPr(side.prs.map(asPullRequest)));
       return end.phase === "open" ? p === "open" : p === "none";
     });
-  /**
-   * Việc còn dở, đo được trên chính card.
-   *
-   * Một nhánh vẫn còn trên remote **và** chưa lọt vào môi trường nào thì đó là
-   * code chưa đi đâu cả — nói gì thì nói, nó chưa xong.
-   */
-  const stillInFlight = sides.some((side) => {
-    if (side.branchGone || !side.branch.trim()) return false;
-    const env = parseEnvState(side.envState);
-    return !Object.values(env).some((e) => e?.ahead === 0);
-  });
-
-  if (end && endPhaseOk) {
-    // Jira đóng ticket vẫn là nhân chứng mạnh nhất, nhưng không còn tuyệt đối.
-    //
-    // Team này sửa tiếp trên ticket đã đóng — ticket gốc đóng rồi, bug quay
-    // lại, nhánh mới cắt ra trên chính key cũ. Đo trên bảng: 2 trong 3 card
-    // đang nằm ở cột cuối trong khi nhánh vừa tạo mười ba phút trước và chưa
-    // merge vào đâu. Cột cuối là đầu xa nhất của bảng, mà bảng này sinh ra để
-    // thấy việc đang chạy — giấu việc đang chạy vào đó là hỏng đúng mục đích.
-    //
-    // Won't-fix kèm một nhánh bỏ hoang thì sẽ nằm lại ở cột trước thay vì về
-    // done; sai kiểu nhìn thấy được, và kéo tay một cái là xong.
-    if (finished === true && !stillInFlight) return end.name;
-    const reachedEnv = Boolean(stages.find((s) => s.name === best)?.branch);
-    // Only when nobody asked. A caller holding a live "In Progress" is not
-    // short of information, and letting the weaker witness overrule it would
-    // file work still in flight as finished.
-    if (finished === null && reachedEnv && branchesCleanedUp(sides))
-      return end.name;
-  }
+  if (end && endPhaseOk && reachedTrunk(sides, end.branch.trim()))
+    return end.name;
 
   return best;
+}
+
+/**
+ * Code của card đã có trong trunk chưa — mọi nửa của nó.
+ *
+ * `every` vì một fix hai repo chưa xong khi mới phát hành một nửa; danh sách
+ * rỗng trả `false`, vì card chưa từng quét khác hẳn card đã phát hành.
+ *
+ * Điều kiện "từng merge được gì đó" không phải cho vui. `aheadBy: 0` nói nhánh
+ * **không thêm gì** trunk chưa có, mà một nhánh vừa cắt ra chưa có commit nào
+ * cũng đúng y như vậy — đo trên bảng thật: `master...ctalk/feature/VT-2583_FR-4…`
+ * trả về `identical`, trong khi card đó đang ở `đang code` và chưa có PR nào.
+ * Luật trần sẽ đẩy nó thẳng vào done. Đây là cùng một cái bẫy, và cùng một
+ * thuốc, mà {@link stageFor} đã dùng cho các cột môi trường.
+ *
+ * PR merge thẳng vào trunk được tính riêng: nhánh vẫn mọc tiếp sau khi PR của
+ * nó merge, nên tip của nó "ahead" trunk vĩnh viễn dù việc đã nằm trong đó.
+ */
+export function reachedTrunk(sides: CardSide[], trunk: string): boolean {
+  const owned = sides.filter((s) => s.branch.trim());
+  if (!trunk || !owned.length) return false;
+
+  return owned.every((side) => {
+    const prs = side.prs.map(asPullRequest);
+    if (prs.some((p) => p.state === "MERGED" && p.baseRefName === trunk))
+      return true;
+    return (
+      prs.some((p) => p.state === "MERGED") &&
+      hasArrived(parseEnvState(side.envState), { branch: trunk })
+    );
+  });
 }
 
 /**
@@ -984,18 +1018,40 @@ export function cardStage(
  * in the direction of progress; a sync that could also drag them back would
  * undo that work every time GitHub's view lagged — a branch merged and then
  * deployed would be pulled from "đã deploy" back to "đã merge" on every scan.
+ *
+ * Trừ các cột **điểm bắt đầu**, vốn là anh em chứ không phải bậc: `feature`,
+ * `bugfix` và `đang code` đều nói đúng một chuyện — nhánh chưa mở PR — và chỉ
+ * khác nhau ở loại nhánh. Đi giữa chúng không phải tiến cũng không phải lùi,
+ * nên luật "chỉ tiến" không có gì để bảo vệ ở đây.
+ *
+ * Thiếu ngoại lệ này thì thêm cột theo loại xong chẳng card nào chuyển: đo trên
+ * bảng thật, VT-2583 tính ra `feature` (chỉ số 0) trong khi đang ở `đang code`
+ * (chỉ số 2), và bị chặn vì lùi. Cột mới sẽ vĩnh viễn rỗng trừ card tạo mới.
  */
 export function advanceStage(
   current: string,
   target: string,
   stageNames: string[],
+  /**
+   * Cấu hình cột, để nhận ra đâu là các cột điểm bắt đầu.
+   *
+   * Không bắt buộc: thiếu nó thì luật quay về "chỉ tiến" thuần, đúng hành vi
+   * trước khi có cột theo loại.
+   */
+  stages: StageConfig[] = [],
 ): string {
   if (!target || target === current) return "";
   const to = stageNames.indexOf(target);
   if (to < 0) return "";
   const from = stageNames.indexOf(current);
   // A card in no known column has nowhere to fall back to, so let it land.
-  return from < 0 || to > from ? target : "";
+  if (from < 0 || to > from) return target;
+
+  const starting = (name: string) => {
+    const s = stages.find((x) => x.name === name);
+    return Boolean(s && !s.branch.trim() && s.reach !== "gone" && s.phase === "nopr");
+  };
+  return starting(current) && starting(target) ? target : "";
 }
 
 /**

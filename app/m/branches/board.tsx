@@ -2494,7 +2494,16 @@ function StagesManager({ stages }: { stages: StageConfig[] }) {
   const [list, setList] = useState<StageConfig[]>(
     stages.length
       ? stages
-      : [{ name: "", expects: "", branch: "", phase: "nopr", reach: "queued" }],
+      : [
+          {
+            name: "",
+            expects: "",
+            branch: "",
+            phase: "nopr",
+            reach: "queued",
+            kind: "",
+          },
+        ],
   );
   const [note, setNote] = useState<string | null>(null);
   const [pending, startTransition] = useTransition();
@@ -2630,8 +2639,28 @@ function StagesManager({ stages }: { stages: StageConfig[] }) {
                   <option value="phase:">không khớp cột nào khác</option>
                 </>
               )}
-              <option value="gone">nhánh của card đã bị xoá</option>
+              <option value="gone">code đã có trong nhánh trunk</option>
             </select>
+
+            {/*
+             * Chỉ hiện trên cột "chưa mở PR" — chỗ duy nhất loại nhánh có
+             * nghĩa. Ẩn hẳn thay vì disable: một ô xám trên mọi hàng khác là
+             * một câu hỏi người đọc phải tự trả lời "vì sao cái này tắt", mà
+             * câu trả lời chẳng liên quan gì tới hàng họ đang sửa.
+             */}
+            {!s.branch.trim() && s.reach !== "gone" && s.phase === "nopr" && (
+              <input
+                value={s.kind}
+                onChange={(e) => patch(i, { kind: e.target.value })}
+                placeholder="— mọi loại —"
+                title={
+                  "Cột này là điểm bắt đầu của loại nhánh nào.\n" +
+                  "Khớp theo một đoạn của tên nhánh: `feature` khớp ctalk/feature/VT-1, không khớp ctalk/bugfix/resolve_feature.\n" +
+                  "Để trống thì cột nhận mọi loại."
+                }
+                className="w-[118px] shrink-0 rounded-md border border-line bg-ground px-2 py-1 font-mono text-[12px]"
+              />
+            )}
 
             <select
               value={s.expects}
@@ -2670,7 +2699,14 @@ function StagesManager({ stages }: { stages: StageConfig[] }) {
           onClick={() =>
             setList((l) => [
               ...l,
-              { name: "", expects: "", branch: "", phase: "", reach: "queued" },
+              {
+                name: "",
+                expects: "",
+                branch: "",
+                phase: "",
+                reach: "queued",
+                kind: "",
+              },
             ])
           }
           className={BTN}

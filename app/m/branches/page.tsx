@@ -5,14 +5,11 @@ import { SETTING_KEYS, getSetting } from "@/lib/settings";
 import { ModuleGate } from "@/lib/modules/gate";
 import { getGitHubConfig, toConfigView } from "@/lib/modules/branches/config";
 import {
-  cleanupStep,
   hostOf,
   jiraLookups,
-  ticketsDone,
 } from "@/lib/modules/branches/model";
 import {
   listTaskNotes,
-  settleFinishedCards,
 } from "@/lib/modules/branches/store";
 
 import { BranchBoard } from "./board";
@@ -114,33 +111,6 @@ export default async function BranchesPage() {
       ),
     );
   }
-
-  /**
-   * Cards Jira has closed, moved to the end of the pipeline.
-   *
-   * Here rather than in the scan because the scan reads GitHub, and "is this
-   * ticket closed" is not a question GitHub can answer — the board would only
-   * finish a card on the days somebody happened to run a scan. This runs on
-   * every load, off the statuses fetched two lines up, so closing a ticket in
-   * Jira and refreshing the board is enough.
-   *
-   * Safe when Jira is unreachable: a failed call leaves `statuses` empty, and
-   * an empty answer reads as "not done" for every card, so nothing moves. The
-   * write is skipped entirely rather than looped over when there is nothing to
-   * do, which is the ordinary case.
-   */
-  const end = cleanupStep(stages)?.name ?? "";
-  const finished = notes
-    .filter(
-      (n) =>
-        // Cards already there are skipped rather than re-derived: on a board
-        // whose work is mostly finished that is one row read per card per
-        // render, every render, to conclude nothing.
-        n.stage !== end &&
-        ticketsDone(n.issueKeys.map((k) => statuses[k]?.statusName ?? null)),
-    )
-    .map((n) => n.id);
-  if (finished.length && settleFinishedCards(finished)) notes = listTaskNotes();
 
   // Everything about the GitHub link *except* the token — the browser gets to
   // know where the token comes from, never what it is.

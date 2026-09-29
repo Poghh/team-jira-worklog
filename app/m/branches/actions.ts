@@ -647,6 +647,7 @@ export async function refreshPrsAction(): Promise<
           stages,
           merged.map(asPullRequest),
           built(c),
+          side.branch,
         );
         return { side: { ...side, prs: merged }, target };
       });
@@ -661,7 +662,7 @@ export async function refreshPrsAction(): Promise<
         c.builds,
         stages,
       );
-      const stage = target ? advanceStage(c.stage, target, stageNames) : "";
+      const stage = target ? advanceStage(c.stage, target, stageNames, stages) : "";
 
       // Stored in the configured order, the same order the card is read in.
       const next = orderSides(
