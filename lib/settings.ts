@@ -221,7 +221,19 @@ export function getSettingsForClient() {
     SETTING_KEYS.githubToken,
   ]
   const out: Record<string, string> = {}
-  for (const [k, v] of Object.entries(all)) {
+  for (const [k, raw] of Object.entries(all)) {
+    /**
+     * Ép về chuỗi, vì kiểu khai ở trên là một lời hứa chứ chưa phải sự thật.
+     *
+     * SQLite không ép kiểu cột: một ô ghi bằng `readfile()` hay bất cứ đường
+     * nào ngoài app sẽ nằm đó dưới dạng BLOB, và better-sqlite3 trả về đúng
+     * một `Buffer`. Cái blob ấy đi thẳng tới client component và React từ chối
+     * — "Uint8Array objects are not supported" — làm **cả trang Settings**
+     * chết, vì một ô mà người đọc không nhìn thấy và không sửa được từ UI.
+     *
+     * Một ô lỗi thì mất một ô, không mất cả trang.
+     */
+    const v = typeof raw === 'string' ? raw : String(raw ?? '')
     out[k] = secretKeys.includes(k) ? (v ? '••••••••' + v.slice(-4) : '') : v
   }
   return out
