@@ -6,6 +6,7 @@ import {
   useMemo,
   useState,
   useTransition,
+  useCallback,
 } from "react";
 
 import { StatusPill } from "@/app/board/status-pill";
@@ -36,6 +37,8 @@ import {
   baseFreshness,
   branchesToDelete,
   cardLadder,
+  ownersByBranch,
+  inboundPrs,
   stageRule,
   envSteps,
   orderSides,
@@ -225,9 +228,14 @@ function Ladder({
   repo,
   prs = true,
   builds = true,
+  owners,
+  onGoTo,
 }: {
   rows: LadderRow[];
   repo: string;
+  /** `repo#branch` → card giữ nhánh đó. Xem {@link ownersByBranch}. */
+  owners?: Map<string, { id: number; issueKey: string; title: string }>;
+  onGoTo?: (id: number) => void;
   /** False on the build-only pass of a multi-repository card. */
   prs?: boolean;
   /** False on the per-repository passes, where builds would be duplicated. */
@@ -237,8 +245,39 @@ function Ladder({
     <>
       {rows.map((r) => {
         const b = r.pr ? prBadge(asPullRequest(r.pr)) : null;
+        /**
+         * Nhánh này có phải nhánh của một card khác không.
+         *
+         * Chỉ xét hàng không phải môi trường: `ctalk/develop` cũng là "nhánh
+         * của ai đó" theo nghĩa kỹ thuật, nhưng nó là môi trường và đã có
+         * hàng riêng, tên riêng.
+         */
+        const host =
+          !r.isEnv && r.branch ? owners?.get(`${repo}#${r.branch}`) : undefined;
         return (
-          <CardRow key={r.branch || r.name} label={r.name}>
+          <CardRow
+            key={r.branch || r.name}
+            label={
+              host ? (
+                // Tên nhánh feature dài hơn cột nhãn 62px nhiều lần, nên nó
+                // xuống ba dòng và không đọc được — mà thứ người ta cần biết
+                // không phải chuỗi ký tự ấy, mà là *card nào*.
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onGoTo?.(host.id);
+                  }}
+                  title={`PR này nhắm vào nhánh của ${host.issueKey || "card"}: ${host.title}\n⑂ ${r.branch}\n\nBấm để nhảy tới card đó.`}
+                  className="max-w-full truncate text-left text-accent-ink underline decoration-dotted underline-offset-2 hover:decoration-solid"
+                >
+                  ↳ {host.issueKey || shortBase(r.branch)}
+                </button>
+              ) : (
+                r.name
+              )
+            }
+          >
             {/* Its own non-wrapping track. CardRow wraps by design — the
                 warnings row is a bag of badges — but a ladder row that wraps
                 is two lines tall next to neighbours that are one, which reads
@@ -400,11 +439,58 @@ function SideHead({
   );
 }
 
+/**
+ * Những card đang mở PR nhắm vào nhánh của card này.
+ *
+ * Chỉ PR còn mở: một PR đã đóng hoặc đã merge không còn là việc đang chờ, và
+ * liệt kê nó ở đây biến một dòng cần hành động thành một dòng lịch sử.
+ *
+ * Không có ai nhắm vào thì không vẽ gì. Một hàng "0 task" trên mọi card là
+ * mười ba dòng nhiễu để nói một chuyện không xảy ra.
+ */
+function Inbound({
+  card,
+  cards,
+  sides,
+  onGoTo,
+}: {
+  card: { id: number };
+  cards: Card[];
+  sides: Card["sides"];
+  onGoTo: (id: number) => void;
+}) {
+  const hits = new Map<number, Card>();
+  for (const side of sides)
+    for (const c of inboundPrs(cards, side.repo, side.branch))
+      if (c.id !== card.id) hits.set(c.id, c);
+  if (!hits.size) return null;
+
+  return (
+    <CardRow label="chờ vào">
+      {[...hits.values()].map((c) => (
+        <button
+          key={c.id}
+          type="button"
+          onClick={(e) => {
+            e.stopPropagation();
+            onGoTo(c.id);
+          }}
+          title={`${c.issueKey || "Card"} đang mở PR nhắm vào nhánh của card này: ${c.title}\n\nBấm để nhảy tới card đó.`}
+          className="max-w-full shrink-0 truncate rounded-[3px] border border-accent bg-accent-soft px-1 py-px font-mono text-[9.5px] font-semibold text-accent-ink hover:underline"
+        >
+          ↰ {c.issueKey || shortBase(c.branch)}
+        </button>
+      ))}
+    </CardRow>
+  );
+}
+
 function CardRow({
   label,
   children,
 }: {
-  label: string;
+  /** Chuỗi, hoặc một nút khi nhãn là liên kết tới card khác. */
+  label: React.ReactNode;
   children: React.ReactNode;
 }) {
   return (
@@ -417,6 +503,17 @@ function CardRow({
       </span>
     </span>
   );
+}
+
+/**
+ * Đoạn cuối đọc được của một tên nhánh — `ctalk/feature/VT-2583_FR-4_x` → `FR-4_x`.
+ *
+ * Dùng khi card đích chưa có mã Jira, nên không có gì ngắn hơn để gọi tên nó.
+ * Cắt còn 14 ký tự vì cột nhãn rộng 62px.
+ */
+function shortBase(branch: string): string {
+  const tail = branch.split("/").pop() ?? branch;
+  return tail.length > 14 ? `${tail.slice(0, 13)}…` : tail;
 }
 
 /**
@@ -547,6 +644,14 @@ function Board({
   const [pinned, setPinned] = useState("");
   const [editing, setEditing] = useState<Draft | null>(null);
   const [dragId, setDragId] = useState<number | null>(null);
+  /**
+   * Card vừa được nhảy tới, để nháy lên một nhịp.
+   *
+   * Cuộn tới thôi là chưa đủ khi cột đích đang có nhiều card: người đọc tới
+   * nơi rồi vẫn phải tự dò xem card nào vừa được trỏ. Nháy viền hai giây trả
+   * lời sẵn câu đó.
+   */
+  const [litId, setLitId] = useState<number | null>(null);
   // Bulk selection. Deleting is the only bulk action, and it is safe here in a
   // way it would not be elsewhere: this board mirrors work, it does not perform
   // it, so removing a card never touches the branch or the ticket.
@@ -696,6 +801,20 @@ function Board({
         statusRank(a, envNames) - statusRank(b, envNames) || a.localeCompare(b),
     );
   }, [cards, envNames]);
+
+  /** `repo#branch` → card giữ nhánh đó. Xem {@link ownersByBranch}. */
+  const owners = useMemo(() => ownersByBranch(cards), [cards]);
+
+  const goTo = useCallback((id: number) => {
+    // Qua DOM chứ không qua state: cuộn là việc của trình duyệt, và cột đích
+    // có thể đang là dải hẹp — `scrollIntoView` xử lý cả hai chiều cuộn mà
+    // không cần biết bảng đang rộng bao nhiêu.
+    document
+      .getElementById(`note-card-${id}`)
+      ?.scrollIntoView({ behavior: "smooth", block: "center", inline: "center" });
+    setLitId(id);
+    window.setTimeout(() => setLitId((v) => (v === id ? null : v)), 2000);
+  }, []);
 
   const visible = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -1049,6 +1168,10 @@ function Board({
                       })
                     }
                     onDelete={() => remove(c.id)}
+                    owners={owners}
+                    cards={cards}
+                    onGoTo={goTo}
+                    lit={litId === c.id}
                     onStatusChanged={(key, name) =>
                       setLive((m) => ({ ...m, [key]: name }))
                     }
@@ -1156,6 +1279,10 @@ function NoteCard({
   onEdit,
   onDelete,
   onStatusChanged,
+  owners,
+  cards,
+  onGoTo,
+  lit = false,
 }: {
   card: Card;
   stages: StageConfig[];
@@ -1169,6 +1296,16 @@ function NoteCard({
   repoColors: Record<string, string>;
   /** This team ships builds — see {@link Board}. */
   buildsOn: boolean;
+  /**
+   * `repo#branch` → card đang giữ nhánh đó, để một PR nhắm vào nhánh của card
+   * khác đọc ra card ấy thay vì đọc ra một chuỗi tên nhánh dài.
+   */
+  owners: Map<string, Card>;
+  /** Mọi card đang trên bảng, cho chiều ngược lại: ai đang nhắm vào nhánh này. */
+  cards: Card[];
+  onGoTo: (id: number) => void;
+  /** Card vừa được nhảy tới — nháy viền một nhịp. */
+  lit?: boolean;
   selected: boolean;
   onToggleSelect: () => void;
   onDragStart: () => void;
@@ -1309,6 +1446,9 @@ function NoteCard({
     // and those four pixels are what keeps the boxes beside it from being
     // squeezed into an ellipsis.
     "group flex min-w-0 cursor-grab flex-col gap-1 overflow-hidden rounded-md border px-1.5 py-1.5 active:cursor-grabbing " +
+    // Vừa được nhảy tới: nháy một nhịp rồi tắt. Cuộn tới thôi là chưa đủ khi
+    // cột đích có nhiều card — người đọc tới nơi rồi vẫn phải tự dò.
+    (lit ? "ring-2 ring-accent ring-offset-1 " : "") +
     (selected ? "border-accent bg-accent-soft " : "bg-surface ") +
     // A branch that no longer exists: dashed, in the same purple nothing
     // else on a card uses. Dashed rather than merely a colour because the
@@ -1481,11 +1621,21 @@ function NoteCard({
           written. Builds stay outside the sections: a build is of the iOS app,
           which carries whatever SDK revision it pinned, so there is one per
           environment however many repositories the work touched. */}
+      {/* Chiều ngược lại của cùng một quan hệ.
+          Card task nói "↳ VT-2583" ở hàng PR; ở đây card VT-2583 nói ai đang
+          nhắm vào nhánh mình. Một chiều thôi thì người đang ở card feature
+          không có cách nào biết có task đang chờ mình — mà đó mới là phía cần
+          biết, vì merge nhánh feature lúc còn task chưa vào là làm hỏng việc
+          của người khác. */}
+      <Inbound card={card} cards={cards} sides={sides} onGoTo={onGoTo} />
+
       {sides.length <= 1 ? (
         <Ladder
           rows={cardLadder(sides[0]?.prs ?? [], card.builds, stages)}
           repo={card.repo}
           builds={buildsOn}
+          owners={owners}
+          onGoTo={onGoTo}
         />
       ) : (
         <>
@@ -1519,6 +1669,8 @@ function NoteCard({
                   rows={cardLadder(side.prs, [], stages)}
                   repo={side.repo}
                   builds={false}
+                  owners={owners}
+                  onGoTo={onGoTo}
                 />
               </span>
             </Fragment>
@@ -1777,7 +1929,7 @@ function NoteCard({
 
   if (card.branchGone) {
     return (
-      <div className="torn-shell">
+      <div className="torn-shell" id={`note-card-${card.id}`}>
         <div
           draggable
           onDragStart={onDragStart}
@@ -1795,6 +1947,7 @@ function NoteCard({
 
   return (
     <div
+      id={`note-card-${card.id}`}
       draggable
       onDragStart={onDragStart}
       onDragEnd={onDragEnd}

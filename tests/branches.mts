@@ -24,6 +24,8 @@ import {
   type StageConfig,
   branchSegments,
   envBranchNames,
+  inboundPrs,
+  ownersByBranch,
   kindMatches,
   stageRule,
   orderSides,
@@ -857,6 +859,46 @@ eq(baseFreshness(roundTrip, NOW).upToDate, true, 'và đọc ra đúng kết lu�
     eq(envs.has(b), false, `${b} vẫn là nhánh việc`)
   // Cột không khai nhánh (đang code / review / done) không được biến '' thành môi trường.
   eq(envs.has(''), false, 'cột không có nhánh không tạo ra môi trường rỗng')
+}
+
+/* ── task nhắm vào nhánh feature: liên kết hai chiều ────────────────────── */
+//
+// Có thật trên bảng: card task `implement_set_password_with_sso_account` mở PR
+// #1635 nhắm vào `ctalk/feature/VT-2583_FR-4_…`, tức nhánh của card VT-2583.
+// Quan hệ này đã nằm sẵn trong dữ liệu card, không phải hỏi GitHub thêm.
+{
+  const c = (id: number, key: string, repo: string, branch: string,
+             prs: Array<{ base: string; state: string }> = []) =>
+    ({ id, issueKey: key, title: `card ${id}`, sides: [{ repo, branch, prs }] })
+
+  const feat = c(44, 'VT-2583', 'o/sdk', 'ctalk/feature/VT-2583_FR-4')
+  const task = c(45, '', 'o/sdk', 'ctalk/task/impl',
+                 [{ base: 'ctalk/feature/VT-2583_FR-4', state: 'OPEN' }])
+  const all = [feat, task]
+
+  const owners = ownersByBranch(all)
+  eq(owners.get('o/sdk#ctalk/feature/VT-2583_FR-4')?.id, 44, 'nhánh feature trỏ về card giữ nó')
+  eq(owners.get('o/sdk#ctalk/task/impl')?.id, 45, 'và nhánh task cũng vậy')
+  // Khoá kèm repo: cùng tên nhánh ở hai repo là hai nhánh khác nhau.
+  eq(owners.get('o/ios#ctalk/feature/VT-2583_FR-4'), undefined, 'không lẫn giữa hai repo')
+
+  eq(inboundPrs(all, 'o/sdk', 'ctalk/feature/VT-2583_FR-4').map((x) => x.id), [45],
+     'card feature thấy task đang nhắm vào mình')
+  eq(inboundPrs(all, 'o/sdk', 'ctalk/task/impl').map((x) => x.id), [],
+     'card task không có ai nhắm vào')
+  eq(inboundPrs(all, 'o/ios', 'ctalk/feature/VT-2583_FR-4').map((x) => x.id), [],
+     'khác repo thì không tính')
+
+  // PR đã đóng hoặc đã merge không còn là việc đang chờ.
+  for (const state of ['CLOSED', 'MERGED']) {
+    const done = c(46, '', 'o/sdk', 'ctalk/task/x',
+                   [{ base: 'ctalk/feature/VT-2583_FR-4', state }])
+    eq(inboundPrs([feat, done], 'o/sdk', 'ctalk/feature/VT-2583_FR-4').map((x) => x.id), [],
+       `PR ${state} không còn là "chờ vào"`)
+  }
+  // Card tự nhắm vào chính nhánh mình thì không tính là liên kết.
+  const selfie = c(47, '', 'o/sdk', 'b', [{ base: 'b', state: 'OPEN' }])
+  eq(inboundPrs([selfie], 'o/sdk', 'b').map((x) => x.id), [], 'không tự trỏ vào mình')
 }
 
 console.log(bad ? `\n${bad}/${n} FAILED` : `\nall ${n} ok`)

@@ -422,6 +422,54 @@ export interface LadderRow {
  * far the work has got, and a ladder that only listed what exists could not
  * tell "not shipped to integration" from "integration is not a thing".
  */
+/**
+ * Card nào đang giữ nhánh nào — `repo#branch` → card.
+ *
+ * Để một PR nhắm vào nhánh của card khác đọc ra *card đó*, thay vì đọc ra một
+ * chuỗi tên nhánh dài. Trên bảng thật: card task `implement_set_password_with_
+ * sso_account` có PR #1635 nhắm vào `ctalk/feature/VT-2583_FR-4_change_password_
+ * sso_account`, tức là nhánh của card VT-2583 — quan hệ có thật, và đã nằm sẵn
+ * trong dữ liệu card, không phải hỏi GitHub thêm câu nào.
+ *
+ * Khoá kèm repo: cùng một tên nhánh ở hai repo là hai nhánh khác nhau.
+ *
+ * Card đầu tiên giữ nhánh thì thắng. Hai card cùng trỏ một nhánh là trạng thái
+ * phép quét vốn đã dọn (xem `claimedBranches`), nên ở đây không có gì để chọn.
+ */
+export function ownersByBranch<
+  T extends { id: number; issueKey: string; title: string; sides: Array<{ repo: string; branch: string }> },
+>(cards: readonly T[]): Map<string, T> {
+  const out = new Map<string, T>();
+  for (const c of cards)
+    for (const side of c.sides) {
+      const key = `${side.repo}#${side.branch.trim()}`;
+      if (side.repo && side.branch.trim() && !out.has(key)) out.set(key, c);
+    }
+  return out;
+}
+
+/**
+ * Card nào đang nhắm PR vào nhánh của card này — chiều ngược lại.
+ *
+ * Nhìn từ card feature: "hai task đang nhắm vào nhánh này". Chỉ tính PR còn
+ * sống: một PR đã đóng hoặc đã merge không còn là việc đang chờ, và liệt kê nó
+ * ở đây sẽ biến một dòng cần hành động thành một dòng lịch sử.
+ */
+export function inboundPrs<
+  T extends { id: number; issueKey: string; title: string; sides: Array<{ repo: string; branch: string; prs: Array<{ base: string; state: string }> }> },
+>(cards: readonly T[], repo: string, branch: string): T[] {
+  const want = branch.trim();
+  if (!repo || !want) return [];
+  return cards.filter((c) =>
+    c.sides.some(
+      (s) =>
+        s.repo === repo &&
+        s.branch.trim() !== want &&
+        s.prs.some((p) => p.state === "OPEN" && p.base.trim() === want),
+    ),
+  );
+}
+
 export function cardLadder(
   prs: CardPr[],
   builds: CardBuild[],
