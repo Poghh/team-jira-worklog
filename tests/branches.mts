@@ -17,12 +17,14 @@ import {
   jiraLookups,
   jiraRefFromUrl,
   noteProgress,
-  branchesCleanedUp,
   baseFreshness,
   branchesToDelete,
-  ticketsDone,
   cardLadder,
   cleanupStep,
+  type StageConfig,
+  branchSegments,
+  envBranchNames,
+  kindMatches,
   stageRule,
   orderSides,
   parseIssueKeys,
@@ -58,6 +60,7 @@ import {
   parseGitHubLink,
   asPullRequest,
   cardStage,
+  reachedTrunk,
   mergeCardPrs,
   parseCardSides,
   primarySide,
@@ -85,7 +88,7 @@ const ts = (s: string) => Math.floor(new Date(s).getTime() / 1000)
 
 /* ── pipeline shape ─────────────────────────────────────────────────────── */
 const S = DEFAULT_STAGES
-eq(S.length, 12, 'eleven pipeline columns plus the terminal one')
+eq(S.length, 14, 'bốn cột đầu, chín cột môi trường, và cột cuối')
 eq(S[S.length - 1].name, 'done', 'the terminal column is last')
 eq(cleanupStep(S)?.name, 'done', 'the terminal column is found by reach, not by name')
 eq(cleanupStep(S.slice(0, -1)), null, 'a pipeline without one has no terminal column')
@@ -101,22 +104,80 @@ eq(S.filter((s) => s.reach === 'built').every((s) => s.expects !== 'prog'), true
 
 /* ── mỗi cột tự nói ra luật của nó ──────────────────────────────────────── */
 const ruleOf = (n: string) => stageRule(S.find((s) => s.name === n)!)
-eq(ruleOf('đang code'), 'chưa mở PR — hoặc PR còn draft, hoặc đã đóng', 'cột không nhánh, chưa có PR')
+eq(ruleOf('task'), 'nhánh task chưa mở PR — hoặc PR còn draft, hoặc đã đóng', 'cột không nhánh, chưa có PR')
 eq(ruleOf('review'), 'PR đang mở', 'cột không nhánh, PR đang mở')
 eq(ruleOf('develop'), 'có PR đang mở nhắm vào ctalk/develop', 'chờ merge = PR mở nhắm đúng nhánh này')
 eq(ruleOf('đã merge develop'), 'code đã nằm trong ctalk/develop', 'đã merge hỏi repo, không hỏi PR')
 eq(ruleOf('đã build develop'), 'đã có bản build của ctalk/develop mang code này', 'đã build hỏi bản build')
-eq(ruleOf('done'), 'nhánh của card đã bị xoá khỏi mọi repo', 'cột cuối')
+eq(ruleOf('done'), 'code của mọi nhánh đã có trong master', 'cột cuối')
 // Điều kiện PR chồng thêm thì câu phải nói ra cả hai vế.
-eq(stageRule({ name: 'x', expects: '', branch: 'staging', phase: 'open', reach: 'merged' }),
+eq(stageRule({ name: 'x', expects: '', branch: 'staging', phase: 'open', reach: 'merged', kind: '' }),
    'code đã nằm trong staging, và PR đang mở', 'hai điều kiện thì nói cả hai')
+
+/* ── cột điểm bắt đầu, tách theo loại nhánh ─────────────────────────────── */
+//
+// Đếm trên 220 nhánh thật của hai repo: 123 `feature`, 44 `bugfix`, 31 `task`,
+// rồi `release`/`hotfix`/`chore` và 6 nhánh không có `/` nào.
+eq(ruleOf('feature'), 'nhánh feature chưa mở PR — hoặc PR còn draft, hoặc đã đóng',
+   'cột kén loại nói ra loại nó kén')
+// Thứ tự cột là thứ tự tiến triển, nên nó là một khẳng định chứ không phải
+// trang trí: `feature` đứng sau `review` là lựa chọn của người dùng.
+eq(S.slice(0, 4).map((x) => x.name), ['task', 'bugfix', 'review', 'feature'],
+   'bốn cột đầu, đúng thứ tự người dùng đặt')
+eq(S.filter((x) => x.kind).map((x) => x.kind), ['task', 'bugfix', 'feature'],
+   'ba cột kén loại')
+
+eq(kindMatches('ctalk/feature/VT-2583_FR-4', 'feature'), true, 'đoạn giữa khớp')
+eq(kindMatches('feature/VT-1', 'feature'), true, 'không có tiền tố team vẫn khớp')
+eq(kindMatches('ctalk/FEATURE/VT-1', 'feature'), true, 'không phân biệt hoa thường')
+// Khớp theo đoạn, không phải chuỗi con — đây là chỗ `includes` sẽ sai.
+eq(kindMatches('ctalk/bugfix/resolve_feature_flag', 'feature'), false,
+   '`feature` nằm trong tên file thì không phải nhánh feature')
+eq(kindMatches('ctalk/bugfix/VT-451', 'feature'), false, 'bugfix không phải feature')
+eq(kindMatches('ctalk/task/abc', ''), true, 'cột không kén nhận tất cả')
+eq(branchSegments('ctalk/feature/VT-1'), ['ctalk', 'feature', 'vt-1'], 'tách đúng các đoạn')
 
 /* ── which column a branch belongs in ───────────────────────────────────── */
 const open = (base: string, num = 1) => ({ number: num, url: '', state: 'OPEN', isDraft: false, baseRefName: base })
 const merged = { number: 2, url: '', state: 'MERGED', isDraft: false, baseRefName: 'ctalk/develop' }
 const none = {} as Record<string, { ahead: number | null; landed?: boolean }>
 
-eq(stageFor(none, null, S, []), 'đang code', 'no PR -> đang code')
+eq(stageFor(none, null, S, []), 'task', 'no PR -> cột đầu')
+
+// Chưa mở PR là lúc duy nhất cái tên quyết định chỗ đứng.
+eq(stageFor(none, null, S, [], [], 'ctalk/feature/VT-2583'), 'feature', 'nhánh feature -> cột feature')
+eq(stageFor(none, null, S, [], [], 'ctalk/bugfix/VT-451'), 'bugfix', 'nhánh bugfix -> cột bugfix')
+eq(stageFor(none, null, S, [], [], 'ctalk/task/abc'), 'task', 'nhánh task -> cột task')
+// Không còn cột không kén nào: `release`, `hotfix`, `chore` và nhánh không có
+// `/` rơi về cột đầu tiên — `task`. 17/220 nhánh thật rơi vào diện này.
+eq(stageFor(none, null, S, [], [], 'ctalk/release/2026.09'), 'task',
+   'loại không có cột riêng rơi về cột đầu')
+eq(stageFor(none, null, S, [], [], 'linh-tinh'), 'task', 'nhánh không theo quy ước cũng vậy')
+eq(stageFor(none, null, S, []), 'task', 'không biết tên nhánh thì về cột đầu')
+// Mở PR rồi thì PR quyết định, không phải cái tên — nếu không thì nhánh feature
+// sẽ kẹt ở cột feature suốt đời.
+eq(stageFor(none, open(''), S, [open('')], [], 'ctalk/feature/VT-2583'), 'review',
+   'mở PR rồi thì cái tên hết quyền')
+eq(stageFor(none, open('ctalk/develop'), S, [open('ctalk/develop')], [], 'ctalk/feature/VT-1'), 'develop',
+   'PR nhắm môi trường thì vào môi trường')
+// Bảng chưa khai loại nào phải chạy y như trước.
+{
+  const plain = S.map((x) => ({ ...x, kind: '' }))
+  eq(stageFor(none, null, plain, [], [], 'ctalk/feature/VT-1'), 'task',
+     'bỏ hết cột kén thì mọi nhánh về cột đầu, đúng hành vi cũ')
+}
+
+// Đã merge mà chưa thấy ở môi trường nào -> cột PR đang mở, không phải cột
+// pre cuối cùng. Với thứ tự này cột pre cuối là `feature`, và một PR đã merge
+// rơi vào cột của nhánh chưa mở PR thì đọc không ra gì.
+eq(stageFor(none, merged, S, [merged]), 'đã merge develop',
+   'merged vào môi trường thì vào môi trường')
+{
+  const nowhere = { number: 9, url: '', state: 'MERGED', isDraft: false, baseRefName: 'ctalk/feature/x' }
+  eq(stageFor(none, nowhere, S, [nowhere]), 'review',
+     'merged vào một nhánh không phải môi trường -> review, không phải feature')
+}
+
 eq(stageFor(none, open(''), S, [open('')]), 'review', 'PR with no base -> review')
 // A bugfix is reviewed and merged straight into ctalk/develop, so a request
 // aimed at an environment belongs to that environment, reviewed or not.
@@ -133,9 +194,9 @@ eq(stageFor({ 'ctalk/develop': { ahead: 0 } }, open('develop'), S, [open('develo
 eq(stageFor({ 'ctalk/develop': { ahead: 0 }, develop: { ahead: 0 }, staging: { ahead: 0 } }, merged, S, [merged]),
    'đã merge staging', 'in every environment -> the last one')
 const draft = { number: 3, url: '', state: 'OPEN', isDraft: true, baseRefName: 'ctalk/develop' }
-eq(stageFor(none, draft, S, [draft]), 'đang code', 'a draft is not queued')
+eq(stageFor(none, draft, S, [draft]), 'task', 'a draft is not queued')
 const closed = { number: 4, url: '', state: 'CLOSED', isDraft: false, baseRefName: 'develop' }
-eq(stageFor(none, closed, S, [closed]), 'đang code', 'a closed PR is not queued')
+eq(stageFor(none, closed, S, [closed]), 'task', 'a closed PR is not queued')
 // A request merged into an environment is evidence the work is there, even
 // when containment says otherwise — the branch grew two more commits after the
 // merge, or the work went in through a resolve branch with rewritten SHAs.
@@ -147,7 +208,7 @@ eq(stageFor(none, merged, S, [merged]), 'đã merge develop',
 // An abandoned branch is zero commits ahead of everything for ever. That is
 // not the work arriving — it is there being no work.
 const inAll = { 'ctalk/develop': { ahead: 0 }, develop: { ahead: 0 }, staging: { ahead: 0 } }
-eq(stageFor(inAll, closed, S, [closed]), 'đang code',
+eq(stageFor(inAll, closed, S, [closed]), 'task',
    'a closed request contained everywhere is an empty branch, not a shipped one')
 eq(stageFor(inAll, merged, S, [merged]), 'đã merge staging',
    'the same containment does count once something of the branch merged')
@@ -443,59 +504,59 @@ eq(cardStage([sideAt('o/ios', [prAt(1, 'MERGED', 'ctalk/develop')])],
    'đã build integration', 'a hand-entered build moves the card on its own')
 eq(cardStage([], [], S), '', 'a card with no sides has no column to compute')
 
-/* ── cột cuối: Jira đóng ticket là vào, rồi đòi xoá nhánh ───────────────── */
-eq(ticketsDone(['Done']), true, 'a closed ticket is done')
-eq(ticketsDone(['Done', 'Done']), true, 'both closed is done')
-eq(ticketsDone(['Done', 'READY TO TEST ON STAGING']), false,
-   'a card is only as finished as its least finished ticket')
-eq(ticketsDone(['VERIFIED ON STAGING']), false,
-   'verified is the tester speaking, not the ticket closing')
-eq(ticketsDone([null]), false, 'a ticket Jira did not answer for is not done')
-eq(ticketsDone([]), false, 'a card naming no ticket is not done either')
-
-// Jira đóng ticket vẫn là nhân chứng mạnh nhất — nhưng không tuyệt đối.
+/* ── cột cuối: code đã có trong trunk chưa ──────────────────────────────── */
 //
-// Nhánh đã bị xoá thì không còn gì đang chạy: won't-fix về done như cũ.
-eq(cardStage([{ ...sideAt('o/ios', []), branchGone: true }], [], S, true), 'done',
-   'ticket đóng + nhánh đã xoá -> done')
-// Nhánh đã vào một môi trường cũng vậy: code đi đâu đó rồi.
-eq(cardStage([sideAt('o/ios', [], '{"ctalk/develop":{"ahead":0}}')], [], S, true), 'done',
-   'ticket đóng + code đã vào môi trường -> done')
+// Đổi luật: không đọc trạng thái Jira nữa, cũng không nhận "nhánh đã bị xoá"
+// làm bằng chứng. Chỉ một câu hỏi, đo trên đồ thị git — code của mọi nhánh đã
+// nằm trong trunk chưa. Trên repo thật, `master` chính là trunk phát hành:
+// tip của nó là `Merge pull request … from atthetalk/staging`, và
+// `master...staging` trả về `status=behind` — staging nằm trọn trong master.
+eq(cleanupStep(S)?.branch, 'master', 'cột cuối khai trunk của nó')
+eq(stageRule(cleanupStep(S)!), 'code của mọi nhánh đã có trong master',
+   'và nói ra luật của mình bằng chính ô đó')
+eq(stageRule({ ...cleanupStep(S)!, branch: '' }),
+   'chưa khai nhánh — cột này sẽ không nhận card nào',
+   'ô trống thì nói thẳng là sẽ không nhận card')
 
-// Nhưng nhánh CÒN SỐNG và chưa vào môi trường nào thì là việc đang chạy, và
-// cột cuối là đầu xa nhất của bảng — giấu việc đang chạy vào đó là hỏng đúng
-// mục đích bảng này sinh ra. Đo trên bảng thật: 2/3 card dính, nhánh vừa cắt
-// mười ba phút trước trên một ticket đã đóng (team sửa tiếp trên key cũ).
-eq(cardStage([sideAt('o/ios', [prAt(1, 'OPEN', 'ctalk/develop')])], [], S, true), 'develop',
-   'ticket đóng nhưng nhánh còn sống & chưa merge -> KHÔNG về done')
-eq(cardStage([sideAt('o/ios', [])], [], S, true), 'đang code',
-   'kể cả khi chưa có PR nào')
-eq(cardStage([sideAt('o/ios', [prAt(1, 'OPEN', 'ctalk/develop')])], [], S, false), 'develop',
-   'and an open one leaves it exactly where it was')
-eq(cardStage([sideAt('o/ios', [prAt(1, 'OPEN', 'ctalk/develop')])], [], S, null), 'develop',
-   'as does having nobody to ask')
+const inTrunk = '{"ctalk/develop":{"ahead":0},"master":{"ahead":0}}'
+const notTrunk = '{"ctalk/develop":{"ahead":0},"master":{"ahead":3}}'
+const shipped = (repo: string, env: string) =>
+  sideAt(repo, [prAt(1, "MERGED", "staging")], env)
 
+eq(cardStage([shipped("o/ios", inTrunk)], [], S), 'done',
+   'đã merge được gì đó + code nằm trong master -> done')
+eq(cardStage([shipped("o/ios", notTrunk)], [], S), 'đã merge staging',
+   'còn 3 commit master chưa có thì chưa xong')
 
-const shipped = (repo: string, gone: boolean) => ({
-  ...sideAt(repo, [prAt(1, 'MERGED', 'staging')]), branchGone: gone,
-})
-// The branch going is what puts a card in the last column — nothing else does.
-eq(cardStage([shipped('o/ios', true)], [], S), 'done',
-   'with no ticket to ask, a branch deleted after the work shipped -> done')
-eq(cardStage([shipped('o/ios', true)], [], S, false), 'đã merge staging',
-   'but a live ticket that is not done overrules the weaker witness')
-eq(cardStage([shipped('o/ios', false)], [], S), 'đã merge staging',
-   'the same card with its branch still up stays where it was')
-// Both halves, ANDed. This is the one rule that is not "the furthest side wins":
-// what is being asked is whether anything is left, not how far it got.
-eq(cardStage([shipped('o/ios', true), shipped('o/sdk', false)], [], S), 'đã merge staging',
-   'one repo cleaned up and the other not is not finished')
-eq(cardStage([shipped('o/ios', true), shipped('o/sdk', true)], [], S), 'done',
-   'both cleaned up is')
-// Deleting a branch that never went anywhere is abandonment, not delivery.
-eq(cardStage([{ ...sideAt('o/ios', [prAt(1, 'CLOSED', 'ctalk/develop')]), branchGone: true }], [], S),
-   'đang code', 'a branch deleted before it reached any environment is not done')
-eq(branchesCleanedUp([]), false, 'a card with no sides has not been cleaned up')
+// Cái bẫy, đo được trên bảng thật: `master...ctalk/feature/VT-2583_FR-4…` trả
+// về `identical`. Nhánh vừa cắt ra, chưa có commit nào của chính nó, nên nó
+// "không thêm gì master chưa có" — y hệt một nhánh đã phát hành. Thứ phân biệt
+// hai cái là nhánh đó đã từng merge được gì chưa.
+eq(cardStage([sideAt('o/ios', [], inTrunk)], [], S), 'task',
+   'nhánh chưa có commit nào giống hệt master -> KHÔNG phải done')
+eq(cardStage([sideAt('o/ios', [prAt(1, 'OPEN', 'ctalk/develop')], inTrunk)], [], S), 'develop',
+   'PR còn mở cũng vậy — chưa merge thì chưa đóng góp gì')
+
+// PR merge thẳng vào trunk được tính riêng: nhánh vẫn mọc tiếp sau khi PR của
+// nó merge, nên tip của nó ahead trunk vĩnh viễn dù việc đã nằm trong đó.
+eq(cardStage([sideAt('o/ios', [prAt(1, 'MERGED', 'master')], notTrunk)], [], S), 'done',
+   'PR merge thẳng vào master -> done dù containment nói chưa')
+
+// Cả hai nửa, ANDed — một fix hai repo chưa xong khi mới phát hành một nửa.
+eq(cardStage([shipped("o/ios", inTrunk), shipped("o/sdk", notTrunk)], [], S), 'đã merge staging',
+   'một repo vào master, repo kia chưa -> chưa xong')
+eq(cardStage([shipped("o/ios", inTrunk), shipped("o/sdk", inTrunk)], [], S), 'done',
+   'cả hai vào master thì xong')
+
+// Nhánh bị xoá không còn là bằng chứng — hệ quả đã biết và đã chọn.
+eq(cardStage([{ ...shipped("o/ios", notTrunk), branchGone: true }], [], S), 'đã merge staging',
+   'nhánh đã xoá mà code chưa vào master -> KHÔNG tự về done nữa')
+eq(cardStage([{ ...shipped("o/ios", inTrunk), branchGone: true }], [], S), 'done',
+   'nhánh đã xoá nhưng lần đo cuối nói code đã vào master -> vẫn done')
+
+eq(reachedTrunk([], 'master'), false, 'card chưa có nửa nào thì chưa phát hành')
+eq(reachedTrunk([shipped("o/ios", inTrunk)], ''), false,
+   'không khai trunk thì không kết luận gì')
 
 // A squash merge lands on the last pre-merge step, which must not be the
 // terminal one just because that also has no branch.
@@ -759,6 +820,44 @@ const roundTrip = parseCardSides(
 eq([roundTrip.baseAt, roundTrip.behind, roundTrip.baseBranch], [1790057579, 0, 'master'],
    'baseAt/behind/baseBranch sống sót qua lưu–đọc')
 eq(baseFreshness(roundTrip, NOW).upToDate, true, 'và đọc ra đúng kết luận')
+
+// ── Nhánh môi trường không bao giờ là card ─────────────────────────────────
+//
+// Đúng cấu hình cột thật đang dùng: ba môi trường, mỗi cái ba cột. `ctalk/develop`
+// từng lên board thành một card `no-ticket` vì feed sự kiện nhận nó là của người
+// dùng — họ merge một PR vào nó qua giao diện GitHub, và GitHub ghi cú dời đầu
+// nhánh thành PushEvent mang tên họ, dù commit đầu nhánh là của người khác.
+{
+  const st = (name: string, branch: string, reach: string) =>
+    ({ name, branch, reach, expects: 'prog', phase: '' }) as unknown as StageConfig
+  const stages: StageConfig[] = [
+    st('đang code', '', 'queued'),
+    st('review', '', 'queued'),
+    st('develop', 'ctalk/develop', 'queued'),
+    st('đã merge develop', 'ctalk/develop', 'merged'),
+    st('đã build develop', 'ctalk/develop', 'built'),
+    st('integration', 'develop', 'queued'),
+    st('đã merge integration', 'develop', 'merged'),
+    st('đã build integration', 'develop', 'built'),
+    st('staging', 'staging', 'queued'),
+    st('đã merge staging', 'staging', 'merged'),
+    st('đã build staging', 'staging', 'built'),
+    st('done', '', 'gone'),
+  ]
+  const envs = envBranchNames(stages)
+  eq([...envs].sort(), ['ctalk/develop', 'develop', 'staging'], 'ba môi trường, mỗi cái một lần')
+  eq(envs.has('ctalk/develop'), true, 'chính nhánh đã lọt lên board')
+  // Cột `queued` và `built` cũng phải tính — `envSteps` chỉ lấy `merged`, mà
+  // lọc theo mỗi `merged` thì vẫn đúng ở đây nhưng sai ngay khi ai đó bỏ cột
+  // "đã merge" của một môi trường.
+  eq(envBranchNames([st('develop', 'ctalk/develop', 'queued')]).has('ctalk/develop'), true,
+     'một cột queued đơn độc vẫn khai được môi trường')
+  // Nhánh việc thật thì không được đụng tới, kể cả khi tên chứa tên môi trường.
+  for (const b of ['ctalk/bugfix/VT-451', 'ctalk/develop-fix', 'feature/develop'])
+    eq(envs.has(b), false, `${b} vẫn là nhánh việc`)
+  // Cột không khai nhánh (đang code / review / done) không được biến '' thành môi trường.
+  eq(envs.has(''), false, 'cột không có nhánh không tạo ra môi trường rỗng')
+}
 
 console.log(bad ? `\n${bad}/${n} FAILED` : `\nall ${n} ok`)
 process.exit(bad ? 1 : 0)

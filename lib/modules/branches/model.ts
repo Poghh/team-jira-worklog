@@ -37,6 +37,19 @@ export interface StageConfig {
   /** Which PR state lands here. Only meaningful when `branch` is empty. */
   phase: "" | "nopr" | "open";
   /**
+   * Loại nhánh mà cột này là **điểm bắt đầu** — `feature`, `bugfix`, …
+   *
+   * Khớp theo một đoạn của tên nhánh, ngăn bởi `/`: `ctalk/feature/VT-2583_…`
+   * có các đoạn `ctalk`, `feature`, `VT-2583_…`. Đếm trên 220 nhánh thật của
+   * hai repo: 123 `feature`, 44 `bugfix`, 31 `task`, rồi `release`, `hotfix`,
+   * `chore` — quy ước có thật và đủ đều để dựa vào.
+   *
+   * '' = không kén, cột nhận mọi loại. Chỉ có nghĩa trên cột chưa có PR
+   * (`phase: "nopr"`, `branch` rỗng): đây là nơi một nhánh *bắt đầu*, còn từ
+   * lúc mở PR trở đi thì PR mới là thứ quyết định, không phải cái tên.
+   */
+  kind: string;
+  /**
    * For a step that names a branch, how far into that environment the work is.
    *
    * `queued` — a pull request is open against that branch. Not in it yet.
@@ -68,15 +81,35 @@ const env = (
   branch: string,
   reach: StageConfig["reach"],
   expects: StageConfig["expects"],
-): StageConfig => ({ name, expects, branch, phase: "", reach });
+): StageConfig => ({ name, expects, branch, phase: "", reach, kind: "" });
 
 export const DEFAULT_STAGES: StageConfig[] = [
+  // Bốn cột trước khi code đi đâu, xếp theo mức việc chứ không theo thời gian:
+  // `task` thấp nhất, rồi `bugfix`, rồi `review`, rồi `feature`.
+  //
+  // `feature` đứng **sau** `review` là cố ý, và là thứ tự người dùng đặt: một
+  // feature đang viết dở là việc nặng hơn một PR đang chờ đọc, nên nó phải nằm
+  // xa hơn trên bảng. Thứ tự cột chính là thứ tự tiến triển mà `advanceStage`
+  // đọc, nên đây không phải chuyện trang trí.
+  //
+  // Tách theo loại vì một cột gộp thì đúng nhưng không nói được gì: `feature`
+  // và `bugfix` là hai nhịp làm việc khác nhau, và cái đang chờ xem là "còn
+  // bao nhiêu bug đang mở", không phải "còn bao nhiêu việc đang code".
   {
-    name: "đang code",
+    name: "task",
     expects: "prog",
     branch: "",
     phase: "nopr",
     reach: "queued",
+    kind: "task",
+  },
+  {
+    name: "bugfix",
+    expects: "prog",
+    branch: "",
+    phase: "nopr",
+    reach: "queued",
+    kind: "bugfix",
   },
   {
     name: "review",
@@ -84,6 +117,15 @@ export const DEFAULT_STAGES: StageConfig[] = [
     branch: "",
     phase: "open",
     reach: "queued",
+    kind: "",
+  },
+  {
+    name: "feature",
+    expects: "prog",
+    branch: "",
+    phase: "nopr",
+    reach: "queued",
+    kind: "feature",
   },
 
   // Merging is not shipping: until a build carries it, nobody can test it —
@@ -107,10 +149,20 @@ export const DEFAULT_STAGES: StageConfig[] = [
   // kinds of card — work QC is still testing, and work closed months ago — and
   // a column that means two things cannot be read at a glance.
   //
-  // A card arrives when Jira closes every ticket it names, which is the one
-  // event that genuinely ends a piece of work; the branch is what the column
-  // then asks for, loudly, until it is gone. See {@link branchesToDelete}.
-  { name: "done", expects: "done", branch: "", phase: "", reach: "gone" },
+  // Một card tới đây khi **code của nó đã có trong `master`** — trunk phát
+  // hành. Đo được trên chính đồ thị git, không phải nghe Jira kể: `master` của
+  // cả hai repo đều nhận từ `staging` (`Merge pull request … from atthetalk/
+  // staging`), và `master...staging` cho `status=behind` — nghĩa là mọi thứ tới
+  // được staging thì đã nằm trong master. Nhánh là thứ cột này đòi, to tiếng,
+  // cho tới khi nó bị xoá. Xem {@link branchesToDelete}.
+  {
+    name: "done",
+    expects: "done",
+    branch: "master",
+    phase: "",
+    reach: "gone",
+    kind: "",
+  },
 ];
 
 /**
@@ -124,15 +176,48 @@ export const DEFAULT_STAGES: StageConfig[] = [
  *
  * Placement only. `expects` is deliberately left out: it never moves a card.
  */
+/**
+ * Các đoạn của một tên nhánh — `ctalk/feature/VT-2583_x` → `ctalk`, `feature`,
+ * `VT-2583_x`.
+ *
+ * Khớp theo đoạn chứ không theo chuỗi con: `ctalk/bugfix/resolve_feature_flag`
+ * không phải nhánh `feature`, mà `includes("feature")` thì bảo là phải.
+ */
+export function branchSegments(branch: string): string[] {
+  return branch
+    .split("/")
+    .map((seg) => seg.trim().toLowerCase())
+    .filter(Boolean);
+}
+
+/**
+ * Nhánh này có đúng loại cột đang kén không.
+ *
+ * Cột không kén (`kind` rỗng) nhận tất cả — đó là cách một bảng chưa khai loại
+ * nào vẫn chạy y như trước.
+ */
+export function kindMatches(branch: string, kind: string): boolean {
+  const want = kind.trim().toLowerCase();
+  if (!want) return true;
+  return branchSegments(branch).includes(want);
+}
+
 export function stageRule(stage: StageConfig): string {
   const b = stage.branch.trim();
   if (stage.reach === "gone")
-    return "nhánh của card đã bị xoá khỏi mọi repo";
+    return b
+      ? `code của mọi nhánh đã có trong ${b}`
+      : "chưa khai nhánh — cột này sẽ không nhận card nào";
 
   if (!b) {
+    // Loại nhánh chỉ có nghĩa ở cột chưa mở PR — đó là chỗ một nhánh bắt đầu.
+    // Nói kèm chứ không nói riêng: người đọc cần cả hai vế mới hiểu cột nhận gì.
+    const k = stage.kind.trim();
     if (stage.phase === "open") return "PR đang mở";
     if (stage.phase === "nopr")
-      return "chưa mở PR — hoặc PR còn draft, hoặc đã đóng";
+      return k
+        ? `nhánh ${k} chưa mở PR — hoặc PR còn draft, hoặc đã đóng`
+        : "chưa mở PR — hoặc PR còn draft, hoặc đã đóng";
     return "không khớp điều kiện của cột nào khác";
   }
 
@@ -196,6 +281,20 @@ export function baseFreshness(
     days,
     text: `dựng trên ${env} của ${age} · tụt ${side.behind} commit`,
   };
+}
+
+/**
+ * Tên mọi nhánh mà một cột trên board gọi là môi trường.
+ *
+ * Khác {@link envSteps} ở chỗ lấy **cả** `queued`/`merged`/`built`, vì câu hỏi
+ * ở đây không phải "đo containment ở đâu" mà "nhánh này có phải môi trường
+ * không" — và cả ba cột đều đang nói tên cùng một nhánh.
+ *
+ * Dùng để loại nhánh môi trường ra khỏi kết quả quét: một nhánh được cấu hình
+ * gọi tên là môi trường thì nó là đích đến, không phải việc của ai.
+ */
+export function envBranchNames(stages: StageConfig[]): Set<string> {
+  return new Set(stages.map((s) => s.branch.trim()).filter(Boolean));
 }
 
 /**
@@ -847,26 +946,6 @@ export function builtButNotTested(build: string, tone: string | null): boolean {
 }
 
 /**
- * Whether Jira says this card is over.
- *
- * Every ticket the card names, not just the primary one: a branch fixing two
- * tickets is finished when both are, and taking the first would close a card
- * over work still open. A ticket Jira did not answer for — off-site, deleted,
- * or asked while the VPN was down — reads as not done, so a Jira that cannot
- * be reached moves nothing rather than clearing the board.
- *
- * `DONE` only. `VERIFIED ON STAGING` is the tester's verdict, not the ticket's
- * close, and this team files a fair number of tickets that are verified and
- * then reopened.
- */
-export function ticketsDone(statuses: Array<string | null>): boolean {
-  return (
-    statuses.length > 0 &&
-    statuses.every((s) => s !== null && statusTone(s) === "done")
-  );
-}
-
-/**
  * The pipeline's terminal step, if it has one.
  *
  * Found by `reach` rather than by name, for the same reason every other rule
@@ -874,26 +953,12 @@ export function ticketsDone(statuses: Array<string | null>): boolean {
  * "đã release".
  *
  * `gone` alone, whatever else the column says. It used to require an empty
- * branch as well, which left `gone` on a column that names one meaning nothing
- * in particular — it fell through to "chờ merge" in `stageFor`. One reading
- * everywhere: the card's branches are deleted.
+ * branch as well — back when the column meant "the card's branches are gone"
+ * and so could not name one. Now the branch it names is the trunk it asks
+ * about; see {@link reachedTrunk}.
  */
 export function cleanupStep(stages: StageConfig[]): StageConfig | null {
   return stages.find((s) => s.reach === "gone") ?? null;
-}
-
-/**
- * Whether the card has nothing left on GitHub — every repository it touches
- * has had its branch deleted.
- *
- * `every` over an empty list is true, so the emptiness is checked first: a
- * card with no sides at all has not been cleaned up, it has never been
- * scanned.
- */
-export function branchesCleanedUp(
-  sides: ReadonlyArray<{ branchGone: boolean }>,
-): boolean {
-  return sides.length > 0 && sides.every((s) => s.branchGone);
 }
 
 /**

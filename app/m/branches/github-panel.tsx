@@ -15,7 +15,7 @@ import {
   shortRepo,
 } from "@/lib/modules/branches/github-model";
 import { type StageConfig, envSteps } from "@/lib/modules/branches/model";
-import type { ScanResult } from "@/lib/modules/branches/scan";
+import type { GoneCard, ScanResult } from "@/lib/modules/branches/scan";
 
 import {
   applyPlanAction,
@@ -801,8 +801,6 @@ function ScanReview({
       ),
   );
   const [done, setDone] = useState<string | null>(null);
-  const [confirmGone, setConfirmGone] = useState(false);
-  const [goneDone, setGoneDone] = useState<string | null>(null);
   const [busy, start] = useTransition();
 
   const toggle = (key: string) =>
@@ -850,6 +848,25 @@ function ScanReview({
           · {scan.rows.length} có ticket
         </span>
       </div>
+
+      {/* Nói ra chứ không lặng lẽ bỏ. Một nhánh vắng mặt không lý do thì không
+          phân biệt được với một nhánh app đọc hụt — mà đây là nhánh người dùng
+          vẫn đụng vào hằng ngày, nên họ sẽ đi tìm. */}
+      {scan.envSkipped.length > 0 && (
+        <p className="mt-2 rounded-md border border-line bg-surface-2 px-2.5 py-1.5 text-[12px] text-ink-2">
+          Bỏ qua vì là nhánh môi trường:{" "}
+          <span className="font-mono">
+            {scan.envSkipped
+              .map((b) => {
+                const [repo, name] = b.split("#");
+                return `${repo.split("/")[1]} · ${name}`;
+              })
+              .join(", ")}
+          </span>{" "}
+          — cột trên board đã đặt tên chúng là môi trường, nên chúng là đích đến
+          chứ không phải việc của ai.
+        </p>
+      )}
 
       {scan.localHidden.length > 0 && (
         <div className="mt-2 rounded-md border border-warn bg-warn-soft/40 px-2.5 py-2 text-[12px] text-ink-2">
@@ -905,85 +922,32 @@ function ScanReview({
         </div>
       )}
 
-      {scan.gone.length > 0 && (
-        <div className="mt-2.5 rounded-md border border-line bg-surface-2 px-2.5 py-2">
-          <div className="flex flex-wrap items-center gap-2">
-            <span className={CTITLE}>
-              Nhánh không còn tồn tại · {scan.gone.length}
-            </span>
-            {goneDone ? (
-              <span className="ml-auto text-[12px] text-ink-2">{goneDone}</span>
-            ) : confirmGone ? (
-              <span className="ml-auto flex items-center gap-2">
-                <button
-                  type="button"
-                  disabled={busy}
-                  onClick={() =>
-                    start(async () => {
-                      const res = await deleteNotesAction(
-                        scan.gone.map((g) => g.id),
-                      );
-                      setGoneDone(res.message);
-                    })
-                  }
-                  className="rounded-md bg-crit px-2.5 py-1 text-[12px] font-medium text-white hover:opacity-90"
-                >
-                  Chắc chắn xoá {scan.gone.length}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setConfirmGone(false)}
-                  className={BTN}
-                >
-                  Khoan
-                </button>
-              </span>
-            ) : (
-              <button
-                type="button"
-                onClick={() => setConfirmGone(true)}
-                className="ml-auto rounded-md border border-crit px-2.5 py-1 text-[12px] font-medium text-crit hover:bg-crit-soft"
-              >
-                Xoá {scan.gone.length} card này
-              </button>
-            )}
-          </div>
-          <p className="mt-1 text-[12px] text-ink-3">
+      <CardsToClear
+        title="Nhánh không còn tồn tại"
+        cards={scan.gone}
+        note={
+          <>
             Nhánh đã bị xoá — trên GitHub thường là đã release xong, còn nhánh
             chưa push thì là bạn tự xoá ở clone. Card vẫn giữ nguyên cho tới khi
             bạn dọn; xoá chỉ gỡ khỏi bảng, không đụng GitHub hay Jira.
-          </p>
-          <div className="mt-1.5 flex flex-col gap-1">
-            {scan.gone.map((g) => (
-              <div
-                key={g.id}
-                className="flex flex-wrap items-center gap-2 text-[12px]"
-              >
-                <span className="w-[86px] shrink-0 font-mono text-[11px] font-semibold text-accent-ink">
-                  {g.issueKey || "—"}
-                </span>
-                <span
-                  className="min-w-0 flex-1 truncate font-mono text-[11px] text-ink-3"
-                  title={g.branch}
-                >
-                  {g.branch}
-                </span>
-                <span className="shrink-0 font-mono text-[10.5px] text-ink-3">
-                  {g.stage}
-                </span>
-                {g.bodyLines > 0 && (
-                  <span
-                    title="Card này có ghi chú bạn tự viết — xoá là mất"
-                    className="shrink-0 rounded-[3px] border border-warn bg-warn-soft px-1 py-px font-mono text-[9.5px] text-warn"
-                  >
-                    ✎ {g.bodyLines} lưu ý
-                  </span>
-                )}
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
+          </>
+        }
+      />
+
+      {/* Lý do khác hẳn danh sách trên: nhánh vẫn còn, chỉ là nó chưa bao giờ
+          đáng có card. Tách ra để câu giải thích nói đúng việc đã xảy ra. */}
+      <CardsToClear
+        title="Card đứng trên nhánh môi trường"
+        cards={scan.envCards}
+        note={
+          <>
+            Nhánh này là một môi trường trong cấu hình cột, nên nó là đích đến
+            chứ không phải việc của ai. Quét từ giờ không dựng thêm card nào như
+            vậy nữa, nhưng card đã lỡ sinh ra thì vẫn còn cho tới khi bạn dọn;
+            xoá chỉ gỡ khỏi bảng, không đụng GitHub hay Jira.
+          </>
+        }
+      />
 
       {scan.rows.length === 0 ? (
         <p className="mt-2 text-[12.5px] text-ink-3">
@@ -1023,6 +987,108 @@ function ScanReview({
         </div>
       )}
     </section>
+  );
+}
+
+/**
+ * Card không còn nên nằm trên bảng, kèm một lối dọn có xác nhận.
+ *
+ * Dùng cho hai danh sách khác lý do nhưng cùng một hành động: nhánh đã bị xoá,
+ * và nhánh hoá ra là môi trường. Viết một lần chứ không hai bản sao, vì thứ
+ * phải đúng ở đây là **cảnh báo mất ghi chú** và **bước xác nhận** — hai bản
+ * sao là hai chỗ để chúng lệch nhau, và chỗ lệch sẽ là chỗ xoá nhầm.
+ *
+ * Tự giữ state xác nhận của riêng mình: hai danh sách cùng màn hình mà dùng
+ * chung một cờ thì bấm "Xoá" ở danh sách này sẽ mở sẵn nút xác nhận ở danh
+ * sách kia.
+ */
+function CardsToClear({
+  title,
+  cards,
+  note,
+}: {
+  title: string;
+  cards: GoneCard[];
+  note: React.ReactNode;
+}) {
+  const [confirm, setConfirm] = useState(false);
+  const [done, setDone] = useState<string | null>(null);
+  const [busy, start] = useTransition();
+
+  if (!cards.length) return null;
+
+  return (
+    <div className="mt-2.5 rounded-md border border-line bg-surface-2 px-2.5 py-2">
+      <div className="flex flex-wrap items-center gap-2">
+        <span className={CTITLE}>
+          {title} · {cards.length}
+        </span>
+        {done ? (
+          <span className="ml-auto text-[12px] text-ink-2">{done}</span>
+        ) : confirm ? (
+          <span className="ml-auto flex items-center gap-2">
+            <button
+              type="button"
+              disabled={busy}
+              onClick={() =>
+                start(async () => {
+                  const res = await deleteNotesAction(cards.map((c) => c.id));
+                  setDone(res.message);
+                })
+              }
+              className="rounded-md bg-crit px-2.5 py-1 text-[12px] font-medium text-white hover:opacity-90"
+            >
+              Chắc chắn xoá {cards.length}
+            </button>
+            <button
+              type="button"
+              onClick={() => setConfirm(false)}
+              className={BTN}
+            >
+              Khoan
+            </button>
+          </span>
+        ) : (
+          <button
+            type="button"
+            onClick={() => setConfirm(true)}
+            className="ml-auto rounded-md border border-crit px-2.5 py-1 text-[12px] font-medium text-crit hover:bg-crit-soft"
+          >
+            Xoá {cards.length} card này
+          </button>
+        )}
+      </div>
+      <p className="mt-1 text-[12px] text-ink-3">{note}</p>
+      <div className="mt-1.5 flex flex-col gap-1">
+        {cards.map((c) => (
+          <div
+            key={c.id}
+            className="flex flex-wrap items-center gap-2 text-[12px]"
+          >
+            <span className="w-[86px] shrink-0 font-mono text-[11px] font-semibold text-accent-ink">
+              {c.issueKey || "—"}
+            </span>
+            <span
+              className="min-w-0 flex-1 truncate font-mono text-[11px] text-ink-3"
+              title={c.branch}
+            >
+              {c.branch}
+            </span>
+            <span className="shrink-0 font-mono text-[10.5px] text-ink-3">
+              {c.stage}
+            </span>
+            {c.bodyLines > 0 && (
+              <span
+                title="Card này có ghi chú bạn tự viết — xoá là mất"
+                className="shrink-0 rounded-[3px] border border-warn bg-warn-soft px-1 py-px font-mono text-[9.5px] text-warn"
+              >
+                ✎ {c.bodyLines} lưu ý
+              </span>
+            )}
+          </div>
+        ))}
+      </div>
+    </div>
   );
 }
 
