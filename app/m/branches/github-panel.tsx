@@ -56,9 +56,6 @@ export function GitHubPanel({
   baseUrl: string;
 }) {
   const [logins, setLogins] = useState(toText(view.identity.logins));
-  /** '' means untouched — see `setGitHubConfig`. Never pre-filled: the
-      browser is not sent the token, only whether there is one. */
-  const [token, setToken] = useState("");
   const [useEvents, setUseEvents] = useState(view.useEvents);
   const [localPaths, setLocalPaths] = useState(view.localPaths.join("\n"));
   const [pathRows, setPathRows] = useState<Array<{
@@ -243,22 +240,33 @@ export function GitHubPanel({
           Một nhánh được coi là của bạn nếu commit cuối do bạn tạo. Nhánh bạn
           push mà commit cuối là của người khác thì dựa vào ô bên dưới.
         </p>
-        <div className="mt-2.5">
-          <label className={LABEL}>
-            Personal access token{" "}
-            <span className="font-normal text-ink-3">
-              {hasToken ? "· đã có, để trống nếu không đổi" : "· scope repo"}
-            </span>
-          </label>
-          <input
-            value={token}
-            onChange={(e) => setToken(e.target.value)}
-            type="password"
-            placeholder={hasToken ? "••••••••" : "ghp_…"}
-            className={INPUT + " sm:max-w-sm"}
-          />
+        {/* Không còn ô nhập ở đây.
+         *
+         * Hai lý do, cái nào cũng đủ. Một: token giờ là ô chung trong Settings,
+         * vì module Review code cũng đọc đúng ô đó — hai chỗ sửa cùng một giá
+         * trị là hai chỗ để hết hạn mà không gì nói cái nào đang được dùng.
+         * Hai: ô cũ ở đây **chưa bao giờ chạy** — `save()` không gửi `token`
+         * đi, nên gõ vào rồi lưu là mất trắng, im lặng. */}
+        <div className="mt-2.5 rounded-md border border-line bg-ground px-2.5 py-2">
+          <span className="text-[12.5px] text-ink-2">
+            <b>Personal access token</b> — lấy từ{" "}
+            <a
+              href="/settings"
+              className="text-accent-ink underline underline-offset-2"
+            >
+              Settings
+            </a>
+            , dùng chung với module Review code.{" "}
+            {hasToken ? (
+              <span className="text-good">Đang có token.</span>
+            ) : (
+              <span className="text-warn">
+                Chưa có token — module này sẽ không quét được gì.
+              </span>
+            )}
+          </span>
           <p className="mt-1 text-[11.5px] text-ink-3">
-            Chỉ module này dùng GitHub. Lần đầu lấy từ{" "}
+            Scope <span className="font-mono">repo</span>. Lần đầu lấy từ{" "}
             <span className="font-mono">GITHUB_TOKEN</span> trong{" "}
             <span className="font-mono">.env.local</span> nếu có.
           </p>
