@@ -6,6 +6,7 @@ import {
   getSeenBuilds,
   getStages,
   setGitHubConfig,
+  setGitHubLogins,
   setSeenBuilds,
   setStages,
   toConfigView,
@@ -382,7 +383,7 @@ export async function detectWorkflowAction(
 
 export async function saveGitHubConfigAction(input: {
   repos: string[];
-  identity: Identity;
+  identity?: Identity;
   useEvents: boolean;
   localPaths: string[];
   repoLabels: Record<string, string>;
@@ -426,6 +427,19 @@ export async function detectGitHubAction(): Promise<
     const { token } = getGitHubConfig();
     if (!token) return { ok: false, message: NO_TOKEN };
     const v = await fetchViewer(token);
+    /**
+     * Điền hộ ô Login bên Settings khi nó còn trống.
+     *
+     * Ai cầm token thì GitHub biết chắc, nên app đọc lấy thay vì bắt người
+     * dùng gõ lại câu mà token đã trả lời. Ghi ở server chứ không qua form:
+     * ô ấy không còn nằm trên màn hình này nữa.
+     *
+     * Chỉ khi trống. Ô là một danh sách — người dùng có thể đã thêm tài khoản
+     * thứ hai vào đó, và ghi đè là xoá mất lựa chọn của họ.
+     */
+    if (v.login && !getGitHubConfig().identity.logins.length)
+      setGitHubLogins([v.login]);
+
     return {
       ok: true,
       message: `Token của ${v.login}${v.orgs.length ? ` · ${v.orgs.length} org` : ""}`,

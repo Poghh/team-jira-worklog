@@ -55,7 +55,6 @@ export function GitHubPanel({
   stages: StageConfig[];
   baseUrl: string;
 }) {
-  const [logins, setLogins] = useState(toText(view.identity.logins));
   const [useEvents, setUseEvents] = useState(view.useEvents);
   const [localPaths, setLocalPaths] = useState(view.localPaths.join("\n"));
   const [pathRows, setPathRows] = useState<Array<{
@@ -136,9 +135,6 @@ export function GitHubPanel({
     start(async () => {
       const res = await saveGitHubConfigAction({
         repos: nextRepos,
-        identity: {
-          logins: toList(logins),
-        },
         useEvents,
         localPaths: localPaths
           .split("\n")
@@ -174,8 +170,6 @@ export function GitHubPanel({
           setNote({ ok: false, text: res.message });
           return;
         }
-        if (res.login && !toList(logins).includes(res.login))
-          setLogins((v) => toText([...toList(v), res.login!]));
         setOrgs(res.orgs ?? []);
         if (res.orgs?.length) setOwner((o) => o || res.orgs![0]);
       })
@@ -189,7 +183,6 @@ export function GitHubPanel({
     return () => {
       alive = false;
     };
-    // `logins` được đọc chứ không theo dõi: điền xong không được gọi lại.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [hasToken]);
 
@@ -256,7 +249,7 @@ export function GitHubPanel({
             >
               Settings
             </a>
-            , dùng chung với module Review code.{" "}
+            .{" "}
             {hasToken ? (
               <span className="text-good">Đang có token.</span>
             ) : (
@@ -272,15 +265,10 @@ export function GitHubPanel({
           </p>
         </div>
 
-        <div className="mt-2.5">
-          <label className={LABEL}>Login GitHub</label>
-          <input
-            value={logins}
-            onChange={(e) => setLogins(e.target.value)}
-            placeholder="windxfeng"
-            className={INPUT + " sm:max-w-sm"}
-          />
-        </div>
+        {/* Ô Login dời sang Settings, cạnh token — nó trả lời câu hỏi về
+         *  token, và ở đây nó chỉ là một giá trị app tự điền mà người dùng
+         *  không được xoá. Đo trên 231 nhánh: giá trị trong ô đúng bằng login
+         *  mà token tự khai, không thêm gì. */}
         <label className="mt-2.5 flex cursor-pointer items-start gap-2 rounded-md border border-line bg-ground px-2.5 py-2">
           <input
             type="checkbox"
