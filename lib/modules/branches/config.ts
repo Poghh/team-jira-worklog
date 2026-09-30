@@ -373,37 +373,37 @@ function getList(key: string): string[] {
 /**
  * The token, owned by the module that is the only thing using it.
  *
- * It used to live in the core settings table, on the reasoning that every
- * credential should sit in one place or nobody rotates it. That reasoning did
- * not survive contact with the codebase: `ios-publish` keeps its App Store
- * Connect issuer, key id and `.p8` private key entirely in
- * `mod:ios-publish:profiles`, and the Settings screen has no App Store section
- * at all. So the one-place rule was already not the rule, and this token was
- * the exception pretending to be it.
+ * Ô token chung trong Settings, không phải khoá riêng của module.
  *
- * Read once, migrating whatever the old core key held — the value matters more
- * than where it used to be filed. `.env.local` remains the first-run seed, the
- * same one the core settings used.
+ * Từng đi đường ngược lại: token dọn khỏi Settings vào `mod:branches:gh_token`,
+ * với lý lẽ rằng `ios-publish` cũng giữ credential App Store của nó trong
+ * namespace riêng, nên "mọi credential một chỗ" vốn đã không phải luật.
+ *
+ * Lý lẽ đó đúng khi chỉ một module dùng GitHub. Giờ có hai — module Review code
+ * của upstream đọc `SETTING_KEYS.githubToken` — và hai ô token cho cùng một
+ * GitHub là hai thứ phải xoay vòng, hai chỗ để hết hạn, và không gì trên màn
+ * hình nói cái nào đang được dùng. Khác hẳn `ios-publish`, vốn là credential
+ * của một dịch vụ khác.
+ *
+ * Chuyển giá trị chứ không bắt gõ lại: khoá riêng của module đang giữ token
+ * thật, và người dùng không có lý do gì phải trả giá cho một quyết định của
+ * app. `.env.local` vẫn là hạt giống lần đầu, như cũ.
  */
 function readToken(): string {
-  // Read as a raw row, not through `SETTING_KEYS`: the core key is gone from
-  // that enum, and these lines are the only thing that still needs to know it
-  // ever existed.
-  const legacy = getRaw("github_token");
-  const own = getRaw(K.ghToken);
+  const shared = (getRaw(SETTING_KEYS.githubToken) ?? "").trim();
+  if (shared) return shared;
 
-  const value =
-    own !== undefined
-      ? own.trim()
-      : (legacy ?? "").trim() || (process.env.GITHUB_TOKEN ?? "").trim();
-  if (own === undefined) setRaw(K.ghToken, value);
+  // Đọc thẳng dòng thô: khoá riêng vẫn còn trong `K` để migration này tìm
+  // được, nhưng không chỗ nào khác được đọc nó nữa.
+  const own = (getRaw(K.ghToken) ?? "").trim();
+  const value = own || (process.env.GITHUB_TOKEN ?? "").trim();
+  if (!value) return "";
 
-  // Retired whenever it is still there and this module holds the value —
-  // checked separately from the migration above, because a half-finished
-  // upgrade can leave the row behind and a stale copy of a credential is worth
-  // deleting whichever way it got left. An own key that is deliberately empty
-  // is not overwritten and the old row is not resurrected.
-  if (legacy !== undefined && value) dropRaw("github_token");
+  setRaw(SETTING_KEYS.githubToken, value);
+  // Xoá bản cũ ngay sau khi chép: một bản sao thừa của credential là một chỗ
+  // nữa để rò, và là chỗ nữa người ta tưởng mình vừa xoay vòng token trong khi
+  // app đang đọc ô khác.
+  if (own) dropRaw(K.ghToken);
   return value;
 }
 
@@ -567,7 +567,9 @@ export function setGitHubConfig(input: {
   const clean = (xs: string[]) =>
     JSON.stringify([...new Set(xs.map((s) => s.trim()).filter(Boolean))]);
 
-  if (input.token !== undefined) setRaw(K.ghToken, input.token.trim());
+  // Vào ô chung, cùng ô mà Settings và module Review code đọc.
+  if (input.token !== undefined)
+    setRaw(SETTING_KEYS.githubToken, input.token.trim());
 
   setRaw(K.ghRepos, clean(input.repos));
   setRaw(K.ghLogins, clean(input.identity.logins));

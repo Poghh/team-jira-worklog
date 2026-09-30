@@ -87,17 +87,17 @@ export function SettingsForm({ initial }: { initial: Record<string, string> }) {
           <ConnectionTest label="Test Gemini" run={testGeminiConnection} />
         </Card>
 
-        {/* Token của module "Nhánh & ghi chú" nằm trong tab GitHub của chính
-            module đó, không phải ở đây: nó là cấu hình của một module, và để
-            lẫn vào đây thì không ai biết cái nào đang được dùng. Ô này là token
-            chung, cho module Review code. */}
+        {/* Một ô cho cả hai module dùng GitHub — "Nhánh & ghi chú" và "Review
+            code". Từng có một ô riêng trong tab GitHub của module nhánh; hai
+            chỗ sửa cùng một giá trị là hai chỗ để hết hạn, và không gì trên màn
+            hình nói cái nào đang được dùng. */}
         <Card title="GitHub">
           <Field
             label="Personal access token"
             name={K.githubToken}
             defaultValue={initial[K.githubToken]}
             type="password"
-            hint="Scope repo. Seed lần đầu từ GITHUB_TOKEN trong .env.local. Module Review code dùng để đọc PR và gửi comment."
+            hint="Scope repo. Seed lần đầu từ GITHUB_TOKEN trong .env.local. Dùng chung: Nhánh & ghi chú quét nhánh, Review code đọc PR và gửi comment."
           />
         </Card>
 
