@@ -64,6 +64,7 @@ const toItem = (r: typeof reviewItems.$inferSelect): ItemView => ({
   id: r.id,
   kind: r.kind as ItemKind,
   repoId: r.repoId,
+  workPath: r.workPath,
   title: r.title,
   prNumber: r.prNumber,
   baseRef: r.baseRef,
@@ -144,9 +145,14 @@ export function findPrItem(repoId: string, prNumber: number): ItemView | null {
 }
 
 export function createItem(
-  input: Omit<ItemView, 'id' | 'status' | 'updatedAt' | 'seenAt' | 'links' | 'addressee' | 'templateId'> & {
+  input: Omit<
+    ItemView,
+    'id' | 'status' | 'updatedAt' | 'seenAt' | 'links' | 'addressee' | 'templateId' | 'workPath'
+  > & {
     links?: PrLink[]
     templateId?: string
+    /** Chỉ hồ sơ tự review điền — xem {@link ItemView.workPath}. */
+    workPath?: string
   },
 ): number {
   const { links, ...rest } = input

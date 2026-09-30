@@ -13,6 +13,7 @@ import {
   diffRanges,
   diffStat,
   fetchAll,
+  fetchFromWork,
   fetchPull,
   gitSays,
   isAncestor,
@@ -25,7 +26,7 @@ import {
 import { type RawFinding, buildFreshRows } from './findings'
 import { getPull, listPullComments } from './github'
 import { cleanupLinks, linkDirs, prepareLinks } from './links'
-import type { DocFile, FindingStatus, RoundLink } from './model'
+import { type DocFile, type FindingStatus, type RoundLink, isCode } from './model'
 import { ALLOWED_TOOLS, DISALLOWED_TOOLS, ISOLATION_FLAGS, reviewEnv } from './guard'
 import { CODE_SCHEMA, DOC_SCHEMA, codePrompt, docPrompt } from './prompts'
 import { type LogLine, bootTime, lastResult, parseLog, pidAlive, readLog, strayLines } from './proc'
@@ -173,7 +174,7 @@ async function prepareAndSpawn(roundId: number) {
   const cfg = getReviewConfig()
   const repo = item.repoId ? getRepo(item.repoId) : undefined
   if (item.repoId && !repo) return fail('Repo của hồ sơ này đã bị xoá khỏi Cấu hình.')
-  if (item.kind === 'pr' && !repo) return fail('Review code cần một repo.')
+  if (isCode(item.kind) && !repo) return fail('Review code cần một repo.')
 
   const prev = lastDoneRound(item.id)
   const previous = prev && prev.id !== roundId ? openFindings(prev.id) : []
@@ -187,7 +188,70 @@ async function prepareAndSpawn(roundId: number) {
   let links: RoundLink[] = []
 
   try {
-    if (item.kind === 'pr') {
+    if (item.kind === 'self') {
+      const r = repo!
+      // Đọc từ hồ sơ, không phải từ cấu hình hiện tại: một repo khai nhiều
+      // clone, và vòng sau phải soi lại đúng cái vòng trước đã soi. Vẫn đối
+      // chiếu với cấu hình — một clone đã bị gỡ khỏi Cấu hình thì không còn là
+      // chỗ app được phép đọc.
+      const work = item.workPath
+      if (!work) return fail('Hồ sơ này không ghi clone làm việc nào.')
+      if (!r.workPaths.includes(work))
+        return fail(`Clone "${work}" không còn trong Cấu hình của repo ${r.name}.`)
+
+      // `headRef` của self review là ref hay sha đã chốt lúc xếp hàng. Chốt ở
+      // đó chứ không ở đây: giữa lúc bấm và lúc chạy có hàng đợi, và bạn có thể
+      // đã gõ tiếp — review phải soi đúng thứ bạn nhìn thấy lúc bấm.
+      await withRepoLock(r.localPath, async () => {
+        headSha = await fetchFromWork(r.localPath, work, item.headRef, `self-${roundId}-head`)
+        // Base lấy từ chính clone làm việc luôn: nhánh nền có thể cũng chỉ tồn
+        // tại dưới máy, và hỏi origin sẽ không thấy.
+        const baseTip = await fetchFromWork(r.localPath, work, item.baseRef, `self-${roundId}-base`)
+        baseSha = await mergeBase(r.localPath, baseTip, headSha)
+        workdir = await addWorktree(r.localPath, `r${roundId}`, headSha)
+      })
+
+      const docs = parseDocs(round.docs)
+      for (const d of docs) {
+        const dir = path.dirname(d.path)
+        if (!addDirs.includes(dir)) addDirs.push(dir)
+      }
+
+      const prevHeadSha = prev?.headSha ?? ''
+      // Tự soi lại chính mình thì mỗi vòng là một ảnh chụp mới — kể cả "việc
+      // chưa commit", vốn không có lịch sử để nối tiếp. Chỉ nhận là tiếp nối
+      // khi vòng trước thật sự là tổ tiên của vòng này.
+      const incremental =
+        Boolean(prevHeadSha) &&
+        (await commitExists(r.localPath, prevHeadSha)) &&
+        (await isAncestor(r.localPath, prevHeadSha, headSha))
+
+      prompt = codePrompt({
+        repoName: r.name,
+        docs,
+        docsChanged: false,
+        links: [],
+        addressee: null,
+        title: item.title,
+        prNumber: null,
+        author: item.author,
+        baseRef: item.baseRef,
+        headRef: item.headRef,
+        baseSha,
+        headSha,
+        prBody: '',
+        note: item.note,
+        round: round.round,
+        prevHeadSha,
+        incremental,
+        previous,
+        comments: [],
+        diffStat: await diffStat(r.localPath, baseSha, headSha),
+        globalRules: cfg.globalRules,
+        repoRules: r.rules,
+      })
+      schema = CODE_SCHEMA
+    } else if (item.kind === 'pr') {
       const r = repo!
       let prBody = ''
       let comments: Awaited<ReturnType<typeof listPullComments>> = []
@@ -446,7 +510,9 @@ async function storeOutput(r: RoundRow, out: Output) {
   const repo = item.repoId ? getRepo(item.repoId) : undefined
 
   let ranges: Map<string, Array<[number, number]>> | null = null
-  if (item.kind === 'pr' && repo && r.baseSha && r.headSha) {
+  // Câu hỏi ở đây là "có diff không", không phải "có PR không" — self review
+  // cũng có base/head, cũng cần khoanh vùng dòng đã đổi.
+  if (isCode(item.kind) && repo && r.baseSha && r.headSha) {
     ranges = await diffRanges(repo.localPath, r.baseSha, r.headSha).catch(() => null)
   }
 

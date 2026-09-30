@@ -6,6 +6,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { promisify } from 'node:util'
 
+import type { WorkBranch } from './model'
 import { assertGitArgs } from './guard'
 
 const run = promisify(execFile)
@@ -89,6 +90,97 @@ export async function listRemoteBranches(repoPath: string): Promise<string[]> {
     .split('\n')
     .map((l) => l.trim().replace(/^origin\//, ''))
     .filter((b) => b && b !== 'HEAD' && b !== 'origin')
+}
+
+/**
+ * Nhánh trong clone làm việc: cả `refs/heads` lẫn `refs/remotes/origin`.
+ *
+ * Khác {@link listRemoteBranches}, vốn chỉ đọc origin vì nó phục vụ review PR
+ * của người khác — thứ nhất định đã được push. Self review thì ngược lại: nhánh
+ * đáng soi nhất là nhánh chưa push, và một danh sách chỉ-origin sẽ không có nó.
+ *
+ * Nhánh dưới máy đứng trước, mới nhất trước: đó là nhánh bạn vừa làm.
+ */
+export async function listWorkBranches(repoPath: string): Promise<WorkBranch[]> {
+  const read = async (ref: string) =>
+    (await git(repoPath, ['for-each-ref', '--sort=-committerdate', '--format=%(refname:short)', ref]))
+      .split('\n')
+      .map((l) => l.trim())
+      .filter(Boolean)
+
+  const local = await read('refs/heads')
+  const remote = (await read('refs/remotes/origin'))
+    .map((b) => b.replace(/^origin\//, ''))
+    .filter((b) => b && b !== 'HEAD')
+
+  const onRemote = new Set(remote)
+  const seen = new Set<string>()
+  const out: WorkBranch[] = []
+  for (const name of [...local, ...remote]) {
+    if (seen.has(name)) continue
+    seen.add(name)
+    out.push({ name, onRemote: onRemote.has(name) })
+  }
+  return out
+}
+
+/** Nhánh đang checkout trong clone làm việc — '' khi detached HEAD. */
+export async function currentBranch(repoPath: string): Promise<string> {
+  // `rev-parse --abbrev-ref` chứ không phải `git branch --show-current`: danh
+  // sách lệnh cho phép cố ý không có `branch`, và câu hỏi này không cần tới nó.
+  const out = (await git(repoPath, ['rev-parse', '--abbrev-ref', 'HEAD'])).trim()
+  return out === 'HEAD' ? '' : out
+}
+
+/**
+ * Bao nhiêu file **đã theo dõi** đang có thay đổi chưa commit.
+ *
+ * `diff --name-only HEAD` chứ không phải `git status`: danh sách lệnh cho phép
+ * cố ý không có `status`, và ở đây nó lại là con số đúng hơn — nó đếm chính xác
+ * thứ {@link snapshotUncommitted} chụp được. File chưa từng `git add` không
+ * nằm trong cả hai, nên hai con số không bao giờ lệch nhau.
+ */
+export async function countDirty(repoPath: string): Promise<number> {
+  const out = await git(repoPath, ['diff', '--name-only', 'HEAD'])
+  return out.split('\n').filter((l) => l.trim()).length
+}
+
+/**
+ * Ảnh chụp việc chưa commit, dưới dạng một commit lơ lửng — hoặc '' nếu cây sạch.
+ *
+ * `git stash create` **không** đụng cây làm việc, không đụng index, không thêm
+ * mục nào vào `git stash list`. Đo trên repo nháp: cây vẫn bẩn đúng 2 file như
+ * trước, stash list vẫn rỗng. Nó chỉ ghi một object lơ lửng vào `.git/objects`,
+ * thứ `git gc` tự dọn.
+ *
+ * Gom cả staged lẫn unstaged. Không gom file **chưa từng `git add`** — `create`
+ * không có `--include-untracked`. Người gọi phải nói ra điều đó, không được im.
+ */
+export async function snapshotUncommitted(repoPath: string): Promise<string> {
+  return (await git(repoPath, ['stash', 'create'])).trim()
+}
+
+/**
+ * Kéo một ref hoặc một sha từ clone làm việc sang clone review.
+ *
+ * Git nhận một đường dẫn làm remote, và đường truyền local cho phép xin thẳng
+ * một sha — đã thử: fetch được đúng commit lơ lửng của `stash create`, không
+ * cần `uploadpack.allowAnySHA1InWant`.
+ *
+ * Chỉ đọc ở phía clone làm việc. Mọi thứ ghi ra đều nằm ở clone review.
+ */
+export async function fetchFromWork(
+  repoPath: string,
+  workPath: string,
+  ref: string,
+  /** Tên ref đích trong `refs/review/` — mỗi lượt một cái, để hai lượt không giẫm nhau. */
+  name: string,
+): Promise<string> {
+  // Refspec tường minh, đổ vào `refs/review/`: danh sách lệnh bắt mọi fetch của
+  // module phải hạ cánh ở đó, và FETCH_HEAD trần thì không nói được nó đi đâu.
+  const dst = `refs/review/${name}`
+  await git(repoPath, ['fetch', '--no-tags', workPath, `+${ref}:${dst}`], 180_000)
+  return (await git(repoPath, ['rev-parse', `${dst}^{commit}`])).trim()
 }
 
 export async function fetchAll(repoPath: string) {

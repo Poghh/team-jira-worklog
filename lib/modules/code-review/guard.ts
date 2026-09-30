@@ -86,8 +86,23 @@ const GIT_ALLOWED = new Set([
   'diff',
   'show',
   'worktree',
+  'stash',
 ])
 const WORKTREE_ALLOWED = new Set(['add', 'remove', 'prune'])
+/**
+ * `create` và chỉ `create`.
+ *
+ * Self review cần soi cả việc chưa commit, mà thứ duy nhất chụp được nó thành
+ * một commit là `git stash create`. Nó nằm đúng trong luật của danh sách này:
+ * không đổi nhánh nào, không đụng index, không đụng cây làm việc, không thêm
+ * mục nào vào `git stash list` — chỉ ghi một object lơ lửng mà `git gc` tự dọn.
+ * Đo trên repo nháp: sau khi chạy, `git status` và `git stash list` giống hệt
+ * trước.
+ *
+ * Mọi dạng `stash` khác — `push`, `pop`, `apply`, `drop` — đều đổi cây làm việc
+ * của người dùng, và đó đúng là thứ danh sách này sinh ra để chặn.
+ */
+const STASH_ALLOWED = new Set(['create'])
 
 /**
  * Checked on every git command this module runs. `fetch` only ever writes
@@ -98,11 +113,16 @@ export function assertGitArgs(args: string[]) {
   const [cmd, sub] = args
   if (!GIT_ALLOWED.has(cmd)) throw new ForbiddenAction(`Chặn lệnh git "${cmd}" — module chỉ đọc repo.`)
   if (cmd === 'worktree' && !WORKTREE_ALLOWED.has(sub)) throw new ForbiddenAction(`Chặn "git worktree ${sub}".`)
+  if (cmd === 'stash' && !STASH_ALLOWED.has(sub)) throw new ForbiddenAction(`Chặn "git stash ${sub}".`)
   if (cmd === 'fetch') {
     // Refspecs may only land in this module's own namespace or the ordinary
     // remote-tracking refs — never into a local branch.
     for (const a of args.slice(1)) {
-      if (a.startsWith('-') || a === 'origin') continue
+      // Nguồn fetch: `origin`, hoặc một đường dẫn tuyệt đối — clone làm việc
+      // của chính người dùng, thứ self review đọc code ra. Fetch chỉ đọc ở phía
+      // nguồn, nên nới chỗ này không cho module quyền ghi gì thêm; đích đến vẫn
+      // bị siết đúng như cũ, ngay dưới đây.
+      if (a.startsWith('-') || a === 'origin' || a.startsWith('/')) continue
       const dst = a.split(':')[1]
       if (!dst || !(dst.startsWith('refs/review/') || dst.startsWith('refs/remotes/origin/'))) {
         throw new ForbiddenAction(`Chặn fetch vào "${dst ?? a}".`)

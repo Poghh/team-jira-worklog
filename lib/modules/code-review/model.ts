@@ -4,7 +4,20 @@
  * server uses.
  */
 
-export type ItemKind = 'pr' | 'doc'
+export type ItemKind = 'pr' | 'doc' | 'self'
+
+/**
+ * Hồ sơ này là code hay tài liệu.
+ *
+ * `kind === 'pr'` từng trả lời cả hai câu hỏi cùng lúc — "đây có phải code
+ * không" và "có PR trên GitHub không" — vì lúc ấy hai câu ấy trùng nhau. Self
+ * review là code mà không có PR, nên chúng tách ra, và mỗi chỗ phải nói rõ nó
+ * đang hỏi câu nào. Hỏi sai câu thì self review hoặc mất hẳn phần diff, hoặc
+ * mọc ra một nút gửi comment lên một PR không tồn tại.
+ */
+export function isCode(kind: ItemKind): boolean {
+  return kind !== 'doc'
+}
 
 export type RoundState =
   | 'queued'
@@ -101,11 +114,37 @@ export function guessTemplate(
 }
 
 /** A repository the reviewer keeps a dedicated clone of. */
+/**
+ * Một nhánh trong clone làm việc, kèm nó có ở origin hay chỉ có dưới máy.
+ *
+ * Ở đây chứ không ở `git.ts`: `git.ts` là `server-only`, mà form tự review
+ * chạy ở client và cần đúng hình này để vẽ dấu "chưa push".
+ */
+export interface WorkBranch {
+  name: string
+  /** False khi origin chưa hề có nhánh này — đúng thứ tự review sinh ra để soi. */
+  onRemote: boolean
+}
+
 export interface RepoPreset {
   id: string
   name: string
   /** Absolute path of the clone. The app fetches into it; nothing is checked out there. */
   localPath: string
+  /**
+   * Các clone bạn thật sự viết code trong đó — nguồn của tự review.
+   *
+   * Danh sách, không phải một: đo trên máy thật, hai clone cùng trỏ về
+   * `atthetalk/viptalk-ios-x` và hai clone nữa cùng trỏ về SDK — bốn clone,
+   * hai repo. Gom theo repo giữ được luật review riêng của repo, thứ mà một
+   * danh sách đường dẫn phẳng không mang theo được.
+   *
+   * Tách khỏi `localPath` vì hai bên làm hai việc khác nhau: `localPath` là
+   * clone review, sân sau của app, nơi nó fetch và dựng worktree thoải mái —
+   * và nó chỉ phục vụ review PR / nhánh đã push. Clone làm việc là nơi bạn
+   * đang gõ, app **chỉ đọc** từ đó.
+   */
+  workPaths: string[]
   /** `owner/name` on github.com — empty to review branches by hand only. */
   githubRepo: string
   /** Project-specific review checklist, appended to every prompt for this repo. */
@@ -236,6 +275,13 @@ export interface ItemView {
   headRef: string
   author: string
   url: string
+  /**
+   * Clone làm việc hồ sơ tự review này đọc ra — rỗng với PR và tài liệu.
+   *
+   * Lưu trên hồ sơ chứ không suy lại từ repo: một repo khai nhiều clone, và
+   * vòng review sau phải soi đúng cái clone vòng trước đã soi.
+   */
+  workPath: string
   note: string
   status: 'open' | 'archived'
   seenAt: number | null

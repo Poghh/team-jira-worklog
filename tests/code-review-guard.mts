@@ -78,6 +78,41 @@ no(() => assertGitArgs(['fetch', 'origin', 'feature:main']), 'fetch into a local
 no(() => assertGitArgs(['fetch', 'origin', '+refs/heads/x:refs/heads/x']), 'fetch into refs/heads')
 no(() => assertGitArgs(['worktree', 'move', 'a', 'b']), 'worktree move')
 
+/* ── tự review: hai khe vừa nới, và mọi thứ quanh chúng vẫn đóng ────────── */
+//
+// Nới một rào an toàn thì phải test đúng cái khe đã nới, không thì lần sau
+// không ai biết khe ấy rộng tới đâu.
+
+// `stash create` là dạng stash duy nhất không đổi gì của người dùng: không
+// nhánh, không index, không cây làm việc, không thêm mục vào `git stash list`.
+ok(() => assertGitArgs(['stash', 'create']), 'stash create')
+for (const sub of ['push', 'pop', 'apply', 'drop', 'clear', 'store', 'save', 'branch']) {
+  no(() => assertGitArgs(['stash', sub]), `git stash ${sub}`)
+}
+no(() => assertGitArgs(['stash']), 'stash trần, không nói rõ làm gì')
+
+// Nguồn fetch được phép là một đường dẫn tuyệt đối — clone làm việc của chính
+// người dùng. Fetch chỉ đọc ở phía nguồn.
+ok(
+  () => assertGitArgs(['fetch', '--no-tags', '/Volumes/Wind/Repo/ios-x', '+ctalk/feature/x:refs/review/self-1-head']),
+  'fetch từ clone làm việc',
+)
+ok(
+  () => assertGitArgs(['fetch', '--no-tags', '/Volumes/Wind/Repo/ios-x', '+abc123:refs/review/self-1-head']),
+  'fetch thẳng một sha từ clone làm việc',
+)
+// Nhưng đích đến vẫn siết đúng như cũ: nới nguồn không nới đích.
+no(
+  () => assertGitArgs(['fetch', '/Volumes/Wind/Repo/ios-x', '+refs/heads/x:refs/heads/x']),
+  'fetch từ clone làm việc vào refs/heads',
+)
+no(
+  () => assertGitArgs(['fetch', '/Volumes/Wind/Repo/ios-x', 'feature:main']),
+  'fetch từ clone làm việc vào một nhánh cục bộ',
+)
+// Và một nguồn không phải đường dẫn tuyệt đối vẫn phải mang refspec hợp lệ.
+no(() => assertGitArgs(['fetch', 'https://github.com/x/y', 'main']), 'fetch từ URL lạ, không refspec')
+
 // Claude on untrusted code.
 for (const c of ['git push', 'git commit', 'git reset', 'gh', 'curl', 'rm']) {
   n++
