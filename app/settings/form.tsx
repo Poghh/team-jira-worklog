@@ -20,6 +20,7 @@ const K = {
   jiraBoardId: 'jira_board_id',
   googleApiKey: 'google_api_key',
   githubToken: 'github_token',
+  githubLogins: 'github_logins',
   geminiModel: 'gemini_model',
   geminiFallbackModels: 'gemini_fallback_models',
   dailyQuotaHours: 'daily_quota_hours',
@@ -98,6 +99,16 @@ export function SettingsForm({ initial }: { initial: Record<string, string> }) {
             defaultValue={initial[K.githubToken]}
             type="password"
             hint="Scope repo. Seed lần đầu từ GITHUB_TOKEN trong .env.local. Dùng chung: Nhánh & ghi chú quét nhánh, Review code đọc PR và gửi comment."
+          />
+          {/* Cùng thẻ với token vì nó trả lời câu hỏi *về* token: ai là chủ.
+              Tách ra hai màn hình thì đổi token xong còn phải nhớ sang chỗ khác
+              sửa tên — mà app mới là thứ biết câu trả lời, không phải người
+              dùng, nên nó tự điền khi mở tab GitHub của module nhánh. */}
+          <Field
+            label="Login GitHub"
+            name={K.githubLogins}
+            defaultValue={initial[K.githubLogins]}
+            hint="App tự điền từ token. Thêm tài khoản thứ hai thì ngăn bằng dấu phẩy — nhánh có commit cuối mang tên bất kỳ login nào ở đây đều được coi là của bạn."
           />
         </Card>
 

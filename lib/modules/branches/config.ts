@@ -303,6 +303,22 @@ function orderStartColumns(stages: StageConfig[]): StageConfig[] {
   return [...wanted, ...rest];
 }
 
+/** Danh sách đã bỏ trùng và bỏ rỗng, dưới dạng mảng JSON để lưu. */
+const clean = (xs: string[]) =>
+  JSON.stringify([...new Set(xs.map((s) => s.trim()).filter(Boolean))]);
+
+/**
+ * Ghi riêng ô Login, không kéo theo cả cấu hình.
+ *
+ * `setGitHubConfig` nhận nguyên khối vì nó phục vụ một cái form lưu tất cả
+ * cùng lúc. Chỗ gọi duy nhất ở đây chỉ biết mỗi login đọc từ token, và bắt nó
+ * dựng một cấu hình đầy đủ chỉ để ghi một trường là mời gọi ghi đè nhầm chín
+ * trường còn lại bằng giá trị mặc định.
+ */
+export function setGitHubLogins(logins: string[]) {
+  setRaw(SETTING_KEYS.githubLogins, clean(logins));
+}
+
 export function setStages(list: StageConfig[]) {
   const clean = list
     .map((s) => ({
@@ -371,8 +387,6 @@ function getList(key: string): string[] {
 }
 
 /**
- * The token, owned by the module that is the only thing using it.
- *
  * Ô token chung trong Settings, không phải khoá riêng của module.
  *
  * Từng đi đường ngược lại: token dọn khỏi Settings vào `mod:branches:gh_token`,
@@ -405,6 +419,36 @@ function readToken(): string {
   // app đang đọc ô khác.
   if (own) dropRaw(K.ghToken);
   return value;
+}
+
+/**
+ * Login GitHub — ô chung trong Settings, đi cùng token.
+ *
+ * Ở cùng chỗ với token vì nó trả lời câu hỏi *về* token: ai là chủ. Tách hai
+ * thứ ra hai màn hình thì người dùng phải nhớ rằng đổi token xong còn phải
+ * sang chỗ khác sửa tên — mà chính app mới là thứ biết câu trả lời, không phải
+ * họ.
+ *
+ * Chuyển giá trị đang có sang, rồi xoá bản cũ: cùng lý do như token, một bản
+ * sao thừa là một chỗ nữa để lệch.
+ */
+function readLogins(): string[] {
+  // Ô này gõ tay trong Settings, nên nhận cả chuỗi ngăn bởi dấu phẩy hay xuống
+  // dòng — `getList` chỉ đọc được mảng JSON, vốn là thứ tab của module ghi ra.
+  const raw = (getRaw(SETTING_KEYS.githubLogins) ?? "").trim();
+  const shared = raw.startsWith("[")
+    ? getList(SETTING_KEYS.githubLogins)
+    : raw
+        .split(/[,\n]/)
+        .map((x) => x.trim())
+        .filter(Boolean);
+  if (shared.length) return shared;
+
+  const own = getList(K.ghLogins);
+  if (!own.length) return [];
+  setRaw(SETTING_KEYS.githubLogins, own.join(", "));
+  dropRaw(K.ghLogins);
+  return own;
 }
 
 /**
@@ -446,7 +490,7 @@ export function getGitHubConfig(): GitHubConfig {
     stages,
     repos: getList(K.ghRepos),
     identity: {
-      logins: getList(K.ghLogins),
+      logins: readLogins(),
     },
     projectKeys: fallback ? [fallback] : [],
     // Absent means never configured, which for a signal this useful should mean
@@ -553,7 +597,12 @@ export function setGitHubConfig(input: {
    */
   token?: string;
   repos: string[];
-  identity: Identity;
+  /**
+   * Chỉ có khi người gọi thật sự muốn đổi. Tab GitHub của module không còn ô
+   * này — nó nằm ở Settings — nên nó gửi `undefined`, và một cú Lưu ở đó không
+   * được phép xoá giá trị người dùng gõ bên kia.
+   */
+  identity?: Identity;
   useEvents: boolean;
   localPaths: string[];
   repoLabels: Record<string, string>;
@@ -564,15 +613,14 @@ export function setGitHubConfig(input: {
   buildEnabled: boolean;
   buildNotify: boolean;
 }) {
-  const clean = (xs: string[]) =>
-    JSON.stringify([...new Set(xs.map((s) => s.trim()).filter(Boolean))]);
-
   // Vào ô chung, cùng ô mà Settings và module Review code đọc.
   if (input.token !== undefined)
     setRaw(SETTING_KEYS.githubToken, input.token.trim());
 
   setRaw(K.ghRepos, clean(input.repos));
-  setRaw(K.ghLogins, clean(input.identity.logins));
+  // Vào ô chung, cùng ô Settings hiển thị.
+  if (input.identity)
+    setRaw(SETTING_KEYS.githubLogins, clean(input.identity.logins));
   // Prefixes are the one list where case and the trailing slash matter, but a
   // stray space would silently match nothing.
   setRaw(K.ghUseEvents, input.useEvents ? "true" : "false");
