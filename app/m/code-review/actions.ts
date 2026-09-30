@@ -4,8 +4,19 @@ import { revalidatePath } from 'next/cache'
 
 import { type ChatMessage, applyChanges, cancelChat, listChat, sendChat } from '@/lib/modules/code-review/chat'
 import { type ClaudeCheck, checkClaude } from '@/lib/modules/code-review/claude'
+import type { WorkBranch } from '@/lib/modules/code-review/model'
 import { getRepo, getTemplate, rememberPerson, setRepos, setRunnerConfig, setTemplates } from '@/lib/modules/code-review/config'
-import { isRepo, listRemoteBranches, fetchAll, gitSays, withRepoLock } from '@/lib/modules/code-review/git'
+import {
+  countDirty,
+  currentBranch,
+  fetchAll,
+  gitSays,
+  isRepo,
+  listRemoteBranches,
+  listWorkBranches,
+  snapshotUncommitted,
+  withRepoLock,
+} from '@/lib/modules/code-review/git'
 import {
   type Discussion,
   type GithubAccess,
@@ -209,7 +220,101 @@ export async function queueBranchesAction(input: {
   return { ok: true, message: 'Đã xếp hàng.', itemId }
 }
 
+/** Nhánh trong clone làm việc, kèm có việc chưa commit hay không. */
+export async function listWorkAction(
+  repoId: string,
+  /** Clone nào — một repo có thể khai nhiều. Rỗng thì lấy cái đầu. */
+  workPath = '',
+): Promise<Result & { branches: WorkBranch[]; dirty: number; head: string }> {
+  const none = { branches: [] as WorkBranch[], dirty: 0, head: '' }
+  if (!enabled()) return { ...OFF, ...none }
+  const repo = getRepo(repoId)
+  if (!repo) return { ok: false, message: 'Không thấy repo.', ...none }
+  // Chỉ nhận đường dẫn repo này đã khai: tham số tới từ trình duyệt, và một
+  // đường dẫn tuỳ ý sẽ biến ô chọn clone thành cách đọc bất kỳ repo nào trên máy.
+  const dir = workPath && repo.workPaths.includes(workPath) ? workPath : repo.workPaths[0]
+  if (!dir)
+    return { ok: false, message: 'Repo này chưa khai clone làm việc — vào Cấu hình điền đường dẫn.', ...none }
+  try {
+    return {
+      ok: true,
+      message: '',
+      branches: await listWorkBranches(dir),
+      dirty: await countDirty(dir),
+      head: await currentBranch(dir),
+    }
+  } catch (err) {
+    return { ok: false, message: gitSays(err), ...none }
+  }
+}
+
 /**
+ * Xếp hàng một lượt tự review.
+ *
+ * `headRef` chốt **ở đây**, không phải lúc chạy: giữa lúc bấm và lúc tới lượt
+ * có hàng đợi, và bạn có thể đã gõ tiếp. Review phải soi đúng thứ bạn nhìn
+ * thấy lúc bấm, nếu không thì finding trỏ vào những dòng đã đổi.
+ *
+ * Với việc chưa commit, cái chốt được là một commit lơ lửng do `git stash
+ * create` dựng — xem {@link snapshotUncommitted}. Nó không đụng cây làm việc,
+ * không đụng stash list, và `git gc` tự dọn.
+ */
+export async function queueSelfAction(input: {
+  repoId: string
+  /** Clone làm việc đã chọn. Phải là một trong những cái repo đã khai. */
+  workPath: string
+  baseRef: string
+  /** Tên nhánh, hoặc '' khi soi việc chưa commit. */
+  headRef: string
+  title: string
+  note: string
+  docs?: DocFile[]
+}): Promise<Result & { itemId?: number }> {
+  const blocked = await ready()
+  if (blocked) return blocked
+  const docs = await validDocs(input.docs ?? [])
+  if (!docs) return { ok: false, message: 'Tài liệu đính kèm không hợp lệ — tải lên lại.' }
+  const repo = getRepo(input.repoId)
+  if (!repo) return { ok: false, message: 'Không thấy repo.' }
+  const dir = repo.workPaths.includes(input.workPath) ? input.workPath : repo.workPaths[0]
+  if (!dir) return { ok: false, message: 'Repo này chưa khai clone làm việc.' }
+  if (!input.baseRef.trim()) return { ok: false, message: 'Chọn nhánh nền để so.' }
+
+  let head = input.headRef.trim()
+  let label = head
+  if (!head) {
+    const sha = await snapshotUncommitted(dir).catch(() => '')
+    if (!sha)
+      return {
+        ok: false,
+        message: 'Không có gì chưa commit để soi — cây làm việc đang sạch.',
+      }
+    head = sha
+    const on = await currentBranch(dir).catch(() => '')
+    label = `việc chưa commit${on ? ` trên ${on}` : ''}`
+  }
+
+  const itemId = createItem({
+    kind: 'self',
+    repoId: input.repoId,
+    workPath: dir,
+    title: input.title.trim() || `${label} → ${input.baseRef.trim()}`,
+    prNumber: null,
+    baseRef: input.baseRef.trim(),
+    headRef: head,
+    author: '',
+    url: '',
+    note: input.note.trim(),
+  })
+  queueRound(itemId, docs)
+  ensureTicker()
+  void tick()
+  revalidatePath('/m/code-review')
+  return { ok: true, message: 'Đã xếp hàng.', itemId }
+}
+
+/**
+ * The documents a PR's next round inherits: whatever the last round had./**
  * The documents a PR's next round inherits: whatever the last round had.
  * Attached once, they follow the PR until someone uploads a newer version.
  */
@@ -543,6 +648,23 @@ export async function saveReposAction(repos: RepoPreset[]): Promise<Result> {
     if (!name) return { ok: false, message: 'Repo nào cũng cần tên.' }
     if (!localPath.startsWith('/')) return { ok: false, message: `${name}: đường dẫn clone phải là đường dẫn tuyệt đối.` }
     if (!(await isRepo(localPath))) return { ok: false, message: `${name}: ${localPath} không phải một git repo.` }
+    // Clone làm việc là tuỳ chọn — không khai thì repo này chỉ review PR và
+    // nhánh đã push. Khai rồi thì kiểm ngay, vì cái giá của một đường dẫn sai
+    // là một lần review chết giữa chừng chứ không phải một dòng đỏ ở đây.
+    const workPaths: string[] = []
+    for (const raw of r.workPaths) {
+      const w = raw.trim().replace(/\/+$/, '')
+      if (!w) continue
+      if (!w.startsWith('/'))
+        return { ok: false, message: `${name}: đường dẫn clone làm việc phải là đường dẫn tuyệt đối — "${w}".` }
+      if (!(await isRepo(w))) return { ok: false, message: `${name}: ${w} không phải một git repo.` }
+      if (w === localPath)
+        return {
+          ok: false,
+          message: `${name}: clone làm việc phải khác clone review — app dựng worktree trong clone review, và làm thế ngay trong repo bạn đang gõ là chuyện khác hẳn.`,
+        }
+      if (!workPaths.includes(w)) workPaths.push(w)
+    }
     const githubRepo = r.githubRepo
       .trim()
       .replace(/^https?:\/\/github\.com\//, '')
@@ -550,7 +672,7 @@ export async function saveReposAction(repos: RepoPreset[]): Promise<Result> {
       .replace(/\/+$/, '')
     if (githubRepo && !/^[\w.-]+\/[\w.-]+$/.test(githubRepo))
       return { ok: false, message: `${name}: GitHub repo phải có dạng owner/name.` }
-    clean.push({ id: r.id || crypto.randomUUID(), name, localPath, githubRepo, rules: r.rules })
+    clean.push({ id: r.id || crypto.randomUUID(), name, localPath, workPaths, githubRepo, rules: r.rules })
   }
   setRepos(clean)
   revalidatePath('/m/code-review')

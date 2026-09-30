@@ -461,6 +461,14 @@ export const reviewItems = sqliteTable(
     headRef: text("head_ref").notNull().default(""),
     author: text("author").notNull().default(""),
     url: text("url").notNull().default(""),
+    /**
+     * Clone làm việc mà hồ sơ tự review này đọc code ra.
+     *
+     * Rỗng với hồ sơ PR / tài liệu. Một repo có thể khai nhiều clone, nên
+     * không suy lại được từ `repo_id`: vòng review sau phải soi đúng cái clone
+     * vòng trước đã soi.
+     */
+    workPath: text("work_path").notNull().default(""),
     /** Free-text note from the reviewer, passed to Claude as extra context. */
     note: text("note").notNull().default(""),
     /** 'open' | 'archived' */

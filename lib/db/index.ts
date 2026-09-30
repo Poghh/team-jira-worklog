@@ -380,6 +380,9 @@ function open() {
   );
   ensureColumn(sqlite, "release_tasks", "ref_id", "ref_id INTEGER");
   ensureColumn(sqlite, "task_notes", "prs", "prs TEXT NOT NULL DEFAULT ''");
+  // Tự review đọc code từ một clone làm việc, và hồ sơ phải nhớ là clone nào:
+  // một repo có nhiều clone, và vòng sau phải soi lại đúng cái vòng trước soi.
+  ensureColumn(sqlite, "review_items", "work_path", "work_path TEXT NOT NULL DEFAULT ''");
   ensureColumn(sqlite, "task_notes", "builds", "builds TEXT NOT NULL DEFAULT ''");
   ensureColumn(sqlite, "task_notes", "sides", "sides TEXT NOT NULL DEFAULT ''");
   ensureColumn(sqlite, "drafts", "start_date", "start_date TEXT");

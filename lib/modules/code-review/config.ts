@@ -64,6 +64,13 @@ function readRepos(raw: string | undefined): RepoPreset[] {
         id: String(r.id ?? ''),
         name: String(r.name ?? ''),
         localPath: String(r.localPath ?? ''),
+        // Các clone bạn viết code trong đó. Tự review đọc từ đây, và chỉ đọc.
+        // Nhận cả dạng một chuỗi: bản đầu của trường này chỉ giữ một đường dẫn.
+        workPaths: Array.isArray(r.workPaths)
+          ? r.workPaths.map((x: unknown) => String(x).trim()).filter(Boolean)
+          : String(r.workPath ?? '').trim()
+            ? [String(r.workPath).trim()]
+            : [],
         githubRepo: String(r.githubRepo ?? ''),
         rules: String(r.rules ?? ''),
       }))

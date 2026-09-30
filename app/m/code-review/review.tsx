@@ -1,5 +1,6 @@
 'use client'
 
+
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import { useCallback, useEffect, useMemo, useState, useTransition } from 'react'
@@ -17,6 +18,7 @@ import {
   linkLabel,
   type RepoPreset,
   shortSha,
+  type WorkBranch,
 } from '@/lib/modules/code-review/model'
 
 import {
@@ -28,8 +30,10 @@ import {
   dashboardAction,
   deleteItemAction,
   listBranchesAction,
+  listWorkAction,
   listPullsAction,
   queueBranchesAction,
+  queueSelfAction,
   queuePullsAction,
   reReviewAction,
   saveReposAction,
@@ -38,7 +42,7 @@ import {
 } from './actions'
 import { BTN, BTN_PRI, CARD, CTITLE, ClaudeBanner, INPUT, RoundPill, TabBtn, Ago } from './ui'
 
-type Tab = 'items' | 'pr' | 'doc' | 'config'
+type Tab = 'items' | 'pr' | 'self' | 'doc' | 'config'
 
 export interface RunnerView {
   concurrency: number
@@ -77,6 +81,9 @@ export function CodeReview({
           <TabBtn on={tab === 'pr'} onClick={() => setTab('pr')}>
             + Review PR
           </TabBtn>
+          <TabBtn on={tab === 'self'} onClick={() => setTab('self')}>
+            + Tự review
+          </TabBtn>
           <TabBtn on={tab === 'doc'} onClick={() => setTab('doc')}>
             + Review tài liệu
           </TabBtn>
@@ -90,6 +97,7 @@ export function CodeReview({
 
       {tab === 'items' && <Dashboard initial={initialItems} repos={repos} canRun={claude.ok} onNew={() => setTab('pr')} />}
       {tab === 'pr' && <NewPr repos={repos} canRun={claude.ok} onDone={() => setTab('items')} onConfig={() => setTab('config')} />}
+      {tab === 'self' && <NewSelf repos={repos} canRun={claude.ok} onDone={() => setTab('items')} />}
       {tab === 'doc' && <NewDoc repos={repos} templates={templates} canRun={claude.ok} />}
       {tab === 'config' && (
         <>
@@ -202,7 +210,7 @@ function Dashboard({
                   <tr key={i.id} className="border-b border-line last:border-0 hover:bg-surface-2/50">
                     <td className="py-2 pr-2">
                       <Link href={`/m/code-review/${i.id}`} className="font-medium hover:text-accent-ink">
-                        {i.kind === 'doc' ? '📄 ' : i.prNumber ? `#${i.prNumber} ` : '⎇ '}
+                        {i.kind === 'doc' ? '📄 ' : i.kind === 'self' ? '👁 ' : i.prNumber ? `#${i.prNumber} ` : '⎇ '}
                         {i.title}
                       </Link>
                       <div className="mt-0.5 font-mono text-[11px] text-ink-3">
@@ -461,6 +469,186 @@ function NewPr({
       </div>
 
       {repo && <BranchForm repo={repo} repos={repos} canRun={canRun} onDone={onDone} />}
+    </div>
+  )
+}
+
+/**
+ * Tự review: soi code của chính mình, đọc từ clone làm việc.
+ *
+ * Tách khỏi tab PR vì ba thứ khác hẳn. Nguồn khác — clone bạn đang gõ, không
+ * phải clone review. Danh sách nhánh khác — có cả nhánh **chưa push**, đúng
+ * thứ đáng soi nhất và là thứ `origin` không có. Và không có PR nào để gửi
+ * finding lên, nên mọi nút liên quan tới GitHub đều vắng mặt.
+ *
+ * Clone làm việc chỉ bị đọc: app fetch từ nó sang clone review, rồi worktree
+ * và diff diễn ra bên kia.
+ */
+/** Chọn repo rồi tới form — cùng khuôn với tab PR. */
+function NewSelf({ repos, canRun, onDone }: { repos: RepoPreset[]; canRun: boolean; onDone: () => void }) {
+  const [repoId, setRepoId] = useState(repos[0]?.id ?? '')
+  const repo = repos.find((r) => r.id === repoId)
+  if (!repos.length)
+    return <div className={CARD}>Chưa có repo nào — vào <b>Cấu hình</b> thêm một cái đã.</div>
+  return (
+    <div className="flex flex-col gap-3">
+      {repos.length > 1 && (
+        <div className={CARD}>
+          <label className="text-[12px] text-ink-2">
+            Repo
+            <select value={repoId} onChange={(e) => setRepoId(e.target.value)} className={INPUT}>
+              {repos.map((r) => (
+                <option key={r.id} value={r.id}>
+                  {r.name}
+                </option>
+              ))}
+            </select>
+          </label>
+        </div>
+      )}
+      {repo && <SelfForm repo={repo} canRun={canRun} onDone={onDone} />}
+    </div>
+  )
+}
+
+function SelfForm({ repo, canRun, onDone }: { repo: RepoPreset; canRun: boolean; onDone: () => void }) {
+  const [branches, setBranches] = useState<WorkBranch[]>([])
+  const [work, setWork] = useState(repo.workPaths[0] ?? '')
+  const [dirty, setDirty] = useState(0)
+  const [head, setHead] = useState('')
+  const [base, setBase] = useState('')
+  const [title, setTitle] = useState('')
+  const [note, setNote] = useState('')
+  const [msg, setMsg] = useState('')
+  const [busy, start] = useTransition()
+  const attach = useAttachments()
+
+  useEffect(() => {
+    start(async () => {
+      const r = await listWorkAction(repo.id, work)
+      setBranches(r.branches)
+      setDirty(r.dirty)
+      setMsg(r.ok ? '' : r.message)
+      // Nhánh đang đứng là mặc định hợp lý nhất: gần như luôn là thứ bạn vừa gõ.
+      if (r.head) setHead(r.head)
+    })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [repo.id, work])
+
+  const uncommitted = head === ''
+  const localOnly = branches.filter((b) => !b.onRemote).length
+
+  if (!repo.workPaths.length)
+    return (
+      <div className={CARD}>
+        <div className={CTITLE}>Tự review</div>
+        <p className="mt-1.5 text-[12.5px] text-ink-2">
+          Repo <b>{repo.name}</b> chưa khai clone làm việc nào. Vào <b>Cấu hình</b> điền đường dẫn
+          tới (các) clone bạn thật sự viết code trong đó — app chỉ đọc từ chúng.
+        </p>
+      </div>
+    )
+
+  return (
+    <div className={CARD}>
+      <div className={CTITLE}>Tự review — {repo.name}</div>
+      <p className="mt-1.5 text-[12.5px] text-ink-3">
+        Thấy được cả nhánh chưa push{localOnly ? ` (đang có ${localOnly})` : ''} và việc chưa
+        commit. App chỉ đọc clone này, không ghi gì vào nó.
+      </p>
+
+      {/* Một repo, nhiều clone — đo trên máy thật: hai clone cùng trỏ về
+          viptalk-ios-x, hai cái nữa cùng trỏ về SDK. Chỉ có một clone thì
+          không hỏi, chỉ nói ra nó là cái nào. */}
+      {repo.workPaths.length > 1 ? (
+        <label className="mt-2 block text-[12px] text-ink-2">
+          Clone làm việc
+          <select value={work} onChange={(e) => setWork(e.target.value)} className={INPUT + ' font-mono'}>
+            {repo.workPaths.map((w) => (
+              <option key={w} value={w}>
+                {w}
+              </option>
+            ))}
+          </select>
+        </label>
+      ) : (
+        <p className="mt-1 font-mono text-[11.5px] text-ink-3">{work}</p>
+      )}
+
+      <div className="mt-2 grid gap-2 sm:grid-cols-2">
+        <label className="text-[12px] text-ink-2">
+          Soi cái gì
+          <select value={head} onChange={(e) => setHead(e.target.value)} className={INPUT}>
+            <option value="">
+              {dirty ? `Việc chưa commit — ${dirty} file` : 'Việc chưa commit — (không có gì)'}
+            </option>
+            {branches.map((b) => (
+              <option key={b.name} value={b.name}>
+                {b.onRemote ? b.name : `${b.name}  ⚑ chưa push`}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="text-[12px] text-ink-2">
+          So với
+          <input
+            list={`self-br-${repo.id}`}
+            value={base}
+            onChange={(e) => setBase(e.target.value)}
+            className={INPUT}
+            placeholder={uncommitted ? 'HEAD — chỉ phần chưa commit' : 'ctalk/develop'}
+          />
+        </label>
+      </div>
+      <datalist id={`self-br-${repo.id}`}>
+        <option value="HEAD" />
+        {branches.map((b) => (
+          <option key={b.name} value={b.name} />
+        ))}
+      </datalist>
+      {uncommitted && (
+        <p className="mt-1 text-[11.5px] text-ink-3">
+          Để trống ô bên phải thì so với <span className="font-mono">HEAD</span> — tức chỉ đúng phần
+          bạn chưa commit. Điền một nhánh nền thì soi cả nhánh lẫn phần chưa commit.
+          {' '}File chưa từng <span className="font-mono">git add</span> không vào được ảnh chụp.
+        </p>
+      )}
+
+      <input value={title} onChange={(e) => setTitle(e.target.value)} className={INPUT + ' mt-2'} placeholder="Tên hồ sơ (không bắt buộc)" />
+      <textarea value={note} onChange={(e) => setNote(e.target.value)} rows={2} className={INPUT + ' mt-2'} placeholder="Ghi chú cho Claude (không bắt buộc)" />
+      {attach.section('Mô tả chức năng, TDD… Claude sẽ kiểm code có làm đúng và đủ theo tài liệu không.')}
+
+      <div className="mt-2 flex items-center gap-2">
+        <button
+          type="button"
+          className={BTN_PRI}
+          disabled={busy || !canRun || (uncommitted && dirty === 0)}
+          onClick={() =>
+            start(async () => {
+              const docs = await attach.upload()
+              if (!docs) return
+              const r = await queueSelfAction({
+                repoId: repo.id,
+                workPath: work,
+                baseRef: base.trim() || (uncommitted ? 'HEAD' : ''),
+                headRef: head,
+                title,
+                note,
+                docs,
+              })
+              setMsg(r.message)
+              if (r.ok) {
+                attach.clear()
+                onDone()
+              }
+            })
+          }
+        >
+          {busy ? 'Đang xếp hàng…' : 'Tự review'}
+        </button>
+        {!canRun && <span className="text-[12px] text-crit">Claude CLI chưa sẵn sàng.</span>}
+        {msg && <span className="text-[12px] text-ink-2">{msg}</span>}
+      </div>
     </div>
   )
 }
@@ -837,7 +1025,7 @@ function NewDoc({ repos, templates, canRun }: { repos: RepoPreset[]; templates: 
 
 /* ── config ─────────────────────────────────────────────────────────────── */
 
-const blankRepo = (): RepoPreset => ({ id: '', name: '', localPath: '', githubRepo: '', rules: '' })
+const blankRepo = (): RepoPreset => ({ id: '', name: '', localPath: '', workPaths: [], githubRepo: '', rules: '' })
 
 function Config({ repos, runner, onClaude }: { repos: RepoPreset[]; runner: RunnerView; onClaude: (c: ClaudeCheck) => void }) {
   const router = useRouter()
@@ -862,6 +1050,25 @@ function Config({ repos, runner, onClaude }: { repos: RepoPreset[]; runner: Runn
                 <input value={repo.localPath} onChange={(e) => patch(i, { localPath: e.target.value })} className={INPUT + ' font-mono'} placeholder="/Users/…/review/ios-app" />
                 <input value={repo.githubRepo} onChange={(e) => patch(i, { githubRepo: e.target.value })} className={INPUT + ' font-mono'} placeholder="owner/repo trên github.com" />
               </div>
+              {/* Clone làm việc — nguồn của tự review, và chỉ bị đọc. Hàng
+                  riêng chứ không nhét vào lưới ba cột trên: nó là đường dẫn
+                  thứ hai tới *cùng một repo*, và để cạnh nhau thì hai ô dài
+                  giống hệt nhau chỉ khác một chữ là chỗ dễ điền nhầm nhất. */}
+              <label className="mt-2 block text-[12px] text-ink-2">
+                Clone làm việc{' '}
+                <span className="text-ink-3">
+                  · mỗi dòng một đường dẫn, không bắt buộc, chỉ dùng cho Tự review
+                </span>
+                <textarea
+                  value={repo.workPaths.join('\n')}
+                  onChange={(e) =>
+                    patch(i, { workPaths: e.target.value.split('\n').map((x) => x.trim()) })
+                  }
+                  rows={2}
+                  className={INPUT + ' font-mono'}
+                  placeholder={'/Users/…/Repo/ios-app\n/Users/…/Repo/ios-app-2 — nhiều clone cùng một repo'}
+                />
+              </label>
               <textarea
                 value={repo.rules}
                 onChange={(e) => patch(i, { rules: e.target.value })}

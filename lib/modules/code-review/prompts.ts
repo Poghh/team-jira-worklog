@@ -2,7 +2,15 @@ import 'server-only'
 
 import type { PullComment } from './github'
 import type { TemplateUse } from './config'
-import { type Addressee, type DocFile, type FindingView, type RoundLink, addressOf } from './model'
+import {
+  type Addressee,
+  type DocFile,
+  type FindingView,
+  type ItemKind,
+  type RoundLink,
+  addressOf,
+  isCode,
+} from './model'
 
 /**
  * What Claude is asked, and the shape it must answer in.
@@ -403,7 +411,7 @@ export const CHAT_SCHEMA = {
 } as const
 
 export function chatPrompt(input: {
-  kind: 'pr' | 'doc'
+  kind: ItemKind
   message: string
   summary: string
   findings: FindingView[]
@@ -421,7 +429,7 @@ export function chatPrompt(input: {
     : '(không có finding nào)'
   const context = input.fresh
     ? `Bạn là người đã review ${input.kind === 'doc' ? `tài liệu "${input.fresh.title}"` : `"${input.fresh.title}"`}. ${
-        input.kind === 'pr'
+        isCode(input.kind)
           ? `Diff: \`git diff ${input.fresh.baseSha} ${input.fresh.headSha}\`; thư mục hiện tại là code ở commit ${input.fresh.headSha}.`
           : ''
       }${input.fresh.docs.length ? ` Tài liệu: ${input.fresh.docs.map((d) => d.path).join(', ')}.` : ''} Phiên review gốc không còn, nên hãy đọc lại những gì cần để trả lời.\n\n`
@@ -442,7 +450,7 @@ ${input.message.trim()}
 
 Trả lời trong \`reply\`: tiếng Việt, đi thẳng vào câu hỏi; mở lại code / tài liệu để kiểm chứng khi cần, đừng trả lời theo trí nhớ nếu không chắc. Nếu người review yêu cầu (hoặc bạn thấy rõ là cần) sửa bản review, đề xuất trong \`changes\`:
 - \`update\`: sửa title / comment / severity của finding theo id, hoặc \`dismiss: true\` nếu nó sai; kèm \`reason\`.
-- \`add\`: finding mới (cùng dạng như lúc review${input.kind === 'pr' ? '; điều không gắn với dòng code nào là comment rời — bỏ trống file / line' : ''}).
+- \`add\`: finding mới (cùng dạng như lúc review${isCode(input.kind) ? '; điều không gắn với dòng code nào là comment rời — bỏ trống file / line' : ''}).
 Comment đề xuất giữ đúng giọng văn đã quy định (tiếng Việt, paste thẳng lên GitHub được). Không có gì cần đổi thì bỏ \`changes\`. Người review sẽ tự bấm áp dụng.
 ${addressBlock(input.addressee)}
 ${UNTRUSTED}`
