@@ -901,5 +901,35 @@ eq(baseFreshness(roundTrip, NOW).upToDate, true, 'và đọc ra đúng kết lu�
   eq(inboundPrs([selfie], 'o/sdk', 'b').map((x) => x.id), [], 'không tự trỏ vào mình')
 }
 
+/* ── một Epic nhiều FR: mỗi nhánh một card ──────────────────────────────── */
+//
+// Có thật trên bảng: VT-2583 là một task cha 13 issue con, và các nhánh của nó
+// đều mang mã **Epic** — `VT-2583_FR-4_change_password…` và
+// `VT-2583_FR5_delete_system_notice`. Gom theo mã thì hai FR tranh nhau một
+// chỗ, "tip mới nhất thắng", và FR thua biến mất khỏi bảng không một dòng nào.
+{
+  const of = (name: string) => extractIssueKeys(name, ['VT'])
+  const FR4 = 'ctalk/feature/VT-2583_FR-4_change_password_sso_account'
+  const FR5 = 'ctalk/feature/VT-2583_FR5_delete_system_notice'
+
+  // Cả hai đánh vần ra cùng một mã — đây là gốc của chuyện.
+  eq(of(FR4), ['VT-2583'], 'nhánh FR-4 đánh vần ra mã Epic')
+  eq(of(FR5), ['VT-2583'], 'nhánh FR5 cũng vậy')
+
+  // Đếm tên nhánh theo mã — luật quyết định có tách hay không.
+  const namesPerKey = (names: string[]) => {
+    const m = new Map<string, Set<string>>()
+    for (const n of names)
+      for (const k of of(n)) m.set(k, (m.get(k) ?? new Set<string>()).add(n))
+    return m
+  }
+  const contested = (names: string[], k: string) => (namesPerKey(names).get(k)?.size ?? 0) > 1
+
+  eq(contested([FR4, FR5], 'VT-2583'), true, 'hai tên nhánh cùng mã -> bị tranh, phải tách')
+  eq(contested([FR4], 'VT-2583'), false, 'một nhánh một mã -> giữ nguyên, card mang mã')
+  // Cùng một tên ở hai repo không phải "tranh": đó là hai nửa của một card.
+  eq(contested([FR4, FR4], 'VT-2583'), false, 'cùng tên ở hai repo -> vẫn một card hai nửa')
+}
+
 console.log(bad ? `\n${bad}/${n} FAILED` : `\nall ${n} ok`)
 process.exit(bad ? 1 : 0)
