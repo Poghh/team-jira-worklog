@@ -97,6 +97,14 @@ export interface ScanResult {
    */
   envCards: GoneCard[];
   /**
+   * Mã Jira bị nhiều nhánh cùng đánh vần ra — card tách theo tên nhánh.
+   *
+   * Nêu ra vì đúng chuyện này từng làm mất một nhánh **không một lời nào**:
+   * FR thua cuộc "tip mới nhất" biến khỏi kế hoạch, không hàng xung đột, không
+   * dòng báo cáo. Người dùng mất gần một ngày mới truy ra.
+   */
+  splitKeys: string[];
+  /**
    * Nhánh bị bỏ vì chính cấu hình cột gọi nó là môi trường.
    *
    * Nêu ra chứ không lặng lẽ bỏ: một nhánh biến mất khỏi kết quả quét mà không
@@ -425,6 +433,33 @@ export async function scanGitHub(): Promise<ScanResult> {
     return out;
   };
 
+  /**
+   * Mã nào đang bị **nhiều tên nhánh khác nhau** cùng đánh vần ra.
+   *
+   * Một Epic nhiều FR là chuyện thường ở đây, và các nhánh của nó đều mang mã
+   * Epic: `VT-2583_FR-4_change_password…` và `VT-2583_FR5_delete_system_notice`
+   * cùng cho ra `VT-2583`. Gom theo mã thì hai FR tranh nhau một chỗ, "tip mới
+   * nhất thắng", và FR thua **biến mất khỏi bảng mà không để lại dấu vết nào**
+   * — không hàng xung đột, không dòng nào trong báo cáo quét.
+   *
+   * Khi một mã bị tranh như vậy, định danh card chuyển sang **tên nhánh**. Đếm
+   * theo tên chứ không theo `repo#tên`: cùng một tên nhánh tồn tại ở cả hai
+   * repo — đo trên bảng thật, cả `…FR-4…` lẫn `…FR5…` đều có ở ios và sdk — nên
+   * gom theo tên cho ra đúng hai card, mỗi card hai nửa, thay vì bốn card lẻ.
+   */
+  const namesPerKey = new Map<string, Set<string>>();
+  for (const b of mine)
+    for (const k of extractIssueKeys(b.name, cfg.projectKeys)) {
+      const set = namesPerKey.get(k) ?? new Set<string>();
+      set.add(b.name);
+      namesPerKey.set(k, set);
+    }
+  /** Mã bị tranh thì card mang tên nhánh; mã chỉ một nhánh thì vẫn mang mã. */
+  const contested = (k: string) => (namesPerKey.get(k)?.size ?? 0) > 1;
+  const sharedKey = (name: string) => `⑂${name}`;
+  /** Nhánh bị dời sang khoá-theo-tên, để báo cáo nói ra chứ không im lặng. */
+  const splitKeys: string[] = [];
+
   for (const b of mine) {
     const all = extractIssueKeys(b.name, cfg.projectKeys);
     // Still counted and still listed — "no ticket in the name" is worth
@@ -433,7 +468,14 @@ export async function scanGitHub(): Promise<ScanResult> {
       unmatched++;
       if (unmatchedSamples.length < 8) unmatchedSamples.push(b.name);
     }
-    const key = all[0] ?? branchKey(b.repo, b.name);
+    const primary = all[0];
+    if (primary && contested(primary) && !splitKeys.includes(primary))
+      splitKeys.push(primary);
+    const key = primary
+      ? contested(primary)
+        ? sharedKey(b.name)
+        : primary
+      : branchKey(b.repo, b.name);
     const card = byKey.get(key);
     if (
       card?.githubPinned &&
@@ -664,7 +706,12 @@ export async function scanGitHub(): Promise<ScanResult> {
     // The grouping key and the stored ticket are the same string for a branch
     // that names one, and deliberately different for a branch that does not.
     const issueKey = isBranchKey(groupKey) ? "" : groupKey;
-    const cardKeys = isBranchKey(groupKey) ? [] : (keysOf.get(groupKey) ?? [groupKey]);
+    // Khoá theo nhánh thì `issue_key` để rỗng — DB có unique index trên cột đó,
+    // nên hai card không thể cùng một mã chính. Nhưng `issueKeys` thì giữ, để
+    // card vẫn link về ticket: một FR của Epic vẫn thuộc Epic đó.
+    const cardKeys = isBranchKey(groupKey)
+      ? (keysOf.get(groupKey) ?? [])
+      : (keysOf.get(groupKey) ?? [groupKey]);
     const card = byKey.get(groupKey) ?? null;
 
     /**
@@ -1100,6 +1147,7 @@ export async function scanGitHub(): Promise<ScanResult> {
     mineBy: byRule,
     envSkipped,
     envCards,
+    splitKeys,
     unmatched,
     unmatchedSamples,
     skipped,

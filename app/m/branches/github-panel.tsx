@@ -845,6 +845,16 @@ function ScanReview({
         </span>
       </div>
 
+      {/* Một Epic nhiều FR: các nhánh đều mang mã Epic, nên bảng tách card theo
+          tên nhánh. Nói ra, vì trước đây nhánh thua cuộc biến mất không dấu vết. */}
+      {scan.splitKeys.length > 0 && (
+        <p className="mt-2 rounded-md border border-line bg-surface-2 px-2.5 py-1.5 text-[12px] text-ink-2">
+          <span className="font-mono">{scan.splitKeys.join(", ")}</span> có nhiều nhánh cùng mang
+          mã đó — thường là một Epic với nhiều FR. Mỗi nhánh được một card riêng, đặt tên theo
+          nhánh, và vẫn link về ticket.
+        </p>
+      )}
+
       {/* Nói ra chứ không lặng lẽ bỏ. Một nhánh vắng mặt không lý do thì không
           phân biệt được với một nhánh app đọc hụt — mà đây là nhánh người dùng
           vẫn đụng vào hằng ngày, nên họ sẽ đi tìm. */}
