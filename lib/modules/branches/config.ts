@@ -135,6 +135,7 @@ const SHAPES = [
   "done-master",
   "kind-columns",
   "task-column",
+  "resolve-column",
 ] as const;
 
 function appliedShapes(): Set<string> {
@@ -160,6 +161,7 @@ function migrate(stages: StageConfig[]): StageConfig[] {
   if (!applied.has("done-master")) out = nameDoneBranch(out);
   if (!applied.has("kind-columns")) out = addKindColumns(out);
   if (!applied.has("task-column")) out = orderStartColumns(out);
+  if (!applied.has("resolve-column")) out = addResolveColumn(out);
 
   setRaw(K.stagesShape, SHAPES.join(" "));
   if (JSON.stringify(out) !== JSON.stringify(stages))
@@ -301,6 +303,21 @@ function orderStartColumns(stages: StageConfig[]): StageConfig[] {
   );
   const rest = stages.filter((s) => !picked.includes(s));
   return [...wanted, ...rest];
+}
+
+/**
+ * Cột `resolve`, chèn lên **đầu** các cột điểm bắt đầu.
+ *
+ * Đầu vì thứ tự cột là thứ phân xử khi một nhánh khớp nhiều loại, và một nhánh
+ * có chữ `resolve` thì trước hết nó là nhánh resolve.
+ */
+function addResolveColumn(stages: StageConfig[]): StageConfig[] {
+  const seed = DEFAULT_STAGES.find((s) => s.kind.trim().toLowerCase() === "resolve");
+  if (!seed || stages.some((s) => s.kind.trim().toLowerCase() === "resolve")) return stages;
+  const at = stages.findIndex(
+    (s) => !s.branch.trim() && s.reach !== "gone" && s.phase === "nopr",
+  );
+  return at < 0 ? stages : [...stages.slice(0, at), seed, ...stages.slice(at)];
 }
 
 /** Danh sách đã bỏ trùng và bỏ rỗng, dưới dạng mảng JSON để lưu. */

@@ -95,6 +95,27 @@ export const DEFAULT_STAGES: StageConfig[] = [
   // Tách theo loại vì một cột gộp thì đúng nhưng không nói được gì: `feature`
   // và `bugfix` là hai nhịp làm việc khác nhau, và cái đang chờ xem là "còn
   // bao nhiêu bug đang mở", không phải "còn bao nhiêu việc đang code".
+  // Nhánh resolve đứng đầu, và đứng riêng.
+  //
+  // Nó không phải một bậc của việc: nó chỉ fix conflict và bump version, không
+  // thêm code. Để nó lẫn vào `task`/`feature` thì bảng đọc ra "có 7 việc đang
+  // làm" trong khi 3 trong số đó chỉ là xe chở hàng.
+  //
+  // Đứng **trước** mọi cột kén khác vì một nhánh khớp nhiều cột là chuyện có
+  // thật — `resolve_feature_flag` khớp cả `resolve` lẫn `feature` — và thứ tự
+  // cột là thứ phân xử.
+  {
+    name: "resolve",
+    expects: "prog",
+    branch: "",
+    // Không điều kiện PR: nhánh resolve **ở yên đây**, kể cả khi PR của nó đang
+    // mở hay đã merge. Nó là xe chở hàng, không phải một bậc của việc — để nó
+    // chạy dọc bảng theo PR thì bảng đọc ra "việc đang tiến" trong khi thứ tiến
+    // là nhánh feature nó chở.
+    phase: "",
+    reach: "queued",
+    kind: "resolve",
+  },
   {
     name: "task",
     expects: "prog",
@@ -199,7 +220,19 @@ export function branchSegments(branch: string): string[] {
 export function kindMatches(branch: string, kind: string): boolean {
   const want = kind.trim().toLowerCase();
   if (!want) return true;
-  return branchSegments(branch).includes(want);
+  const segs = branchSegments(branch);
+  if (segs.includes(want)) return true;
+  // Khớp theo **từ** bên trong một đoạn, ngăn bởi `_` hoặc `-`.
+  //
+  // `resolve` không bao giờ là một đoạn riêng: đếm trên 230 nhánh thật, nó nằm
+  // ở đầu (`resolve_FR5_…`, `resolve-conflict-…`), ở cuối (`…-develop-resolve`,
+  // `…-Resolve`) và ở giữa (`…-media-management-resolve-conflict`) của đoạn
+  // cuối. Một luật chỉ-khớp-đoạn sẽ bỏ sót cả năm dạng.
+  //
+  // Vẫn là từ, không phải chuỗi con: `features` không khớp `feature`. Khi nhiều
+  // cột cùng khớp — `resolve_feature_flag` khớp cả `resolve` lẫn `feature` —
+  // thì **thứ tự cột** quyết định, và cột đứng trước thắng.
+  return segs.some((seg) => seg.split(/[_-]/).includes(want));
 }
 
 export function stageRule(stage: StageConfig): string {
@@ -218,6 +251,8 @@ export function stageRule(stage: StageConfig): string {
       return k
         ? `nhánh ${k} chưa mở PR — hoặc PR còn draft, hoặc đã đóng`
         : "chưa mở PR — hoặc PR còn draft, hoặc đã đóng";
+    // Kén loại mà không kén PR: nhánh ở lại đây suốt đời, không chạy theo PR.
+    if (k) return `nhánh ${k} — ở lại đây bất kể PR tới đâu`;
     return "không khớp điều kiện của cột nào khác";
   }
 
