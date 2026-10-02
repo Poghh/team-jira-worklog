@@ -237,6 +237,13 @@ export function prBadge(pr: PullRequest | null): PrBadge | null {
   if (pr.state === "CLOSED")
     return { label: `#${pr.number} đóng`, tone: "warn" };
   if (pr.isDraft) return { label: `#${pr.number} nháp`, tone: "muted" };
+  // Trạng thái rỗng nghĩa là **chưa hỏi GitHub**, không phải "đang mở".
+  //
+  // Ghim một PR chỉ lưu số của nó, cố ý: trạng thái để lần quét sau hỏi theo
+  // số. Trong lúc chờ, rơi xuống nhãn "chờ review" là bịa ra một sự thật —
+  // #416 ghim xong hiện "chờ review" trong khi nó đã merged từ hôm trước, và
+  // người đọc kết luận là bảng bị kẹt.
+  if (!pr.state) return { label: `#${pr.number} chưa quét`, tone: "muted" };
   return { label: `#${pr.number} chờ review`, tone: "prog" };
 }
 
@@ -840,6 +847,23 @@ export function stageFor(
    */
   const phaseOk = (want: StageConfig["phase"]) =>
     !want || (want === "open" ? phase === "open" : phase === "none");
+
+  /**
+   * Cột kén loại mà **không** kén PR giành nhánh trước mọi thứ khác.
+   *
+   * Nhánh resolve là ví dụ, và là lý do cột này tồn tại: nó chở hàng chứ không
+   * phải một bậc của việc, nên nó phải ở yên một chỗ kể cả khi PR của nó đã
+   * merge vào staging. Xét trước vòng môi trường bên dưới, vì chính vòng đó sẽ
+   * kéo nó đi theo PR.
+   *
+   * Chỉ cột `phase` rỗng mới có quyền này. Cột kén loại mà `phase: "nopr"` —
+   * `feature`, `bugfix`, `task` — vẫn chỉ là điểm bắt đầu, và nhả nhánh ra ngay
+   * khi PR đầu tiên mở.
+   */
+  const sticky = stages.find(
+    (s) => !s.branch && s.reach !== "gone" && !s.phase && s.kind.trim() && kindMatches(branchName, s.kind),
+  );
+  if (sticky) return sticky.name;
 
   for (let i = stages.length - 1; i >= 0; i--) {
     const step = stages[i];

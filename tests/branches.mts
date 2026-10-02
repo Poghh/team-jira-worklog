@@ -90,7 +90,7 @@ const ts = (s: string) => Math.floor(new Date(s).getTime() / 1000)
 
 /* ── pipeline shape ─────────────────────────────────────────────────────── */
 const S = DEFAULT_STAGES
-eq(S.length, 14, 'bốn cột đầu, chín cột môi trường, và cột cuối')
+eq(S.length, 15, 'cột resolve, bốn cột đầu, chín cột môi trường, và cột cuối')
 eq(S[S.length - 1].name, 'done', 'the terminal column is last')
 eq(cleanupStep(S)?.name, 'done', 'the terminal column is found by reach, not by name')
 eq(cleanupStep(S.slice(0, -1)), null, 'a pipeline without one has no terminal column')
@@ -124,17 +124,27 @@ eq(ruleOf('feature'), 'nhánh feature chưa mở PR — hoặc PR còn draft, ho
    'cột kén loại nói ra loại nó kén')
 // Thứ tự cột là thứ tự tiến triển, nên nó là một khẳng định chứ không phải
 // trang trí: `feature` đứng sau `review` là lựa chọn của người dùng.
-eq(S.slice(0, 4).map((x) => x.name), ['task', 'bugfix', 'review', 'feature'],
-   'bốn cột đầu, đúng thứ tự người dùng đặt')
-eq(S.filter((x) => x.kind).map((x) => x.kind), ['task', 'bugfix', 'feature'],
-   'ba cột kén loại')
+eq(S.slice(0, 5).map((x) => x.name), ['resolve', 'task', 'bugfix', 'review', 'feature'],
+   'resolve đứng đầu, rồi bốn cột người dùng đặt')
+eq(S.filter((x) => x.kind).map((x) => x.kind), ['resolve', 'task', 'bugfix', 'feature'],
+   'bốn cột kén loại, resolve trước')
+// Cột resolve không kén PR — nhánh ở lại đó suốt đời.
+eq(S.find((x) => x.kind === 'resolve')?.phase, '', 'cột resolve không đặt điều kiện PR')
+eq(stageRule(S.find((x) => x.kind === 'resolve')!), 'nhánh resolve — ở lại đây bất kể PR tới đâu',
+   'và nói ra điều đó')
 
 eq(kindMatches('ctalk/feature/VT-2583_FR-4', 'feature'), true, 'đoạn giữa khớp')
 eq(kindMatches('feature/VT-1', 'feature'), true, 'không có tiền tố team vẫn khớp')
 eq(kindMatches('ctalk/FEATURE/VT-1', 'feature'), true, 'không phân biệt hoa thường')
-// Khớp theo đoạn, không phải chuỗi con — đây là chỗ `includes` sẽ sai.
-eq(kindMatches('ctalk/bugfix/resolve_feature_flag', 'feature'), false,
-   '`feature` nằm trong tên file thì không phải nhánh feature')
+// Khớp theo **từ**, không phải chuỗi con.
+eq(kindMatches('ctalk/task/features_list', 'feature'), false,
+   '`features` không phải `feature` — vẫn là từ, không phải chuỗi con')
+eq(kindMatches('ctalk/task/resolve_conflict', 'resolve'), true, 'resolve ở đầu đoạn cuối')
+eq(kindMatches('hir/feature/vtl-686-ctalk-develop-resolve', 'resolve'), true, 'resolve ở cuối')
+eq(kindMatches('hir/feature/vtl-538-media-management-resolve-conflict', 'resolve'), true, 'resolve ở giữa')
+// Một nhánh khớp nhiều cột là chuyện có thật; thứ tự cột phân xử, cột trước thắng.
+eq(kindMatches('ctalk/bugfix/resolve_feature_flag', 'feature'), true, 'khớp cả feature…')
+eq(kindMatches('ctalk/bugfix/resolve_feature_flag', 'resolve'), true, '…lẫn resolve')
 eq(kindMatches('ctalk/bugfix/VT-451', 'feature'), false, 'bugfix không phải feature')
 eq(kindMatches('ctalk/task/abc', ''), true, 'cột không kén nhận tất cả')
 eq(branchSegments('ctalk/feature/VT-1'), ['ctalk', 'feature', 'vt-1'], 'tách đúng các đoạn')
