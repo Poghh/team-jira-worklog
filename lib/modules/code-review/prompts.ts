@@ -257,18 +257,21 @@ export function codePrompt(input: {
   /** PRs in other repos this one goes with (SDK ↔ iOS). */
   links: RoundLink[]
   addressee: Addressee | null
+  /** Tự soi code của chính mình — đổi cách xưng hô và cách mô tả vòng sau. */
+  selfReview?: boolean
 }): string {
-  const pr = input.prNumber ? `PR #${input.prNumber}` : 'Nhánh'
+  const pr = input.selfReview ? 'phần code đang làm' : input.prNumber ? `PR #${input.prNumber}` : 'Nhánh'
+  const who = input.selfReview ? 'Bạn' : 'Member'
   const followUp = input.round > 1
   const scope = followUp
     ? input.incremental
-      ? `Đây là **vòng review thứ ${input.round}**. Member đã push thêm code sau lần review trước (head cũ ${input.prevHeadSha}).
-- Phần member vừa sửa: \`git diff ${input.prevHeadSha} ${input.headSha}\` và \`git log --oneline ${input.prevHeadSha}..${input.headSha}\`.
+      ? `Đây là **vòng review thứ ${input.round}**. ${who} đã sửa thêm code sau lần review trước (ảnh chụp cũ ${input.prevHeadSha}).
+- Phần vừa sửa: \`git diff ${input.prevHeadSha} ${input.headSha}\` và \`git log --oneline ${input.prevHeadSha}..${input.headSha}\`.
 - Toàn bộ PR (để hiểu ngữ cảnh): \`git diff ${input.baseSha} ${input.headSha}\`.
 Việc cần làm:
 1. Với MỖI vấn đề ở danh sách "vòng trước" bên dưới, kiểm tra code hiện tại và trả vào \`previous\`: fixed / partial / not_fixed kèm một câu giải thích, và nếu chưa sửa hết thì kèm \`line\` là dòng hiện tại của nó ở commit head mới.
 2. Tìm vấn đề MỚI chỉ trong phần code vừa thay đổi (không soi lại phần đã review, trừ khi phát hiện lỗi nghiêm trọng bị bỏ sót). Không lặp lại vấn đề đã có trong danh sách vòng trước.`
-      : `Đây là **vòng review thứ ${input.round}**, nhưng member đã force-push nên không còn commit cũ ${input.prevHeadSha} để so. Review lại toàn bộ \`git diff ${input.baseSha} ${input.headSha}\`, đánh giá lại từng vấn đề vòng trước vào \`previous\`, và chỉ đưa vào \`findings\` những vấn đề mới.`
+      : `Đây là **vòng review thứ ${input.round}**, nhưng không còn ảnh chụp cũ ${input.prevHeadSha} để so. Review lại toàn bộ \`git diff ${input.baseSha} ${input.headSha}\`, đánh giá lại từng vấn đề vòng trước vào \`previous\`, và chỉ đưa vào \`findings\` những vấn đề mới.`
     : `Diff cần review: \`git diff ${input.baseSha} ${input.headSha}\` (base là merge-base với \`${input.baseRef}\`). Danh sách commit: \`git log --oneline ${input.baseSha}..${input.headSha}\`.`
 
   return `Bạn đang review code cho ${pr} của repo **${input.repoName}**: "${input.title}"${input.author ? ` — tác giả ${input.author}` : ''}.

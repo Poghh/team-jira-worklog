@@ -218,13 +218,20 @@ async function prepareAndSpawn(roundId: number) {
       }
 
       const prevHeadSha = prev?.headSha ?? ''
-      // Tự soi lại chính mình thì mỗi vòng là một ảnh chụp mới — kể cả "việc
-      // chưa commit", vốn không có lịch sử để nối tiếp. Chỉ nhận là tiếp nối
-      // khi vòng trước thật sự là tổ tiên của vòng này.
+      /**
+       * Vòng sau soi **đúng phần bạn vừa sửa**, không soi lại từ đầu.
+       *
+       * Không hỏi `isAncestor` như đường PR. Ảnh chụp của hai vòng là hai commit
+       * lơ lửng cùng mọc từ HEAD — không cái nào là tổ tiên của cái nào, nên
+       * hỏi câu đó thì câu trả lời luôn là "không", và mọi vòng 2 đều thành
+       * review lại toàn bộ. Thứ cần ở đây chỉ là `git diff vòng-trước vòng-này`
+       * chạy được, và điều đó chỉ đòi commit cũ còn tồn tại.
+       *
+       * Nó còn tồn tại vì mỗi vòng kéo ảnh chụp vào một ref riêng
+       * `refs/review/self-<vòng>-head`, nên `git gc` không dọn mất.
+       */
       const incremental =
-        Boolean(prevHeadSha) &&
-        (await commitExists(r.localPath, prevHeadSha)) &&
-        (await isAncestor(r.localPath, prevHeadSha, headSha))
+        Boolean(prevHeadSha) && (await commitExists(r.localPath, prevHeadSha))
 
       prompt = codePrompt({
         repoName: r.name,
@@ -244,6 +251,7 @@ async function prepareAndSpawn(roundId: number) {
         round: round.round,
         prevHeadSha,
         incremental,
+        selfReview: true,
         previous,
         comments: [],
         diffStat: await diffStat(r.localPath, baseSha, headSha),
