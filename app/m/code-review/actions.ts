@@ -14,6 +14,7 @@ import {
   isRepo,
   listRemoteBranches,
   listWorkBranches,
+  revParse,
   snapshotUncommitted,
   withRepoLock,
 } from '@/lib/modules/code-review/git'
@@ -220,6 +221,32 @@ export async function queueBranchesAction(input: {
   return { ok: true, message: 'Đã xếp hàng.', itemId }
 }
 
+/**
+ * Ảnh chụp **toàn bộ thay đổi dưới máy** của một clone, ngay lúc này.
+ *
+ * Tự review soi code đang có ở local, không soi một commit hay một nhánh: thứ
+ * cần biết là "những gì tôi đã đổi so với nhánh nền", mà nó gồm cả commit chưa
+ * push lẫn việc chưa commit. Một ảnh chụp gộp cả hai trả lời đúng câu đó.
+ *
+ * Cây bẩn → `git stash create` dựng một commit lơ lửng trên HEAD, gom cả staged
+ * lẫn unstaged. Cây sạch → chính HEAD, vì lúc đó "thay đổi dưới máy" là các
+ * commit chưa lên nhánh nền.
+ *
+ * File chưa từng `git add` không vào được ảnh chụp — `stash create` không có
+ * `--include-untracked`. Màn hình phải nói ra, không được im.
+ */
+async function snapshotLocal(dir: string): Promise<{ sha: string; label: string; why: string }> {
+  const on = await currentBranch(dir).catch(() => '')
+  const dirty = await countDirty(dir).catch(() => 0)
+  if (dirty > 0) {
+    const sha = await snapshotUncommitted(dir).catch(() => '')
+    if (sha) return { sha, label: `${dirty} file chưa commit${on ? ` trên ${on}` : ''}`, why: '' }
+  }
+  const head = await revParse(dir, 'HEAD').catch(() => '')
+  if (!head) return { sha: '', label: '', why: 'Không đọc được HEAD của clone làm việc.' }
+  return { sha: head, label: on || 'HEAD', why: '' }
+}
+
 /** Nhánh trong clone làm việc, kèm có việc chưa commit hay không. */
 export async function listWorkAction(
   repoId: string,
@@ -264,8 +291,6 @@ export async function queueSelfAction(input: {
   /** Clone làm việc đã chọn. Phải là một trong những cái repo đã khai. */
   workPath: string
   baseRef: string
-  /** Tên nhánh, hoặc '' khi soi việc chưa commit. */
-  headRef: string
   title: string
   note: string
   docs?: DocFile[]
@@ -280,19 +305,10 @@ export async function queueSelfAction(input: {
   if (!dir) return { ok: false, message: 'Repo này chưa khai clone làm việc.' }
   if (!input.baseRef.trim()) return { ok: false, message: 'Chọn nhánh nền để so.' }
 
-  let head = input.headRef.trim()
-  let label = head
-  if (!head) {
-    const sha = await snapshotUncommitted(dir).catch(() => '')
-    if (!sha)
-      return {
-        ok: false,
-        message: 'Không có gì chưa commit để soi — cây làm việc đang sạch.',
-      }
-    head = sha
-    const on = await currentBranch(dir).catch(() => '')
-    label = `việc chưa commit${on ? ` trên ${on}` : ''}`
-  }
+  const snap = await snapshotLocal(dir)
+  if (!snap.sha) return { ok: false, message: snap.why }
+  const head = snap.sha
+  const label = snap.label
 
   const itemId = createItem({
     kind: 'self',
@@ -341,6 +357,21 @@ export async function reReviewAction(itemId: number, note?: string, newDocs?: Do
   if (!item) return { ok: false, message: 'Không thấy hồ sơ.' }
   if (hasLiveRound(itemId)) return { ok: false, message: 'Hồ sơ này đang có vòng review chưa xong.' }
   if (note !== undefined) patchItem(itemId, { note: note.trim() })
+
+  // Tự review: chụp lại **bây giờ**, không dùng lại ảnh của vòng trước.
+  //
+  // Vòng sau sinh ra để xem bạn đã sửa thế nào, nên nó phải soi trạng thái
+  // hiện tại. Dùng lại `headRef` cũ thì hai vòng soi đúng một commit, và câu
+  // trả lời cho "đã sửa chưa" luôn là "chưa".
+  if (item.kind === 'self') {
+    const repo = item.repoId ? getRepo(item.repoId) : undefined
+    const dir = repo?.workPaths.includes(item.workPath) ? item.workPath : ''
+    if (!dir) return { ok: false, message: 'Clone làm việc của hồ sơ này không còn trong Cấu hình.' }
+    const snap = await snapshotLocal(dir)
+    if (!snap.sha) return { ok: false, message: snap.why }
+    patchItem(itemId, { headRef: snap.sha })
+  }
+
   queueRound(itemId, docs ?? carriedDocs(itemId))
   ensureTicker()
   void tick()

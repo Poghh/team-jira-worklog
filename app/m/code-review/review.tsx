@@ -535,7 +535,6 @@ function SelfForm({ repo, canRun, onDone }: { repo: RepoPreset; canRun: boolean;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [repo.id, work])
 
-  const uncommitted = head === ''
   const localOnly = branches.filter((b) => !b.onRemote).length
 
   if (!repo.workPaths.length)
@@ -575,44 +574,34 @@ function SelfForm({ repo, canRun, onDone }: { repo: RepoPreset; canRun: boolean;
         <p className="mt-1 font-mono text-[11.5px] text-ink-3">{work}</p>
       )}
 
-      <div className="mt-2 grid gap-2 sm:grid-cols-2">
-        <label className="text-[12px] text-ink-2">
-          Soi cái gì
-          <select value={head} onChange={(e) => setHead(e.target.value)} className={INPUT}>
-            <option value="">
-              {dirty ? `Việc chưa commit — ${dirty} file` : 'Việc chưa commit — (không có gì)'}
-            </option>
-            {branches.map((b) => (
-              <option key={b.name} value={b.name}>
-                {b.onRemote ? b.name : `${b.name}  ⚑ chưa push`}
-              </option>
-            ))}
-          </select>
-        </label>
-        <label className="text-[12px] text-ink-2">
-          So với
-          <input
-            list={`self-br-${repo.id}`}
-            value={base}
-            onChange={(e) => setBase(e.target.value)}
-            className={INPUT}
-            placeholder={uncommitted ? 'HEAD — chỉ phần chưa commit' : 'ctalk/develop'}
-          />
-        </label>
+      {/* Không có ô "soi cái gì" nữa. Tự review soi **thay đổi dưới máy ngay
+          lúc bấm** — commit chưa push cộng việc chưa commit — nên chỉ còn một
+          câu hỏi: so với nhánh nền nào. */}
+      <div className="mt-2 rounded-md border border-line bg-ground px-2.5 py-2 text-[12.5px] text-ink-2">
+        Sẽ soi: <b>{head || 'HEAD'}</b>
+        {dirty > 0 ? ` · ${dirty} file chưa commit` : ' · cây làm việc đang sạch'}
       </div>
+      <label className="mt-2 block text-[12px] text-ink-2">
+        So với nhánh nền
+        <input
+          list={`self-br-${repo.id}`}
+          value={base}
+          onChange={(e) => setBase(e.target.value)}
+          className={INPUT}
+          placeholder="ctalk/develop"
+        />
+      </label>
       <datalist id={`self-br-${repo.id}`}>
         <option value="HEAD" />
         {branches.map((b) => (
           <option key={b.name} value={b.name} />
         ))}
       </datalist>
-      {uncommitted && (
-        <p className="mt-1 text-[11.5px] text-ink-3">
-          Để trống ô bên phải thì so với <span className="font-mono">HEAD</span> — tức chỉ đúng phần
-          bạn chưa commit. Điền một nhánh nền thì soi cả nhánh lẫn phần chưa commit.
-          {' '}File chưa từng <span className="font-mono">git add</span> không vào được ảnh chụp.
-        </p>
-      )}
+      <p className="mt-1 text-[11.5px] text-ink-3">
+        Gồm cả commit chưa push lẫn việc chưa commit. File chưa từng{' '}
+        <span className="font-mono">git add</span> không vào được ảnh chụp.
+        {' '}Chạy lại lần sau sẽ chụp lại và chỉ soi phần bạn vừa sửa.
+      </p>
 
       <input value={title} onChange={(e) => setTitle(e.target.value)} className={INPUT + ' mt-2'} placeholder="Tên hồ sơ (không bắt buộc)" />
       <textarea value={note} onChange={(e) => setNote(e.target.value)} rows={2} className={INPUT + ' mt-2'} placeholder="Ghi chú cho Claude (không bắt buộc)" />
@@ -622,7 +611,7 @@ function SelfForm({ repo, canRun, onDone }: { repo: RepoPreset; canRun: boolean;
         <button
           type="button"
           className={BTN_PRI}
-          disabled={busy || !canRun || (uncommitted && dirty === 0)}
+          disabled={busy || !canRun || !base.trim()}
           onClick={() =>
             start(async () => {
               const docs = await attach.upload()
@@ -630,8 +619,7 @@ function SelfForm({ repo, canRun, onDone }: { repo: RepoPreset; canRun: boolean;
               const r = await queueSelfAction({
                 repoId: repo.id,
                 workPath: work,
-                baseRef: base.trim() || (uncommitted ? 'HEAD' : ''),
-                headRef: head,
+                baseRef: base.trim(),
                 title,
                 note,
                 docs,
