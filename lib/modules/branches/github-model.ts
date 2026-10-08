@@ -568,6 +568,39 @@ export function parsePrRef(raw: string): number {
  * branch's own requests every single scan; treating that absence as "the pin
  * is stale" would undo the correction on the next tick.
  */
+/**
+ * Đóng dấu `branchGone` cho **từng nửa**, rồi gỡ nửa đã mất mà chẳng mang gì.
+ *
+ * Phép kiểm "mất nhánh" vốn đã trả lời đúng cho một nửa, nhưng chỉ được hỏi khi
+ * **mọi** nửa đều mất — để quyết định có mời dọn cả card hay không. Card nửa
+ * sống nửa chết thì không ai hỏi, và nửa chết đi tiếp với `branchGone: false`.
+ *
+ * Thấy trên bảng: card VT-3136 có nửa iOS chạy tới staging, còn nửa SDK trỏ vào
+ * `ctalk/feature/VT-3011` — nhánh GitHub trả 404 — mà vẫn vẽ ba dòng "chưa tạo
+ * PR". Đọc ra là "việc chưa bắt đầu", trong khi sự thật là không còn nhánh nào
+ * để bắt đầu.
+ *
+ * **Gỡ, nhưng chỉ khi nửa đó rỗng.** Nhánh biến mất ở team này thường nghĩa là
+ * việc đã release rồi xoá nhánh — gỡ sạch mọi nửa mất nhánh sẽ xoá luôn hồ sơ
+ * của việc đã xong: số PR, chỗ nó đã merge tới. Nửa chưa từng có PR nào thì
+ * không có hồ sơ gì để giữ.
+ *
+ * Không bao giờ gỡ nửa cuối cùng. Card mất sạch nhánh là chuyện khác và đã có
+ * đường riêng — danh sách "nhánh không còn tồn tại", nơi người dùng tự quyết
+ * xoá cả card, vì card có thể mang ghi chú.
+ */
+export function settleSides<T extends CardSide>(
+  sides: T[],
+  isGone: (side: T) => boolean,
+): T[] {
+  const stamped = sides.map((s) =>
+    s.branchGone === isGone(s) ? s : { ...s, branchGone: isGone(s) },
+  );
+  const keep = stamped.filter((s) => !(s.branchGone && !s.prs.length));
+  return keep.length ? keep : stamped;
+}
+
+
 export function mergeCardPrs(
   scanned: CardPr[],
   stored: CardPr[],

@@ -63,6 +63,7 @@ import {
   asPullRequest,
   cardStage,
   reachedTrunk,
+  settleSides,
   mergeCardPrs,
   parseCardSides,
   primarySide,
@@ -947,22 +948,30 @@ eq(baseFreshness(roundTrip, NOW).upToDate, true, 'và đọc ra đúng kết lu�
 // `ctalk/feature/VT-3011` — nhánh GitHub trả 404 — mà vẫn vẽ ba dòng "chưa tạo
 // PR". Đọc ra là "việc chưa bắt đầu", trong khi sự thật là không còn nhánh nào.
 {
-  const side = (repo: string, branch: string, gone = false) => ({
-    ...sideAt(repo, []), branch, branchGone: gone,
+  const side = (repo: string, branch: string, prs: typeof merged[] = []) => ({
+    ...sideAt(repo, prs.map((p) => ({ number: p.number, url: '', state: p.state, base: p.baseRefName }))),
+    repo,
+    branch,
   })
+  const gone = (names: string[]) => (s: { branch: string }) => names.includes(s.branch)
 
-  // `branchesToDelete` chỉ đòi xoá nhánh còn sống — nửa đã mất không nằm trong đó.
-  const end = cleanupStep(S)!
-  eq(branchesToDelete(end.name, [side('o/ios', 'a'), side('o/sdk', 'b', true)], S).map((x) => x.branch),
-     ['a'], 'card ở cột cuối chỉ đòi xoá nhánh còn sống')
+  // Nửa mất nhánh mà chưa từng có PR: gỡ hẳn, card trả về một nửa.
+  const half = settleSides([side('o/ios', 'a', [merged]), side('o/sdk', 'b')], gone(['b']))
+  eq(half.map((x) => x.repo), ['o/ios'], 'nửa mất nhánh và rỗng thì bị gỡ')
 
-  // Một nửa đã mất thì không còn là "việc đang chạy".
-  const inTrunkState = '{"master":{"ahead":0}}'
-  const live = { ...side('o/ios', 'a'), envState: '{"ctalk/develop":{"ahead":3}}' }
-  const dead = { ...side('o/sdk', 'b', true), envState: '' }
-  eq(cardStage([live], [], S) !== 'done', true, 'nửa còn sống chưa vào đâu thì chưa xong')
-  eq(cardStage([dead], [], S) !== 'done', true, 'nửa đã mất, không PR nào merge -> vẫn chưa xong')
-  void inTrunkState
+  // Nửa mất nhánh nhưng có PR: giữ, vì đó là hồ sơ việc đã xong.
+  const kept = settleSides([side('o/ios', 'a'), side('o/sdk', 'b', [merged])], gone(['b']))
+  eq(kept.map((x) => x.repo), ['o/ios', 'o/sdk'], 'nửa mất nhánh mà có PR thì giữ lại hồ sơ')
+  eq(kept.find((x) => x.repo === 'o/sdk')?.branchGone, true, 'và vẫn được đóng dấu đã mất')
+
+  // Mọi nửa đều mất và đều rỗng: không gỡ nửa cuối, để đường "dọn card" lo.
+  const all = settleSides([side('o/ios', 'a'), side('o/sdk', 'b')], gone(['a', 'b']))
+  eq(all.length, 2, 'mất sạch thì không gỡ — card trống rỗng còn tệ hơn')
+  eq(all.every((x) => x.branchGone), true, 'nhưng cả hai đều mang dấu đã mất')
+
+  // Nhánh còn sống thì không ai bị đụng tới.
+  const none = settleSides([side('o/ios', 'a'), side('o/sdk', 'b')], () => false)
+  eq(none.map((x) => x.branchGone), [false, false], 'nhánh còn sống thì giữ nguyên')
 }
 
 console.log(bad ? `\n${bad}/${n} FAILED` : `\nall ${n} ok`)
