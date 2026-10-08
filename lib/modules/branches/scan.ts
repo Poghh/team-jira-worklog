@@ -31,6 +31,7 @@ import {
   prStateTag,
   prsForCard,
   serializeCardPrs,
+  settleSides,
   serializeCardSides,
   stageFor,
   titleFromBranch,
@@ -234,20 +235,9 @@ export async function scanGitHub(): Promise<ScanResult> {
     return readRepos.has(s.repo) && !liveBranches.has(key);
   };
 
-  /**
-   * Đóng dấu `branchGone` cho **từng nửa**, không phải cho cả card.
-   *
-   * `sideGone` vốn đã trả lời đúng cho một nửa, nhưng chỉ được hỏi khi **mọi**
-   * nửa đều mất — để quyết định có mời dọn card hay không. Một card nửa sống
-   * nửa chết thì không ai hỏi, và nửa chết đi tiếp với `branchGone: false`.
-   *
-   * Thấy trên bảng: card VT-3136 có nửa iOS chạy tới staging, còn nửa SDK trỏ
-   * vào `ctalk/feature/VT-3011` — nhánh GitHub trả 404 — mà vẫn vẽ ba dòng
-   * "chưa tạo PR". Đọc ra là "việc chưa bắt đầu", trong khi sự thật là "nhánh
-   * này không còn".
-   */
-  const withGone = <T extends CardSide>(sides: T[]): T[] =>
-    sides.map((s) => (s.branchGone === sideGone(s) ? s : { ...s, branchGone: sideGone(s) }));
+  /** Xem {@link settleSides} — phép kiểm "mất nhánh" là của lần quét này. */
+  const settle = <T extends CardSide>(sides: T[]): T[] => settleSides(sides, sideGone);
+
 
   const watched = new Set(cfg.repos);
   // An index, not a membership set: the loop below needs the branch itself, and
@@ -861,7 +851,7 @@ export async function scanGitHub(): Promise<ScanResult> {
     );
     const head = ordered[0]!;
     const branch = head.branch;
-    const sides = withGone(ordered.map((c) => c.side));
+    const sides = settle(ordered.map((c) => c.side));
     /**
      * Cột của card, từ đúng một hàm — {@link cardStage}.
      *
@@ -1114,7 +1104,7 @@ export async function scanGitHub(): Promise<ScanResult> {
     }
 
     // Least advanced first, same rule the key-matched rows use.
-    const sides = withGone(orderSides([mine, ...others.values()], cfg.repos));
+    const sides = settle(orderSides([mine, ...others.values()], cfg.repos));
 
     // One rule, one function — the same one the key-matched rows above, the
     // cheap refresh and the editor's save use.
