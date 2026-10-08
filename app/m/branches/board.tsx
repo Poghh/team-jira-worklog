@@ -412,12 +412,15 @@ function SideHead({
   solid,
   title,
   text,
+  gone = false,
 }: {
   label: string;
   /** The repo chip's fill; absent for the build block, which is no repo. */
   solid?: string;
   title: string;
   text: string;
+  /** Nhánh không còn trên GitHub — gạch ngang tên cho khớp với lời cảnh báo. */
+  gone?: boolean;
 }) {
   return (
     <span className="mt-0.5 flex min-w-0 items-center gap-1.5 border-t border-line pt-1">
@@ -431,7 +434,10 @@ function SideHead({
       </span>
       <span
         title={title}
-        className="min-w-0 truncate font-mono text-[10px] text-ink-3"
+        className={
+          "min-w-0 truncate font-mono text-[10px] " +
+          (gone ? "text-ink-3 line-through decoration-warn" : "text-ink-3")
+        }
       >
         {text}
       </span>
@@ -1661,9 +1667,25 @@ function NoteCard({
                   solid={
                     repoChip(side.repo, repoLabels, repoColors, repos).solid
                   }
-                  title={`${side.repo} · ${side.branch}`}
+                  title={
+                    side.branchGone
+                      ? `${side.repo} · ${side.branch}\n\nGitHub không còn nhánh này. Thường là đã merge rồi xoá; cũng có thể nó chưa bao giờ tồn tại ở repo này.`
+                      : `${side.repo} · ${side.branch}`
+                  }
                   text={`⑂ ${side.branch}`}
+                  gone={side.branchGone}
                 />
+                {/* Nửa chết của một card nửa sống.
+                 *
+                 * Card chỉ vẽ "nhánh đã xoá" khi **mọi** nửa đều mất — kiểu card
+                 * rách. Nửa này thì không, nên nếu không nói ra, ba dòng "chưa
+                 * tạo PR" bên dưới đọc thành "việc chưa bắt đầu", trong khi sự
+                 * thật là không còn nhánh nào để bắt đầu. */}
+                {side.branchGone && (
+                  <span className="flex items-center gap-1 rounded-[4px] border border-warn bg-warn-soft px-1.5 py-px text-[11px] text-warn">
+                    <b className="font-semibold">GitHub không còn nhánh này</b>
+                  </span>
+                )}
                 <BaseAge side={side} />
                 <Ladder
                   rows={cardLadder(side.prs, [], stages)}

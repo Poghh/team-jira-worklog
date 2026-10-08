@@ -194,6 +194,61 @@ export async function scanGitHub(): Promise<ScanResult> {
   // the carried-through branch far below.
   const localState = localIndex(local);
 
+  // Cards pointing at a branch that is no longer on GitHub.
+  //
+  // Scoped to repos this scan actually read: a card from a repo since removed
+  // from the list, or from a repo that failed, has not been shown to be gone —
+  // only unlooked-for. Reporting those would invite deleting cards over a typo
+  // in the repo list.
+  const readRepos = new Set(cfg.repos.filter((r) => !skipped.includes(r)));
+  const liveBranches = new Set(branches.map((b) => `${b.repo}#${b.name}`));
+
+  // Clones this scan actually opened, and every branch found in them. A
+  // never-pushed branch lives nowhere but a clone, so the clone is the only
+  // place that can report it deleted — skipping those cards entirely, as this
+  // used to, left them on the board forever after the branch was thrown away.
+  const readPaths = new Set(
+    local.branches
+      .map((b) => b.path)
+      .concat(
+        cfg.localPaths.filter((p) => !local.bad.some((x) => x.path === p)),
+      ),
+  );
+  const localSeen = new Set(local.branches.map((b) => `${b.repo}#${b.name}`));
+
+  /** Whether one repository's branch is provably gone, not merely unlooked-for. */
+  const sideGone = (s: {
+    repo: string;
+    branch: string;
+    localOnly: boolean;
+    localPath: string;
+  }) => {
+    const key = `${s.repo}#${s.branch.trim()}`;
+    if (!s.repo || !s.branch.trim()) return false;
+    // Never pushed: judged against the clone it came from, and only when that
+    // clone was readable this time round.
+    if (s.localOnly)
+      return (
+        Boolean(s.localPath) && readPaths.has(s.localPath) && !localSeen.has(key)
+      );
+    return readRepos.has(s.repo) && !liveBranches.has(key);
+  };
+
+  /**
+   * Đóng dấu `branchGone` cho **từng nửa**, không phải cho cả card.
+   *
+   * `sideGone` vốn đã trả lời đúng cho một nửa, nhưng chỉ được hỏi khi **mọi**
+   * nửa đều mất — để quyết định có mời dọn card hay không. Một card nửa sống
+   * nửa chết thì không ai hỏi, và nửa chết đi tiếp với `branchGone: false`.
+   *
+   * Thấy trên bảng: card VT-3136 có nửa iOS chạy tới staging, còn nửa SDK trỏ
+   * vào `ctalk/feature/VT-3011` — nhánh GitHub trả 404 — mà vẫn vẽ ba dòng
+   * "chưa tạo PR". Đọc ra là "việc chưa bắt đầu", trong khi sự thật là "nhánh
+   * này không còn".
+   */
+  const withGone = <T extends CardSide>(sides: T[]): T[] =>
+    sides.map((s) => (s.branchGone === sideGone(s) ? s : { ...s, branchGone: sideGone(s) }));
+
   const watched = new Set(cfg.repos);
   // An index, not a membership set: the loop below needs the branch itself, and
   // scanning the array for it turned a few hundred local branches against a few
@@ -806,7 +861,7 @@ export async function scanGitHub(): Promise<ScanResult> {
     );
     const head = ordered[0]!;
     const branch = head.branch;
-    const sides = ordered.map((c) => c.side);
+    const sides = withGone(ordered.map((c) => c.side));
     /**
      * Cột của card, từ đúng một hàm — {@link cardStage}.
      *
@@ -878,45 +933,6 @@ export async function scanGitHub(): Promise<ScanResult> {
     };
   });
 
-  // Cards pointing at a branch that is no longer on GitHub.
-  //
-  // Scoped to repos this scan actually read: a card from a repo since removed
-  // from the list, or from a repo that failed, has not been shown to be gone —
-  // only unlooked-for. Reporting those would invite deleting cards over a typo
-  // in the repo list.
-  const readRepos = new Set(cfg.repos.filter((r) => !skipped.includes(r)));
-  const liveBranches = new Set(branches.map((b) => `${b.repo}#${b.name}`));
-
-  // Clones this scan actually opened, and every branch found in them. A
-  // never-pushed branch lives nowhere but a clone, so the clone is the only
-  // place that can report it deleted — skipping those cards entirely, as this
-  // used to, left them on the board forever after the branch was thrown away.
-  const readPaths = new Set(
-    local.branches
-      .map((b) => b.path)
-      .concat(
-        cfg.localPaths.filter((p) => !local.bad.some((x) => x.path === p)),
-      ),
-  );
-  const localSeen = new Set(local.branches.map((b) => `${b.repo}#${b.name}`));
-
-  /** Whether one repository's branch is provably gone, not merely unlooked-for. */
-  const sideGone = (s: {
-    repo: string;
-    branch: string;
-    localOnly: boolean;
-    localPath: string;
-  }) => {
-    const key = `${s.repo}#${s.branch.trim()}`;
-    if (!s.repo || !s.branch.trim()) return false;
-    // Never pushed: judged against the clone it came from, and only when that
-    // clone was readable this time round.
-    if (s.localOnly)
-      return (
-        Boolean(s.localPath) && readPaths.has(s.localPath) && !localSeen.has(key)
-      );
-    return readRepos.has(s.repo) && !liveBranches.has(key);
-  };
 
   const gone: GoneCard[] = allCards
     .filter((c) => {
@@ -1098,7 +1114,7 @@ export async function scanGitHub(): Promise<ScanResult> {
     }
 
     // Least advanced first, same rule the key-matched rows use.
-    const sides = orderSides([mine, ...others.values()], cfg.repos);
+    const sides = withGone(orderSides([mine, ...others.values()], cfg.repos));
 
     // One rule, one function — the same one the key-matched rows above, the
     // cheap refresh and the editor's save use.
