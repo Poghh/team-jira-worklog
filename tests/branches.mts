@@ -941,5 +941,29 @@ eq(baseFreshness(roundTrip, NOW).upToDate, true, 'và đọc ra đúng kết lu�
   eq(contested([FR4, FR4], 'VT-2583'), false, 'cùng tên ở hai repo -> vẫn một card hai nửa')
 }
 
+/* ── nửa card chết trong một card nửa sống ─────────────────────────────── */
+//
+// Có thật: card VT-3136 có nửa iOS chạy tới staging, còn nửa SDK trỏ vào
+// `ctalk/feature/VT-3011` — nhánh GitHub trả 404 — mà vẫn vẽ ba dòng "chưa tạo
+// PR". Đọc ra là "việc chưa bắt đầu", trong khi sự thật là không còn nhánh nào.
+{
+  const side = (repo: string, branch: string, gone = false) => ({
+    ...sideAt(repo, []), branch, branchGone: gone,
+  })
+
+  // `branchesToDelete` chỉ đòi xoá nhánh còn sống — nửa đã mất không nằm trong đó.
+  const end = cleanupStep(S)!
+  eq(branchesToDelete(end.name, [side('o/ios', 'a'), side('o/sdk', 'b', true)], S).map((x) => x.branch),
+     ['a'], 'card ở cột cuối chỉ đòi xoá nhánh còn sống')
+
+  // Một nửa đã mất thì không còn là "việc đang chạy".
+  const inTrunkState = '{"master":{"ahead":0}}'
+  const live = { ...side('o/ios', 'a'), envState: '{"ctalk/develop":{"ahead":3}}' }
+  const dead = { ...side('o/sdk', 'b', true), envState: '' }
+  eq(cardStage([live], [], S) !== 'done', true, 'nửa còn sống chưa vào đâu thì chưa xong')
+  eq(cardStage([dead], [], S) !== 'done', true, 'nửa đã mất, không PR nào merge -> vẫn chưa xong')
+  void inTrunkState
+}
+
 console.log(bad ? `\n${bad}/${n} FAILED` : `\nall ${n} ok`)
 process.exit(bad ? 1 : 0)
