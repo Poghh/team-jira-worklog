@@ -226,13 +226,12 @@ export function Composer({
   }
 
   // Both levels need a parent: a Subtask needs its Task, a Task needs its Epic.
-  // Only the dates this project actually supports are required — the panel is
-  // hidden altogether on a project that carries neither field.
+  // The panel is hidden altogether on a project that carries neither field.
   const wantsDates = supportsDates.startDate || supportsDates.dueDate
-  const datesOk =
-    (!supportsDates.startDate || Boolean(startDate)) &&
-    (!supportsDates.dueDate || Boolean(dueDate)) &&
-    !(startDate && dueDate && dueDate < startDate)
+  // Dates are optional: the board already lets you clear them on an existing
+  // issue, so refusing to create one without them was a gate in one direction
+  // only. What stays blocked is a pair that contradicts itself.
+  const datesOk = !(startDate && dueDate && dueDate < startDate)
   const canCreate = Boolean(fullTitle && typeId && parentKey && datesOk)
 
   /** End of the sprint this issue will land in — the parent's for a subtask. */
@@ -493,7 +492,7 @@ export function Composer({
           )}
 
           {wantsDates && (
-          <Field label="Ngày" required hint="start date & due date">
+          <Field label="Ngày" hint="để trống được, bổ sung sau trên board">
             <div className="flex flex-col gap-1.5">
               <label className="flex items-center gap-2">
                 <span className="w-[36px] shrink-0 text-[12px] text-ink-3">Start</span>
@@ -544,7 +543,8 @@ export function Composer({
               <p className="mt-1.5 text-[11.5px] text-crit">Due date đang sớm hơn start date.</p>
             ) : (
               <p className="mt-1.5 text-[11.5px] leading-relaxed text-ink-3">
-                Board mới yêu cầu mọi task đều có start date và due date.
+                Board xếp task theo ngày, nên để trống thì task không nằm trên dải ngày nào — bổ
+                sung sau ở board cũng được.
               </p>
             )}
           </Field>
@@ -560,7 +560,7 @@ export function Composer({
             )}
             {!note && !datesOk && fullTitle && (
               <span className="mr-auto text-[12px] text-warn">
-                Chọn start date và due date trước khi tạo
+                Due date đang sớm hơn start date
               </span>
             )}
             <button

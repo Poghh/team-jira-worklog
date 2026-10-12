@@ -6,7 +6,6 @@ import type { ActionResult } from '@/app/actions'
 
 import { type GenerateOutcome, generateTask, pointRulesText } from '@/lib/ai/gemini'
 import { type ParentOption, createIssue, searchParentCandidates } from '@/lib/jira/create'
-import { getProjectMeta } from '@/lib/jira/meta'
 import { deleteDraft, saveDraft } from '@/lib/drafts'
 import { SETTING_KEYS, getSetting } from '@/lib/settings'
 import { withoutSprintPrefix } from '@/lib/sprint-name'
@@ -111,17 +110,10 @@ export async function createIssueAction(input: {
   if (!input.summary.trim()) return { ok: false, message: 'Title đang trống' }
   if (!input.issueTypeId) return { ok: false, message: 'Chưa chọn issue type' }
 
-  // The team requires both on every issue it files, so this is a create-time
-  // rule rather than something to clean up on the board afterwards — but only
-  // where the project actually carries the fields. Demanding a date Jira would
-  // reject anyway would block creates on projects that never had them.
-  const meta = await getProjectMeta()
-  if (meta.startDateFieldId && !input.startDate) {
-    return { ok: false, message: 'Cần chọn start date' }
-  }
-  if (meta.dueDateOnScreen && !input.dueDate) {
-    return { ok: false, message: 'Cần chọn due date' }
-  }
+  // Both dates are optional. The board already lets you clear them on an issue
+  // that exists, so demanding them here only blocked the one moment you may not
+  // know them yet — filing the task. A pair that contradicts itself is still
+  // refused, because that one is wrong rather than unknown.
   if (input.startDate && input.dueDate && input.dueDate < input.startDate) {
     return { ok: false, message: 'Due date không được sớm hơn start date' }
   }
