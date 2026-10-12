@@ -3,6 +3,7 @@
 import { getMyself } from '@/lib/jira/client'
 import { generateTask, pointRulesText } from '@/lib/ai/gemini'
 import {
+  addTeamLabel,
   attachToSprint,
   transitionIssue,
   updateDates,
@@ -393,5 +394,19 @@ export async function transitionAction(
       ok: false,
       message: error instanceof Error ? error.message : 'Không đổi được trạng thái',
     }
+  }
+}
+
+/**
+ * Adds the team label to one issue — the "+ label" fix on a board row whose
+ * subtask was created outside the app. One issue, one click, nothing else.
+ */
+export async function addTeamLabelAction(issueKey: string): Promise<ActionResult> {
+  if (!/^[A-Z][A-Z0-9_]*-\d+$/.test(issueKey)) return { ok: false, message: 'Mã issue không hợp lệ' }
+  try {
+    const added = await addTeamLabel(issueKey)
+    return { ok: true, message: added ? `Đã gắn label ${added} cho ${issueKey}` : `${issueKey} đã có label` }
+  } catch (error) {
+    return { ok: false, message: error instanceof Error ? error.message : 'Không gắn được label' }
   }
 }

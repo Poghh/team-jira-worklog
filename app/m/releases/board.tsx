@@ -5,10 +5,16 @@ import { createPortal } from 'react-dom'
 
 import {
   BUILD_STATUS,
+  type FixCode,
   type ProductConfig,
+  REPORTED_STATUS,
   type ReportExclude,
   type ReportProduct,
+  fixProgress,
+  linkedTasks,
   renderReleaseReport,
+  sameCode,
+  suggestedLinks,
 } from '@/lib/modules/releases/model'
 
 import {
@@ -32,6 +38,8 @@ interface Task {
   buildStatus: string
   noBranch: boolean
   refId: number | null
+  fixes: FixCode[]
+  publishedBuild: string
 }
 
 type Draft = Omit<Task, 'id'> & { id?: number }
@@ -236,6 +244,8 @@ function Board({
       buildStatus: BUILD_STATUS[0],
       noBranch: false,
       refId: null,
+      fixes: [],
+      publishedBuild: '',
     })
   }
 
@@ -257,6 +267,22 @@ function Board({
   function remove(id: number) {
     setTasks((list) => list.filter((t) => t.id !== id))
     void deleteReleaseTaskAction(id)
+  }
+
+  function setFixes(id: number, fixes: FixCode[]) {
+    setTasks((list) => list.map((t) => (t.id === id ? { ...t, fixes } : t)))
+    void patchReleaseTaskAction(id, { fixes })
+  }
+
+  function link(id: number, refId: number | null) {
+    setTasks((list) => list.map((t) => (t.id === id ? { ...t, refId } : t)))
+    void patchReleaseTaskAction(id, { refId })
+  }
+
+  /** Jumps to the product tab of a linked card. */
+  function show(t: Task) {
+    setProductName(t.product)
+    setSearch(t.taskId)
   }
 
   return (
@@ -349,6 +375,12 @@ function Board({
                           task={t}
                           envs={envs}
                           refLabel={t.refId ? refLabelOf(t.refId) : ''}
+                          linked={linkedTasks(t, tasks)}
+                          suggested={suggestedLinks(t, tasks)}
+                          onLink={(other) => (other.refId === t.id ? link(other.id, null) : link(t.id, null))}
+                          onSuggestLink={(other) => link(t.id, other.id)}
+                          onShow={show}
+                          onFixes={(f) => setFixes(t.id, f)}
                           onMove={(e) => move(t.id, e)}
                           onToggleBuild={(s) => toggleBuild(t.id, s)}
                           onEdit={() => setEditing(t)}
@@ -397,6 +429,12 @@ function TaskCard({
   task,
   envs,
   refLabel,
+  linked,
+  suggested,
+  onLink,
+  onSuggestLink,
+  onShow,
+  onFixes,
   onMove,
   onToggleBuild,
   onEdit,
@@ -405,6 +443,15 @@ function TaskCard({
   task: Task
   envs: string[]
   refLabel: string
+  /** Cards in another product this one is linked to (either direction). */
+  linked: Task[]
+  /** Unlinked cards elsewhere with the same code — probably the same task. */
+  suggested: Task[]
+  /** Removes the link to `other` (whichever card holds it). */
+  onLink: (other: Task) => void
+  onSuggestLink: (other: Task) => void
+  onShow: (other: Task) => void
+  onFixes: (fixes: FixCode[]) => void
   onMove: (env: string) => void
   onToggleBuild: (buildStatus: string) => void
   onEdit: () => void
@@ -492,6 +539,11 @@ function TaskCard({
             ≡{task.subTasks.length}
           </span>
         )}
+        {task.publishedBuild && task.buildStatus === REPORTED_STATUS && (
+          <span className="truncate font-mono text-[9.5px] text-ink-3" title={'Public ở ' + task.publishedBuild}>
+            @{buildShort(task.publishedBuild)}
+          </span>
+        )}
         <select
           value={task.environment}
           onChange={(e) => onMove(e.target.value)}
@@ -505,6 +557,110 @@ function TaskCard({
           ))}
         </select>
       </div>
+
+      <FixList fixes={task.fixes} onChange={onFixes} />
+
+      {linked.map((o) => (
+        <div key={o.id} className="flex items-center gap-1 rounded bg-epic-soft/60 px-1.5 py-0.5 text-[10.5px]">
+          <span className="shrink-0">🔗</span>
+          <button type="button" onClick={() => onShow(o)} className="min-w-0 truncate text-left font-medium text-epic-ink hover:underline" title="Mở thẻ bên kia">
+            {o.product} · {o.taskId || o.description}
+          </button>
+          <span className="shrink-0 text-ink-3">· {o.environment}</span>
+          <span className={'shrink-0 rounded px-1 font-mono text-[9.5px] ' + statusChip(o.buildStatus)}>{o.buildStatus}</span>
+          {o.fixes.length > 0 && <span className="shrink-0 text-ink-3">· {fixProgress(o.fixes)}</span>}
+          <button
+            type="button"
+            onClick={() => onLink(o)}
+            title="Bỏ liên kết"
+            className="ml-auto shrink-0 text-ink-3 opacity-0 hover:text-crit group-hover:opacity-100"
+          >
+            ✕
+          </button>
+        </div>
+      ))}
+      {suggested.map((o) => (
+        <div key={o.id} className="flex items-center gap-1 rounded border border-dashed border-line px-1.5 py-0.5 text-[10.5px] text-ink-3">
+          <span className="shrink-0">🔗?</span>
+          <span className="min-w-0 truncate" title="Cùng mã task ở product khác — có thể là cùng một task">
+            Có thể liên quan: {o.product} · {o.taskId}
+          </span>
+          <button type="button" onClick={() => onSuggestLink(o)} className="ml-auto shrink-0 font-medium text-accent-ink hover:underline">
+            Nối
+          </button>
+        </div>
+      ))}
+    </div>
+  )
+}
+
+const statusChip = (s: string) =>
+  ['bg-surface-2 text-ink-2', 'bg-warn-soft text-warn', 'bg-blue-soft text-blue', 'bg-good-soft text-good'][
+    Math.max(0, (BUILD_STATUS as readonly string[]).indexOf(s))
+  ]
+
+/** "VipTalk Lite 2.3.0 (515)" → "515", for the tight space on a card. */
+const buildShort = (b: string) => /\(([^)]+)\)\s*$/.exec(b)?.[1] ?? b
+
+/**
+ * The bug-fix codes raised after a feature built. Click a code's dot to move
+ * it to the next stage; type a code and Enter to add one. Codes that went
+ * public show the build they went out in.
+ */
+function FixList({ fixes, onChange }: { fixes: FixCode[]; onChange: (f: FixCode[]) => void }) {
+  const [adding, setAdding] = useState('')
+  const [open, setOpen] = useState(false)
+  const pending = fixes.filter((f) => f.status !== REPORTED_STATUS)
+  const shown = open ? fixes : pending.length ? pending : []
+  const next = (s: string) => BUILD_STATUS[(Math.max(0, (BUILD_STATUS as readonly string[]).indexOf(s)) + 1) % BUILD_STATUS.length]
+  const icon = (s: string) => (s === REPORTED_STATUS ? '✓' : s === BUILD_STATUS[2] ? '●' : s === BUILD_STATUS[1] ? '◐' : '○')
+
+  return (
+    <div className="flex flex-col gap-0.5">
+      {fixes.length > 0 && (
+        <button type="button" onClick={() => setOpen((v) => !v)} className="text-left text-[10.5px] text-ink-3 hover:text-ink">
+          Fix: {fixProgress(fixes)} {open ? '▴' : '▾'}
+        </button>
+      )}
+      {shown.map((f) => (
+        <div key={f.code} className="group/fix flex items-center gap-1 pl-1 font-mono text-[10.5px]">
+          <button
+            type="button"
+            onClick={() => onChange(fixes.map((x) => (x.code === f.code ? { ...x, status: next(x.status) } : x)))}
+            title={`${f.status} — bấm để chuyển sang "${next(f.status)}"`}
+            className={'shrink-0 rounded px-1 ' + statusChip(f.status)}
+          >
+            {icon(f.status)}
+          </button>
+          <span className="truncate">{f.code}</span>
+          <span className="shrink-0 text-ink-3">{f.status === REPORTED_STATUS && f.build ? `@${buildShort(f.build)}` : f.status}</span>
+          <button
+            type="button"
+            onClick={() => onChange(fixes.filter((x) => x.code !== f.code))}
+            title="Xoá mã fix"
+            className="ml-auto shrink-0 text-ink-3 opacity-0 hover:text-crit group-hover/fix:opacity-100"
+          >
+            ✕
+          </button>
+        </div>
+      ))}
+      <input
+        value={adding}
+        onChange={(e) => setAdding(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key !== 'Enter') return
+          const codes = adding.split(/[\s,;]+/).map((c) => c.trim()).filter(Boolean)
+          const fresh = codes.filter((c) => !fixes.some((x) => x.code.toUpperCase() === c.toUpperCase()))
+          if (fresh.length) onChange([...fixes, ...fresh.map((code) => ({ code, status: BUILD_STATUS[0] }))])
+          setAdding('')
+        }}
+        placeholder="+ mã fix (Enter)"
+        className={
+          'w-full rounded border border-transparent bg-transparent px-1 py-0 font-mono text-[10.5px] text-ink-2 placeholder:text-ink-3 hover:border-line focus:border-line focus:bg-ground ' +
+          // A card with no fixes keeps the field out of sight until hovered.
+          (fixes.length || adding ? '' : 'opacity-0 focus:opacity-100 group-hover:opacity-100')
+        }
+      />
     </div>
   )
 }
@@ -552,7 +708,7 @@ function TaskModal({
 
   function save() {
     startSaving(async () => {
-      const refId = d.noBranch ? d.refId : null
+      const refId = d.refId && d.refId !== d.id ? d.refId : null
       const res = await saveReleaseTaskAction({
         id: d.id,
         taskId: d.taskId,
@@ -565,6 +721,8 @@ function TaskModal({
         buildStatus: d.buildStatus,
         noBranch: d.noBranch,
         refId,
+        fixes: d.fixes,
+        publishedBuild: d.publishedBuild,
       })
       setNote(res)
       if (res.ok && res.id) {
@@ -580,6 +738,8 @@ function TaskModal({
           buildStatus: d.buildStatus,
           noBranch: d.noBranch,
           refId,
+          fixes: d.fixes,
+          publishedBuild: d.publishedBuild,
         })
       }
     })
@@ -689,24 +849,27 @@ function TaskModal({
               Không có nhánh code (vd Lite chỉ build theo version)
             </label>
 
-            {d.noBranch ? (
-              <Field label="Tham chiếu task" hint="task chứa code, vd ở MatrixRustSDK">
-                <select
-                  value={d.refId ?? ''}
-                  onChange={(e) => patch({ refId: e.target.value ? Number(e.target.value) : null })}
-                  className="w-full rounded-md border border-line bg-ground px-2.5 py-1.5 text-[13px]"
-                >
-                  <option value="">— không —</option>
-                  {allTasks
-                    .filter((t) => t.id !== d.id)
-                    .map((t) => (
-                      <option key={t.id} value={t.id}>
-                        {t.product} · {t.taskId || t.description || 'task'}
-                      </option>
-                    ))}
-                </select>
-              </Field>
-            ) : (
+            <Field label="Liên kết task ở product khác" hint="vd task Lite đi cùng task MatrixRustSDK">
+              <select
+                value={d.refId ?? ''}
+                onChange={(e) => patch({ refId: e.target.value ? Number(e.target.value) : null })}
+                className="w-full rounded-md border border-line bg-ground px-2.5 py-1.5 text-[13px]"
+              >
+                <option value="">— không —</option>
+                {allTasks
+                  .filter((t) => t.id !== d.id && t.product !== d.product)
+                  // Same code first: almost always the card being looked for.
+                  .sort((a, b) => Number(sameCode(b.taskId, d.taskId)) - Number(sameCode(a.taskId, d.taskId)))
+                  .map((t) => (
+                    <option key={t.id} value={t.id}>
+                      {sameCode(t.taskId, d.taskId) ? '★ ' : ''}
+                      {t.product} · {t.taskId || t.description || 'task'} · {t.environment}
+                    </option>
+                  ))}
+              </select>
+            </Field>
+
+            {!d.noBranch && (
               <Field label="Branch">
                 <input
                   value={d.branchName}
@@ -717,6 +880,46 @@ function TaskModal({
               </Field>
             )}
           </div>
+
+          <Field label="Mã fix" hint="bug fix phát sinh sau khi feature build — mỗi mã một trạng thái">
+            <div className="flex flex-col gap-1">
+              {d.fixes.map((f, i) => (
+                <div key={i} className="flex items-center gap-2">
+                  <input
+                    value={f.code}
+                    onChange={(e) => patch({ fixes: d.fixes.map((x, j) => (j === i ? { ...x, code: e.target.value } : x)) })}
+                    className="w-32 rounded-md border border-line bg-ground px-2 py-1 font-mono text-[12.5px]"
+                  />
+                  <select
+                    value={f.status}
+                    onChange={(e) => patch({ fixes: d.fixes.map((x, j) => (j === i ? { ...x, status: e.target.value } : x)) })}
+                    className="rounded-md border border-line bg-ground px-2 py-1 text-[12.5px]"
+                  >
+                    {BUILD_STATUS.map((b) => (
+                      <option key={b} value={b}>
+                        {b}
+                      </option>
+                    ))}
+                  </select>
+                  <span className="min-w-0 truncate text-[11.5px] text-ink-3">{f.build ? `public ở ${f.build}` : ''}</span>
+                  <button
+                    type="button"
+                    onClick={() => patch({ fixes: d.fixes.filter((_, j) => j !== i) })}
+                    className="ml-auto text-ink-3 hover:text-crit"
+                  >
+                    ✕
+                  </button>
+                </div>
+              ))}
+              <button
+                type="button"
+                onClick={() => patch({ fixes: [...d.fixes, { code: '', status: BUILD_STATUS[0] }] })}
+                className="self-start text-[12px] text-accent-ink hover:underline"
+              >
+                + Thêm mã fix
+              </button>
+            </div>
+          </Field>
 
           <Field label="Subtask" hint="mỗi dòng một cái">
             <textarea

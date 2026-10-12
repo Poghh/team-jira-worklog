@@ -32,6 +32,11 @@ const PREVIOUS = {
       note: { type: 'string', description: 'Một câu: đã sửa thế nào / còn thiếu gì.' },
       line: { type: 'integer', description: 'Code: dòng hiện tại của vấn đề ở commit head mới (nếu còn).' },
       end_line: { type: 'integer' },
+      reply: {
+        type: 'string',
+        description:
+          'Chỉ với vấn đề đã được gửi lên PR (có ghi "đã gửi lên PR"): câu trả lời tiếp gửi member NGAY TRONG THREAD CŨ — phản hồi lại điều member đã trả lời (nếu có), nói rõ còn thiếu gì; đã sửa ổn thì một câu xác nhận ngắn. Không nhắc lại nguyên văn comment cũ.',
+      },
     },
     required: ['id', 'status', 'note'],
   },
@@ -51,11 +56,27 @@ const REVIEWER_NOTE = {
   description: 'Nhận xét gửi riêng cho người review (không phải comment cho member).',
 } as const
 
+const TEST_PLAN = {
+  type: 'array',
+  description: 'Test người review nên tự chạy trên máy để kiểm chứng finding / thay đổi. Bạn KHÔNG chạy — chỉ gợi ý.',
+  items: {
+    type: 'object',
+    properties: {
+      purpose: { type: 'string', description: 'Chạy để kiểm chứng điều gì.' },
+      command: { type: 'string', description: 'Lệnh shell đầy đủ, chạy từ thư mục gốc repo.' },
+      expect: { type: 'string', description: 'Kết quả mong đợi; pass / fail nghĩa là gì cho finding.' },
+      findings: { type: 'array', items: { type: 'string' }, description: 'Title của các finding liên quan (đúng như trong findings).' },
+    },
+    required: ['purpose', 'command', 'expect'],
+  },
+} as const
+
 export const CODE_SCHEMA = {
   type: 'object',
   properties: {
     verdict: { type: 'string', enum: ['approve', 'request_changes', 'comment'] },
     reviewer_note: REVIEWER_NOTE,
+    test_plan: TEST_PLAN,
     findings: {
       type: 'array',
       items: {
@@ -168,15 +189,26 @@ function rulesBlock(globalRules: string, repoRules: string): string {
   return parts.length ? `\n## Quy tắc review riêng của team / repo\n${parts.join('\n\n')}\n` : ''
 }
 
-function previousBlock(prev: FindingView[], kind: 'code' | 'doc'): string {
+/**
+ * The previous round's open findings — and, for those already on GitHub, the
+ * conversation that followed in their thread, so the follow-up answers what the
+ * member actually said rather than repeating the original comment.
+ */
+export type ThreadTalk = Map<number, Array<{ author: string; body: string }>>
+
+function previousBlock(prev: FindingView[], kind: 'code' | 'doc', talk?: ThreadTalk): string {
   if (!prev.length) return ''
   const list = prev
     .map((f) => {
-      const loc = kind === 'doc' ? f.location : `${f.file}${f.line ? `:${f.line}` : ''}`
-      return `- id ${f.id} [${f.severity}] ${loc} — ${f.title}\n  ${f.body.replace(/\n+/g, ' ').slice(0, 600)}`
+      const loc = kind === 'doc' ? f.location : `${f.file}${f.line ? `:${f.line}` : ''}` || 'comment rời'
+      const posted = f.ghUrl ? ' (đã gửi lên PR)' : ''
+      const replies = (talk?.get(f.id) ?? [])
+        .map((c) => `    ↳ ${c.author}: ${c.body.replace(/\s+/g, ' ').slice(0, 400)}`)
+        .join('\n')
+      return `- id ${f.id} [${f.severity}] ${loc}${posted} — ${f.title}\n  ${f.body.replace(/\n+/g, ' ').slice(0, 600)}${replies ? `\n  Trao đổi sau đó trong thread:\n${replies}` : ''}`
     })
     .join('\n')
-  return `\n## Các vấn đề đã nêu ở vòng trước (còn mở)\n${list}\n`
+  return `\n## Các vấn đề đã nêu ở vòng trước (còn mở)\n${list}\nVới vấn đề "đã gửi lên PR", điền \`reply\` trong \`previous\`: câu trả lời tiếp trong thread cũ, theo đúng xưng hô và giọng văn ở trên.\n`
 }
 
 function commentsBlock(comments: PullComment[]): string {
@@ -259,6 +291,8 @@ export function codePrompt(input: {
   addressee: Addressee | null
   /** Tự soi code của chính mình — đổi cách xưng hô và cách mô tả vòng sau. */
   selfReview?: boolean
+  /** Member replies in the GitHub threads of previous findings. */
+  talk?: ThreadTalk
 }): string {
   const pr = input.selfReview ? 'phần code đang làm' : input.prNumber ? `PR #${input.prNumber}` : 'Nhánh'
   const who = input.selfReview ? 'Bạn' : 'Member'
@@ -288,6 +322,7 @@ Cách làm:
 - \`reviewer_note\` là nhận xét RIÊNG cho người review (tech lead) — không gửi member, không xưng hô với tác giả: 3–6 câu, PR làm gì, đánh giá tổng thể, rủi ro lớn nhất, chỗ nào người review nên tự xem kỹ, kết luận merge được chưa.${input.round > 1 ? ' Vòng này: member đã sửa được bao nhiêu, còn gì đáng lo.' : ''}
 - Điều không gắn với dòng code cụ thể — câu hỏi cho member, chỗ nghi ngờ cần member kiểm tra lại (config, backend, môi trường, ý định thiết kế, phạm vi PR, commit/nhánh…) — là **comment rời**: \`file\` để trống, không có \`line\`, \`category\` = "Cần xác nhận" (hỏi / nghi ngờ) hoặc "Chung". Chỉ tạo khi thật sự cần member trả lời hoặc làm gì đó.
 - Nếu PR ổn, \`findings\` có thể rỗng và verdict = approve.
+- \`test_plan\`: 0–5 test người review nên TỰ chạy trên máy để kiểm chứng những finding chưa chắc chắn hoặc phần thay đổi rủi ro. Bạn không chạy gì cả — chỉ gợi ý. Tìm cách repo chạy test (workflow CI, Makefile, fastlane, Package.swift, Cargo.toml / workspace) và đưa lệnh cụ thể, hẹp nhất có thể (một crate / một test / \`-only-testing:\`), không chạy cả bộ. Ưu tiên test đã có; nếu chưa có test phù hợp thì nói rõ trong \`purpose\` là cần viết thêm. Không có gì đáng chạy thì để mảng rỗng.
 
 ${UNTRUSTED}
 
@@ -299,7 +334,7 @@ ${addressBlock(input.addressee)}
 \`\`\`
 ${input.diffStat.slice(0, 6000)}
 \`\`\`
-${linksBlock(input.links)}${docsBlock(input.docs, input.docsChanged)}${input.prBody.trim() ? `\n## Mô tả PR\n${input.prBody.trim().slice(0, 4000)}\n` : ''}${input.note.trim() ? `\n## Ghi chú của người review\n${input.note.trim()}\n` : ''}${rulesBlock(input.globalRules, input.repoRules)}${commentsBlock(input.comments)}${previousBlock(input.previous, 'code')}
+${linksBlock(input.links)}${docsBlock(input.docs, input.docsChanged)}${input.prBody.trim() ? `\n## Mô tả PR\n${input.prBody.trim().slice(0, 4000)}\n` : ''}${input.note.trim() ? `\n## Ghi chú của người review\n${input.note.trim()}\n` : ''}${rulesBlock(input.globalRules, input.repoRules)}${commentsBlock(input.comments)}${previousBlock(input.previous, 'code', input.talk)}
 Khi xong, trả kết quả qua structured output theo schema.`
 }
 
@@ -451,6 +486,7 @@ ${list}
 ${input.message.trim()}
 """
 
+Nếu tin nhắn có kết quả chạy test / log do người review tự chạy: đọc kỹ, nói rõ test nào pass / fail và vì sao, finding nào được xác nhận hay bị bác bỏ, rồi đề xuất cập nhật trong \`changes\` (dismiss finding sai, đổi severity, sửa nội dung, thêm finding nếu lộ lỗi mới).
 Trả lời trong \`reply\`: tiếng Việt, đi thẳng vào câu hỏi; mở lại code / tài liệu để kiểm chứng khi cần, đừng trả lời theo trí nhớ nếu không chắc. Nếu người review yêu cầu (hoặc bạn thấy rõ là cần) sửa bản review, đề xuất trong \`changes\`:
 - \`update\`: sửa title / comment / severity của finding theo id, hoặc \`dismiss: true\` nếu nó sai; kèm \`reason\`.
 - \`add\`: finding mới (cùng dạng như lúc review${isCode(input.kind) ? '; điều không gắn với dòng code nào là comment rời — bỏ trống file / line' : ''}).

@@ -223,6 +223,21 @@ export interface DocTemplate {
   repoIds: string[]
 }
 
+/**
+ * A test Claude suggests the reviewer run on their own machine to confirm or
+ * rule out a finding. Suggested only — the app never runs it.
+ */
+export interface TestSuggestion {
+  /** What the run would show. */
+  purpose: string
+  /** Shell command, from the repository root. */
+  command: string
+  /** How to read the result: what a pass / a failure means for the review. */
+  expect: string
+  /** Titles of the findings it bears on. */
+  findings: string[]
+}
+
 export interface FindingView {
   id: number
   roundId: number
@@ -244,6 +259,10 @@ export interface FindingView {
   /** The GitHub comment this finding was posted as — replies hang off it. */
   ghCommentId: number | null
   ghUrl: string
+  /** Carried findings already on GitHub: the reply Claude drafted for that thread. */
+  followReply: string
+  /** Set once that reply is posted. */
+  followSentUrl: string
 }
 
 export interface RoundView {
@@ -256,6 +275,7 @@ export interface RoundView {
   prevHeadSha: string
   docs: DocFile[]
   links: RoundLink[]
+  testPlan: TestSuggestion[]
   verdict: Verdict | ''
   summary: string
   message: string
@@ -354,4 +374,38 @@ export function blobUrl(githubRepo: string, sha: string, f: FindingView): string
   if (!githubRepo || !sha || !f.file) return ''
   const anchor = f.line ? `#L${f.line}${f.endLine && f.endLine > f.line ? `-L${f.endLine}` : ''}` : ''
   return `https://github.com/${githubRepo}/blob/${sha}/${f.file}${anchor}`
+}
+
+/**
+ * Where a finding can sit on GitHub's diff, or null when it cannot.
+ *
+ * GitHub accepts a comment only on lines inside a diff hunk, and a multi-line
+ * one only when its first and last line are inside the SAME hunk — otherwise
+ * it answers "could not be resolved". A finding often spans a few lines past
+ * the hunk's edge (the closing brace of a function), so the range is trimmed
+ * to the part that overlaps the best hunk instead of being refused.
+ *
+ * `ranges` are the new-side [start, end] line ranges of the file's hunks.
+ */
+export function anchorInDiff(
+  ranges: Array<[number, number]> | undefined,
+  line: number | null,
+  endLine: number | null,
+): { line: number; startLine?: number } | null {
+  if (!ranges?.length || !line) return null
+  const from = line
+  const to = endLine && endLine > line ? endLine : line
+  let best: [number, number] | null = null
+  let overlap = 0
+  for (const [a, b] of ranges) {
+    const o = Math.min(b, to) - Math.max(a, from) + 1
+    // Prefer the hunk holding the first line — where the finding points.
+    if (o > overlap || (o === overlap && o > 0 && from >= a && from <= b)) {
+      best = [Math.max(a, from), Math.min(b, to)]
+      overlap = o
+    }
+  }
+  if (!best || overlap <= 0) return null
+  const [s, e] = best
+  return e > s ? { line: e, startLine: s } : { line: s }
 }

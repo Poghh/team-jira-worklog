@@ -24,11 +24,11 @@ import {
   withRepoLock,
 } from './git'
 import { type RawFinding, buildFreshRows } from './findings'
-import { getPull, listPullComments } from './github'
+import { getDiscussion, getPull, listPullComments } from './github'
 import { cleanupLinks, linkDirs, prepareLinks } from './links'
-import { type DocFile, type FindingStatus, type RoundLink, isCode } from './model'
+import { type DocFile, type FindingStatus, type FindingView, type RoundLink, type TestSuggestion, anchorInDiff, isCode } from './model'
 import { ALLOWED_TOOLS, DISALLOWED_TOOLS, ISOLATION_FLAGS, reviewEnv } from './guard'
-import { CODE_SCHEMA, DOC_SCHEMA, codePrompt, docPrompt } from './prompts'
+import { CODE_SCHEMA, DOC_SCHEMA, type ThreadTalk, codePrompt, docPrompt } from './prompts'
 import { type LogLine, bootTime, lastResult, parseLog, pidAlive, readLog, strayLines } from './proc'
 
 export type { LogLine }
@@ -262,6 +262,7 @@ async function prepareAndSpawn(roundId: number) {
     } else if (item.kind === 'pr') {
       const r = repo!
       let prBody = ''
+      let talk: ThreadTalk | undefined
       let comments: Awaited<ReturnType<typeof listPullComments>> = []
       if (item.prNumber && r.githubRepo) {
         const pull = await getPull(r.githubRepo, item.prNumber)
@@ -270,6 +271,7 @@ async function prepareAndSpawn(roundId: number) {
         patchItem(item.id, { title: pull.title, baseRef: pull.baseRef, headRef: pull.headRef, author: pull.author, url: pull.url })
         Object.assign(item, { title: pull.title, baseRef: pull.baseRef, headRef: pull.headRef, author: pull.author })
         comments = await listPullComments(r.githubRepo, item.prNumber)
+        talk = await threadTalk(r.githubRepo, item.prNumber, previous)
       }
 
       await withRepoLock(r.localPath, async () => {
@@ -310,6 +312,7 @@ async function prepareAndSpawn(roundId: number) {
         docsChanged,
         links,
         addressee: resolveAddressee(item),
+        talk,
         title: item.title,
         prNumber: item.prNumber,
         author: item.author,
@@ -439,6 +442,41 @@ async function prepareAndSpawn(roundId: number) {
   }
 }
 
+/**
+ * What was said under each previous finding that went to GitHub as an inline
+ * comment — read-only, best-effort: without it the follow-up is still written,
+ * just without knowing the member's answer.
+ */
+async function threadTalk(repo: string, number: number, previous: FindingView[]): Promise<ThreadTalk | undefined> {
+  const posted = previous.filter((f) => f.ghCommentId)
+  if (!posted.length) return undefined
+  try {
+    const d = await getDiscussion(repo, number)
+    const talk: ThreadTalk = new Map()
+    for (const f of posted) {
+      const thread = d.threads.find((t) => t.comments.some((c) => c.id === f.ghCommentId))
+      const after = thread?.comments.filter((c) => c.id !== f.ghCommentId) ?? []
+      if (after.length) talk.set(f.id, after.map((c) => ({ author: c.author, body: c.body })))
+    }
+    return talk
+  } catch {
+    return undefined
+  }
+}
+
+/** Suggested tests, kept as text for the reviewer to copy — nothing here is ever executed. */
+function cleanTestPlan(plan: Output['test_plan']): TestSuggestion[] {
+  return (plan ?? [])
+    .filter((t) => t?.command?.trim())
+    .slice(0, 8)
+    .map((t) => ({
+      purpose: String(t.purpose ?? '').trim(),
+      command: String(t.command ?? '').trim(),
+      expect: String(t.expect ?? '').trim(),
+      findings: (t.findings ?? []).map(String).filter(Boolean),
+    }))
+}
+
 function parseDocs(raw: string): DocFile[] {
   try {
     const v = JSON.parse(raw)
@@ -453,10 +491,11 @@ function parseDocs(raw: string): DocFile[] {
 interface Output {
   verdict?: string
   reviewer_note?: string
+  test_plan?: Array<{ purpose?: string; command?: string; expect?: string; findings?: string[] }>
   /** Older rounds / older prompts. */
   summary_comment?: string
   findings?: RawFinding[]
-  previous?: Array<{ id?: number; status?: string; note?: string; line?: number; end_line?: number }>
+  previous?: Array<{ id?: number; status?: string; note?: string; line?: number; end_line?: number; reply?: string }>
 }
 
 async function cleanup(r: RoundRow) {
@@ -506,6 +545,7 @@ async function finalize(r: RoundRow) {
     summary: (out.reviewer_note ?? out.summary_comment ?? '').trim(),
     costUsd: result.total_cost_usd ?? 0,
     sessionId: result.session_id ?? '',
+    testPlan: JSON.stringify(cleanTestPlan(out.test_plan)),
     message: '',
   })
   await cleanup(r)
@@ -547,7 +587,7 @@ async function storeOutput(r: RoundRow, out: Output) {
         endLine = Number.isInteger(v?.end_line) && v!.end_line! >= moved ? v!.end_line! : null
         const snip = await snippetAt(repo.localPath, r.headSha, old.file, line, endLine)
         if (snip.text) ({ text: snippet, start: snippetStart } = snip)
-        inDiff = Boolean(ranges && (ranges.get(old.file) ?? []).some(([a, b]) => line! >= a && line! <= b))
+        inDiff = Boolean(anchorInDiff(ranges?.get(old.file), line, endLine))
       }
       rows.push({
         roundId: r.id,
@@ -571,6 +611,8 @@ async function storeOutput(r: RoundRow, out: Output) {
         ghUrl: old.ghUrl,
         status,
         followNote: v?.note?.trim() || (v ? '' : 'Claude không đánh giá lại điểm này — tự kiểm tra.'),
+        // Only meaningful for a finding already on GitHub: what to say next in its thread.
+        followReply: old.ghUrl ? (v?.reply ?? '').trim() : '',
         position: position++,
       })
     }

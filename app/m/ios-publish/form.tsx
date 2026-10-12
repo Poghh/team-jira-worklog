@@ -1,10 +1,11 @@
 'use client'
 
-import { useEffect, useRef, useState, useTransition } from 'react'
+import { useEffect, useMemo, useRef, useState, useTransition } from 'react'
 
 import type { BuildStatus } from '@/lib/modules/ios-publish/asc'
 import type { AppPreset, ProfileView } from '@/lib/modules/ios-publish/config'
 import { DEFAULT_MESSAGE_TEMPLATE } from '@/lib/modules/ios-publish/message'
+import { type PublishCandidate, renderWhatToTest, republished } from '@/lib/modules/releases/model'
 
 import {
   checkStatusAction,
@@ -61,10 +62,19 @@ const BTN_PRI = 'rounded-md bg-accent px-3 py-1 text-[12.5px] font-medium text-w
 
 type Note = { ok: boolean; message: string } | null
 
+/** A code that can go into the next build, plus where its linked tasks stand. */
+export interface CandidateView extends PublishCandidate {
+  links: Array<{ label: string; environment: string; status: string; ready: boolean }>
+}
+
+const keyOf = (c: Pick<PublishCandidate, 'taskRowId' | 'code'>) => `${c.taskRowId}:${c.code}`
+
 export function IosPublish({
   config,
   log,
   suggestions,
+  candidates,
+  published,
   releaseProducts,
 }: {
   configured: boolean
@@ -72,6 +82,10 @@ export function IosPublish({
   log: LogRow[]
   /** Per-app "What to Test" seed (app id → text) from the releases module. */
   suggestions: Record<string, string>
+  /** Per-app codes not yet public that can go into the next build. */
+  candidates: Record<string, CandidateView[]>
+  /** Per-app codes already public → the build they went out in. */
+  published: Record<string, Array<[string, string]>>
   /** Releases products an app can map to, for the config selectors. */
   releaseProducts: ReleaseProduct[]
 }) {
@@ -102,6 +116,8 @@ export function IosPublish({
             profiles={config.profiles}
             log={log}
             suggestions={suggestions}
+            candidates={candidates}
+            published={published}
           />
         ) : (
           <div className={CARD + ' text-[12.5px] text-ink-2'}>
@@ -149,11 +165,15 @@ function PublishCards({
   profiles,
   log,
   suggestions,
+  candidates,
+  published,
 }: {
   apps: AppPreset[]
   profiles: ProfileView[]
   log: LogRow[]
   suggestions: Record<string, string>
+  candidates: Record<string, CandidateView[]>
+  published: Record<string, Array<[string, string]>>
 }) {
   // Only worth filtering when apps span more than one ASC account; with a single
   // account the picker would just be a control that never changes anything.
@@ -174,6 +194,19 @@ function PublishCards({
   const app = apps.find((a) => a.id === appId)
   const groups = app?.groups ?? []
   const busy = checking || submitting
+
+  // Codes going out in this build — all of the app's pending ones by default.
+  const pending = candidates[appId] ?? []
+  const [picked, setPicked] = useState<Set<string>>(() => new Set(pending.map(keyOf)))
+  useEffect(() => setPicked(new Set((candidates[appId] ?? []).map(keyOf))), [appId, candidates])
+  const chosen = pending.filter((c) => picked.has(keyOf(c)))
+  const already = useMemo(() => republished(content, new Map(published[appId] ?? [])), [content, published, appId])
+
+  function fillFromCodes() {
+    const text = renderWhatToTest(chosen)
+    setContent(text)
+    saveDraft({ content: text })
+  }
 
   function pickApp(id: string) {
     const a = apps.find((x) => x.id === id)
@@ -275,7 +308,14 @@ function PublishCards({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [appId])
 
-  const payload = () => ({ appId, version, groupName, buildNumber, content })
+  const payload = () => ({
+    appId,
+    version,
+    groupName,
+    buildNumber,
+    content,
+    codes: chosen.map((c) => ({ taskRowId: c.taskRowId, code: c.code, kind: c.kind })),
+  })
   function check() {
     startCheck(async () => setResult(await checkStatusAction(payload())))
   }
@@ -372,7 +412,14 @@ function PublishCards({
             placeholder="- Mô tả bản build cho tester"
             className={INPUT + ' resize-y text-[12.5px] leading-relaxed'}
           />
+          {already.length > 0 && (
+            <p className="rounded-md bg-warn-soft px-2.5 py-1.5 text-[12px] text-warn">
+              ⚠ Đã public trước đó: {already.map((a) => `${a.code} (${a.build})`).join(', ')} — xoá khỏi What to Test nếu không cần nhắc lại.
+            </p>
+          )}
         </div>
+
+        <CodesPanel pending={pending} picked={picked} setPicked={setPicked} onFill={fillFromCodes} publishedCount={(published[appId] ?? []).length} />
 
         <div className="flex items-center gap-2">
           <button type="button" onClick={check} disabled={busy} className={BTN + ' py-1.5 disabled:opacity-50'}>
@@ -871,5 +918,82 @@ function NotifyManager({ hasWebhook, chatTemplate }: { hasWebhook: boolean; chat
         {note && <span className={'text-[12px] ' + (note.ok ? 'text-good' : 'text-crit')}>{note.message}</span>}
       </div>
     </section>
+  )
+}
+
+/**
+ * The codes that will be recorded as public with this build. Each code goes
+ * out once: anything already public is not offered again. A code whose task is
+ * linked to another product (Lite ↔ MatrixRustSDK) shows where that side is,
+ * and warns when it has not gone public yet.
+ */
+function CodesPanel({
+  pending,
+  picked,
+  setPicked,
+  onFill,
+  publishedCount,
+}: {
+  pending: CandidateView[]
+  picked: Set<string>
+  setPicked: (s: Set<string>) => void
+  onFill: () => void
+  publishedCount: number
+}) {
+  const features = [...new Set(pending.map((c) => c.feature))]
+  const toggle = (k: string) => {
+    const next = new Set(picked)
+    if (next.has(k)) next.delete(k)
+    else next.add(k)
+    setPicked(next)
+  }
+
+  return (
+    <div className="mb-3 rounded-md border border-line px-3 py-2.5">
+      <div className="mb-1.5 flex flex-wrap items-center gap-2">
+        <span className="text-xs font-medium text-ink-2">Mã sẽ public trong build này</span>
+        <span className="text-[11.5px] text-ink-3">
+          {picked.size}/{pending.length} đã chọn{publishedCount ? ` · ${publishedCount} mã đã public ở build trước (ẩn)` : ''}
+        </span>
+        {pending.length > 0 && (
+          <button type="button" onClick={onFill} className="ml-auto text-[11.5px] text-accent-ink underline-offset-2 hover:underline">
+            ✦ Điền What to Test từ mã đã chọn
+          </button>
+        )}
+      </div>
+      {pending.length === 0 ? (
+        <p className="text-[12px] text-ink-3">Không có mã nào &quot;đã build&quot; mà chưa public cho app này.</p>
+      ) : (
+        <div className="flex flex-col gap-2">
+          {features.map((feature) => {
+            const rows = pending.filter((c) => c.feature === feature)
+            const links = rows[0]?.links ?? []
+            return (
+              <div key={feature}>
+                {rows.map((c) => (
+                  <label key={keyOf(c)} className="flex cursor-pointer items-center gap-2 text-[12.5px]">
+                    <input type="checkbox" checked={picked.has(keyOf(c))} onChange={() => toggle(keyOf(c))} />
+                    <span className={'font-mono ' + (c.kind === 'fix' ? 'pl-3' : 'font-semibold')}>{c.code}</span>
+                    <span className="text-[11px] text-ink-3">
+                      {c.kind === 'fix' ? `fix của ${c.feature}` : 'feature'}
+                      {c.team ? ` · ${c.team}` : ''}
+                    </span>
+                  </label>
+                ))}
+                {rows.every((c) => c.kind === 'fix') && (
+                  <div className="pl-5 text-[11px] text-ink-3">feature {feature} đã public trước đó — chỉ còn fix</div>
+                )}
+                {links.map((l) => (
+                  <div key={l.label} className={'pl-5 text-[11px] ' + (l.ready ? 'text-ink-3' : 'text-warn')}>
+                    🔗 {l.label} · {l.environment} · {l.status}
+                    {l.ready ? '' : ' — bên này chưa public, kiểm tra đã có trong build chưa'}
+                  </div>
+                ))}
+              </div>
+            )
+          })}
+        </div>
+      )}
+    </div>
   )
 }

@@ -47,7 +47,7 @@ import {
 } from '../actions'
 import { LinkPicker, useAttachments, useDocUpload } from '../review'
 import { type ChatHandle, ChatPanel, ChatShortcut } from './chat'
-import { AccessNote, DiscussionPanel, FindingGithub, GhProvider, SubmitReview, useGh } from './github'
+import { AccessNote, DiscussionPanel, FindingGithub, GhProvider, ReplyWithBody, SubmitReview, useGh } from './github'
 import {
   BTN,
   BTN_PRI,
@@ -399,6 +399,67 @@ function LinksBar({ item, repos, linkedItems }: { item: ItemView; repos: RepoPre
   )
 }
 
+/**
+ * Tests Claude suggests the reviewer run on their own machine — commands to
+ * copy, never run by the app. "Dán kết quả" opens the chat with a template so
+ * the output goes back to Claude to confirm or drop findings.
+ */
+function TestPlanCard({
+  item,
+  round,
+  onPaste,
+}: {
+  item: ItemView
+  round: RoundView
+  onPaste: (text: string, caret: number) => void
+}) {
+  const checkout = [
+    item.prNumber ? `git fetch origin pull/${item.prNumber}/head` : `git fetch origin ${item.headRef}`,
+    `git checkout --detach ${round.headSha}`,
+  ].join(' && ')
+  return (
+    <div className={CARD}>
+      <div className="mb-1 flex flex-wrap items-center gap-2">
+        <span className={CTITLE}>🧪 Gợi ý chạy test</span>
+        <span className="text-[11px] text-ink-3">bạn tự chạy trên máy — app không chạy gì · dán kết quả vào chat để Claude phân tích</span>
+      </div>
+      {round.headSha && (
+        <div className="mb-2 flex items-center gap-2 text-[12px] text-ink-2">
+          <span className="shrink-0">Checkout đúng commit đã review:</span>
+          <code className="min-w-0 truncate rounded bg-ground px-1.5 py-0.5 font-mono text-[11.5px]">{checkout}</code>
+          <CopyButton text={checkout} />
+        </div>
+      )}
+      <ol className="flex flex-col gap-3">
+        {round.testPlan.map((t, i) => {
+          const template = `Kết quả chạy test #${i + 1} (${t.purpose}):\n\`${t.command}\`\n\n\`\`\`\n\n\`\`\``
+          return (
+            <li key={i} className="rounded-md border border-line px-3 py-2">
+              <div className="text-[13px] font-medium">
+                {i + 1}. {t.purpose}
+              </div>
+              <div className="mt-1 flex items-start gap-2">
+                <pre className="min-w-0 flex-1 overflow-x-auto whitespace-pre-wrap rounded bg-ground px-2 py-1.5 font-mono text-[11.5px]">{t.command}</pre>
+                <CopyButton text={t.command} label="Copy lệnh" />
+              </div>
+              {t.expect && <p className="mt-1 text-[12px] text-ink-2">Đọc kết quả: {t.expect}</p>}
+              {t.findings.length > 0 && <p className="mt-0.5 text-[11.5px] text-ink-3">Liên quan: {t.findings.join(' · ')}</p>}
+              <button
+                type="button"
+                className={BTN + ' mt-1.5'}
+                // Caret lands inside the empty code fence, ready for ⌘V.
+                onClick={() => onPaste(template, template.length - 4)}
+              >
+                📋 Dán kết quả vào chat
+              </button>
+            </li>
+          )
+        })}
+      </ol>
+    </div>
+  )
+}
+
 /** Tab label with a count of threads waiting on the reviewer. */
 function DiscussionLabel() {
   const gh = useGh()
@@ -657,6 +718,14 @@ function DoneRound({
         </div>
       )}
 
+      {item.kind === 'pr' && round.testPlan.length > 0 && (
+        <TestPlanCard
+          item={item}
+          round={round}
+          onPaste={(text, caret) => chat.current?.prefill(text, caret)}
+        />
+      )}
+
       {isLatest && <SubmitReview round={round} findings={findings} onDone={onChanged} />}
       {isLatest && <AccessNote onGithub={item.kind === 'pr' && Boolean(item.prNumber) && Boolean(githubRepo)} />}
 
@@ -816,6 +885,7 @@ function FindingCard({
       <div className="mt-2 flex flex-wrap items-center gap-1.5">
         <CopyButton text={findingClipboard({ ...f, body }, kind)} />
         {!f.ghUrl && f.status !== 'dismissed' && f.status !== 'fixed' && <FindingGithub f={{ ...f, body }} onPosted={onPosted} />}
+        <ReplyWithBody f={f} body={body} onSent={onPosted} />
         <button type="button" className={BTN} onClick={() => setEditing(true)}>
           Sửa
         </button>
@@ -836,7 +906,7 @@ function FindingCard({
       </div>
       {f.ghUrl && (
         <div className="mt-2">
-          <FindingGithub f={f} onPosted={onPosted} />
+          <FindingGithub f={{ ...f, body }} onPosted={onPosted} />
         </div>
       )}
     </div>

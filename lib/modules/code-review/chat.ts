@@ -146,8 +146,21 @@ async function workspace(roundId: number): Promise<{ workdir: string; addDirs: s
   }
 }
 
+/**
+ * Pasted test logs can be enormous. Keep the start (the command, the setup)
+ * and a long tail (where failures and the summary are) — enough to read the
+ * result without blowing past what a prompt can carry.
+ */
+const MAX_MESSAGE = 60_000
+function clip(text: string): string {
+  if (text.length <= MAX_MESSAGE) return text
+  const head = text.slice(0, 6_000)
+  const tail = text.slice(-(MAX_MESSAGE - 6_000))
+  return `${head}\n\n…[cắt bớt ${text.length - MAX_MESSAGE} ký tự ở giữa]…\n\n${tail}`
+}
+
 export async function sendChat(roundId: number, text: string): Promise<{ ok: boolean; message: string }> {
-  const body = text.trim()
+  const body = clip(text.trim())
   if (!body) return { ok: false, message: 'Tin nhắn trống.' }
   const round = getRound(roundId)
   if (!round) return { ok: false, message: 'Không thấy vòng review này nữa (có thể đã bị xoá) — tải lại trang.' }

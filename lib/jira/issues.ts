@@ -65,6 +65,61 @@ function teamClauses(): string[] {
   return label ? [`labels = "${escapeJql(label)}"`] : [];
 }
 
+/**
+ * Team scope for SUBTASKS, applied after fetching rather than in JQL.
+ *
+ * A subtask counts as the team's when it carries the team label itself OR its
+ * parent does. Filtering on the subtask's own label alone hid real work: a
+ * subtask created straight in Jira (no label — labels are not inherited) under
+ * a properly labelled Task disappeared from the board, taking its parent with
+ * it, and the "thiếu label" badge meant to catch exactly that could never show.
+ * JQL cannot express "parent has label X", so the parents are asked directly.
+ */
+async function inTeamScope(issues: JiraIssue[]): Promise<JiraIssue[]> {
+  const { label } = getTeamScope();
+  if (!label || !issues.length) return issues;
+  const has = (labels: unknown) =>
+    strings(labels).some((l) => l.toLowerCase() === label.toLowerCase());
+
+  const unlabeled = issues.filter((i) => !has(i.fields.labels) && i.fields.parent?.key);
+  const parentKeys = [...new Set(unlabeled.map((i) => i.fields.parent!.key))];
+  const labelledParents = new Set<string>();
+  const CHUNK = 50;
+  for (let i = 0; i < parentKeys.length; i += CHUNK) {
+    const chunk = parentKeys.slice(i, i + CHUNK);
+    const parents = await searchJql<JiraIssue>(
+      `key in (${chunk.map((k) => `"${escapeJql(k)}"`).join(",")})`,
+      ["labels"],
+      { limit: chunk.length },
+    );
+    for (const p of parents) if (has(p.fields.labels)) labelledParents.add(p.key);
+  }
+  return issues.filter(
+    (i) => has(i.fields.labels) || (i.fields.parent?.key && labelledParents.has(i.fields.parent.key)),
+  );
+}
+
+/**
+ * Adds the team label to one issue — the board's "+ label" fix for a subtask
+ * created outside the app. Reads the labels fresh first: the write replaces the
+ * whole array, and a copy from seconds ago could drop someone else's label.
+ */
+export async function addTeamLabel(issueKey: string): Promise<string | null> {
+  const { label } = getTeamScope();
+  if (!label) return null;
+  const issue = await jiraFetch<JiraIssue>(
+    `/rest/api/3/issue/${encodeURIComponent(issueKey)}?fields=labels`,
+    { fresh: true },
+  );
+  const current = strings(issue.fields.labels);
+  if (current.some((l) => l.toLowerCase() === label.toLowerCase())) return null;
+  await jiraFetch(`/rest/api/3/issue/${encodeURIComponent(issueKey)}`, {
+    method: "PUT",
+    body: { fields: { labels: [...current, label] } },
+  });
+  return label;
+}
+
 export interface BoardQuery {
   sprintId?: number | null;
   /** Substring match on summary or key. */
@@ -175,11 +230,12 @@ export async function getBoard(query: BoardQuery = {}): Promise<BoardParent[]> {
   const meta = await getProjectMeta();
   const projectKey = requireProjectKey();
 
+  // No team-label clause here: team scope for subtasks is "own label OR the
+  // parent's", which JQL cannot say — applied after fetching (inTeamScope).
   const base = [
     `project = "${escapeJql(projectKey)}"`,
     "assignee = currentUser()",
     "issuetype in subTaskIssueTypes()",
-    ...teamClauses(),
   ];
 
   if (query.status !== "all") base.push("statusCategory != Done");
@@ -236,6 +292,7 @@ export async function getBoard(query: BoardQuery = {}): Promise<BoardParent[]> {
       { limit: 200, reconcileIssues: query.reconcileIds },
     );
   }
+  issues = await inTeamScope(issues);
 
   const subtasks: BoardSubtask[] = issues.map((issue) => ({
     id: issue.id,
@@ -488,14 +545,14 @@ export async function getSprintPoints(sprintId: number): Promise<PointRow[]> {
   const parentKeys = await sprintParentKeys(sprintId, projectKey);
   if (!parentKeys.length) return [];
 
-  const fields = ["status", "timespent"];
+  const fields = ["status", "timespent", "labels", "parent"];
   if (meta.storyPointsFieldId) fields.push(meta.storyPointsFieldId);
 
+  // Team scope applied after fetching — see inTeamScope.
   const base = [
     `project = "${escapeJql(projectKey)}"`,
     "assignee = currentUser()",
     "issuetype in subTaskIssueTypes()",
-    ...teamClauses(),
   ];
 
   // Same chunking as the board: `parent in (…)` over hundreds of keys is a
@@ -516,7 +573,7 @@ export async function getSprintPoints(sprintId: number): Promise<PointRow[]> {
     );
   }
 
-  return (await Promise.all(batches)).flat().map((issue) => ({
+  return (await inTeamScope((await Promise.all(batches)).flat())).map((issue) => ({
     key: issue.key,
     statusName: issue.fields.status?.name ?? "",
     storyPoints: meta.storyPointsFieldId
@@ -616,7 +673,6 @@ export async function getInProgressSubtasks(
     "assignee = currentUser()",
     "issuetype in subTaskIssueTypes()",
     'statusCategory = "In Progress"',
-    ...teamClauses(),
   ];
 
   const CHUNK = 50;
@@ -629,12 +685,12 @@ export async function getInProgressSubtasks(
     batches.push(
       searchJql<JiraIssue>(
         `${[...base, `parent in (${chunk})`].join(" AND ")} ORDER BY updated DESC`,
-        ["summary"],
+        ["summary", "labels", "parent"],
         { limit: 100 },
       ),
     );
   }
-  const issues = (await Promise.all(batches)).flat();
+  const issues = await inTeamScope((await Promise.all(batches)).flat());
   return issues.map((i) => ({ key: i.key, summary: i.fields.summary ?? "" }));
 }
 

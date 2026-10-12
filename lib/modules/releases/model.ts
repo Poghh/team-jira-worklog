@@ -32,6 +32,18 @@ export const DEFAULT_PRODUCTS: ProductConfig[] = [
 
 export const DEFAULT_TEAMS = ['CTalk', 'Hir', 'CXP']
 
+/**
+ * A bug-fix task code raised after the feature built. Fixes keep coming and
+ * keep being rebuilt long after the feature itself went public, so each one
+ * carries its own status and remembers the build it went out in.
+ */
+export interface FixCode {
+  code: string
+  status: string
+  /** Build it went public in, e.g. "VipTalk Lite 2.3.0 (515)". */
+  build?: string
+}
+
 export interface ReleaseTaskShape {
   taskId: string
   description: string
@@ -43,8 +55,14 @@ export interface ReleaseTaskShape {
   buildStatus: string
   /** No code branch of its own (e.g. Lite just rebuilds against a new SDK). */
   noBranch: boolean
-  /** Another task this one derives from (e.g. the MatrixRustSDK task). */
+  /**
+   * The related task in another product — a Lite task and the MatrixRustSDK
+   * task it builds on. Shown on both cards; one link per pair is enough.
+   */
   refId: number | null
+  fixes: FixCode[]
+  /** Build the feature code itself went public in. */
+  publishedBuild: string
 }
 
 interface ReportTask {
@@ -193,4 +211,130 @@ export function renderReleaseReport(
     .join('\n\n')
 
   return text || '(chưa có task để report)'
+}
+
+/* ── fix codes, publishing and cross-product links ─────────────────────────── */
+
+export interface TaskLike {
+  id: number
+  taskId: string
+  description: string
+  product: string
+  team: string
+  environment: string
+  buildStatus: string
+  refId: number | null
+  fixes: FixCode[]
+  publishedBuild: string
+}
+
+/** One code that can go into a TestFlight build: a feature, or a fix of one. */
+export interface PublishCandidate {
+  /** release_tasks row the code lives on. */
+  taskRowId: number
+  code: string
+  kind: 'feature' | 'fix'
+  team: string
+  /** The feature's code / title, for grouping and for "fix of …". */
+  feature: string
+}
+
+const normCode = (s: string) => s.trim().toUpperCase()
+
+/** Same task code, ignoring case and spacing — how Lite and SDK cards of one task match. */
+export function sameCode(a: string, b: string): boolean {
+  return Boolean(a.trim()) && normCode(a) === normCode(b)
+}
+
+/** Tasks linked to this one either way (its refId, or theirs pointing here). */
+export function linkedTasks<T extends TaskLike>(task: T, tasks: T[]): T[] {
+  return tasks.filter((t) => t.id !== task.id && (t.id === task.refId || t.refId === task.id))
+}
+
+/** Cards in another product with the same code that are not linked yet — likely the same task. */
+export function suggestedLinks<T extends TaskLike>(task: T, tasks: T[]): T[] {
+  const linked = new Set(linkedTasks(task, tasks).map((t) => t.id))
+  return tasks.filter(
+    (t) => t.id !== task.id && t.product !== task.product && !linked.has(t.id) && sameCode(t.taskId, task.taskId),
+  )
+}
+
+/**
+ * Codes ready to go into the next build of an app mapped to `productName` at
+ * `environment`: features still at "đã build" and fixes at "đã build", on tasks
+ * that reached that environment or higher. Anything already public is left out
+ * — the point is that each code goes out once.
+ */
+export function publishCandidates(
+  tasks: TaskLike[],
+  productName: string,
+  environment: string,
+  environments: string[],
+): PublishCandidate[] {
+  const rankHere = environments.indexOf(environment)
+  const out: PublishCandidate[] = []
+  for (const t of tasks) {
+    if (productName && t.product !== productName) continue
+    if (rankHere >= 0 && environments.indexOf(t.environment) < rankHere) continue
+    const feature = t.taskId.trim() || t.description.trim()
+    if (t.buildStatus === BUILT_STATUS && feature) {
+      out.push({ taskRowId: t.id, code: feature, kind: 'feature', team: t.team, feature })
+    }
+    for (const f of t.fixes) {
+      if (f.status === BUILT_STATUS && f.code.trim()) {
+        out.push({ taskRowId: t.id, code: f.code.trim(), kind: 'fix', team: t.team, feature })
+      }
+    }
+  }
+  return out
+}
+
+/** Every code of a product already public, with the build it went out in. */
+export function publishedCodes(tasks: TaskLike[], productName: string): Map<string, string> {
+  const out = new Map<string, string>()
+  for (const t of tasks) {
+    if (productName && t.product !== productName) continue
+    const feature = t.taskId.trim()
+    if (feature && t.buildStatus === REPORTED_STATUS) out.set(normCode(feature), t.publishedBuild || 'build trước')
+    for (const f of t.fixes) {
+      if (f.status === REPORTED_STATUS && f.code.trim()) out.set(normCode(f.code), f.build || 'build trước')
+    }
+  }
+  return out
+}
+
+/** Codes from `published` that `text` mentions — "you are about to announce these again". */
+export function republished(text: string, published: Map<string, string>): Array<{ code: string; build: string }> {
+  const upper = text.toUpperCase()
+  const out: Array<{ code: string; build: string }> = []
+  for (const [code, build] of published) {
+    const esc = code.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+    if (new RegExp(`(^|[^A-Z0-9])${esc}([^A-Z0-9]|$)`).test(upper)) out.push({ code, build })
+  }
+  return out
+}
+
+/**
+ * "What to Test" from the chosen codes, grouped by team in first-seen order:
+ *
+ *   - CTalk: VT-2511, VT-2633 (fix VT-2511)
+ *   - Hir: VT-2256
+ */
+export function renderWhatToTest(chosen: PublishCandidate[]): string {
+  const teams = [...new Set(chosen.map((c) => c.team))]
+  return teams
+    .map((team) => {
+      const codes = chosen
+        .filter((c) => c.team === team)
+        .map((c) => (c.kind === 'fix' && c.feature && !sameCode(c.feature, c.code) ? `${c.code} (fix ${c.feature})` : c.code))
+      return `- ${team || 'Khác'}: ${codes.join(', ')}`
+    })
+    .join('\n')
+}
+
+/** "3/5 fix đã public" — the line a feature card shows under its title. */
+export function fixProgress(fixes: FixCode[]): string {
+  if (!fixes.length) return ''
+  const pub = fixes.filter((f) => f.status === REPORTED_STATUS).length
+  return `${pub}/${fixes.length} fix đã public`
 }

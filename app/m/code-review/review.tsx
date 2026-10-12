@@ -40,7 +40,7 @@ import {
   saveRunnerAction,
   saveTemplatesAction,
 } from './actions'
-import { BTN, BTN_PRI, CARD, CTITLE, ClaudeBanner, INPUT, RoundPill, TabBtn, Ago } from './ui'
+import { BTN, BTN_PRI, CARD, CTITLE, ClaudeBanner, INPUT, RoundPill, TabBtn, Ago, DropZone } from './ui'
 
 type Tab = 'items' | 'pr' | 'self' | 'doc' | 'config'
 
@@ -754,22 +754,21 @@ function DocPicker({
 }) {
   return (
     <div>
-      <input
-        type="file"
-        accept="application/pdf,.pdf"
-        multiple
-        onChange={(e) => {
-          const files = [...(e.target.files ?? [])]
+      <DropZone
+        extensions={['.pdf']}
+        hint="PDF — kéo cả Mô tả chức năng, TDD iOS, TDD SDK… vào một lần"
+        onFiles={(files) =>
           setDocs((d) => [
             ...d,
-            ...files.map((file) => {
-              const role = (/tdd|design|thiet.?ke|thiết.?kế/i.test(file.name) ? 'tdd' : 'spec') as DocRole
-              return { file, role, templateId: guess?.({ name: file.name, role }) ?? '' }
-            }),
+            // The same file dropped twice is kept once.
+            ...files
+              .filter((file) => !d.some((x) => x.file.name === file.name && x.file.size === file.size))
+              .map((file) => {
+                const role = (/tdd|design|thiet.?ke|thiết.?kế/i.test(file.name) ? 'tdd' : 'spec') as DocRole
+                return { file, role, templateId: guess?.({ name: file.name, role }) ?? '' }
+              }),
           ])
-          e.target.value = ''
-        }}
-        className="text-[12.5px] file:mr-2 file:rounded-md file:border file:border-line-strong file:bg-surface file:px-2.5 file:py-1 file:text-[12.5px]"
+        }
       />
       {docs.length > 0 && (
         <ul className="mt-2 flex flex-col gap-1.5">
@@ -1328,16 +1327,10 @@ function TemplatesManager({ templates, repos }: { templates: DocTemplate[]; repo
                   ))}
                 </ul>
               )}
-              <input
-                type="file"
-                accept="application/pdf,.pdf,.md,.markdown,.txt,text/markdown,text/plain"
-                multiple
+              <DropZone
+                extensions={['.pdf', '.md', '.markdown', '.txt']}
                 disabled={uploading !== null}
-                onChange={(e) => {
-                  void upload(i, [...(e.target.files ?? [])])
-                  e.target.value = ''
-                }}
-                className="text-[12.5px] file:mr-2 file:rounded-md file:border file:border-line-strong file:bg-surface file:px-2.5 file:py-1 file:text-[12.5px]"
+                onFiles={(files) => void upload(i, files)}
               />
               {uploading === i && <span className="ml-2 text-[12px] text-ink-3">Đang tải lên…</span>}
             </div>

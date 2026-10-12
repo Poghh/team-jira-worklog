@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useTransition } from 'react'
+import { useEffect, useRef, useState, useTransition } from 'react'
 
 import type { ClaudeCheck } from '@/lib/modules/code-review/claude'
 import {
@@ -174,4 +174,104 @@ export function Elapsed({ from, to }: { from: number | null; to: number | null }
   if (!from) return null
   if (to !== null) return <>{duration(from, to)}</>
   return now === null ? null : <>{duration(from, now)}</>
+}
+
+/**
+ * Drop several files at once, or click to pick them. `extensions` filters
+ * what is accepted; anything else is named and skipped, the rest still added.
+ *
+ * While mounted it also stops the browser from opening a file dropped just
+ * outside the zone — which would navigate away and lose whatever was typed.
+ */
+export function DropZone({
+  extensions,
+  onFiles,
+  disabled,
+  hint,
+}: {
+  /** Lower-case, with the dot: ['.pdf'] or ['.pdf', '.md', '.txt']. */
+  extensions: string[]
+  onFiles: (files: File[]) => void
+  disabled?: boolean
+  hint?: string
+}) {
+  const [over, setOver] = useState(false)
+  const [skipped, setSkipped] = useState('')
+  const input = useRef<HTMLInputElement>(null)
+
+  useEffect(() => {
+    const stop = (e: DragEvent) => {
+      if (e.dataTransfer?.types.includes('Files')) e.preventDefault()
+    }
+    window.addEventListener('dragover', stop)
+    window.addEventListener('drop', stop)
+    return () => {
+      window.removeEventListener('dragover', stop)
+      window.removeEventListener('drop', stop)
+    }
+  }, [])
+
+  const take = (list: FileList | null) => {
+    const all = [...(list ?? [])]
+    const ok = all.filter((f) => extensions.some((ext) => f.name.toLowerCase().endsWith(ext)))
+    const bad = all.filter((f) => !ok.includes(f))
+    setSkipped(bad.length ? `Bỏ qua ${bad.map((f) => f.name).join(', ')} — chỉ nhận ${extensions.join(', ')}.` : '')
+    if (ok.length) onFiles(ok)
+  }
+
+  return (
+    <div>
+      <div
+        role="button"
+        tabIndex={0}
+        aria-disabled={disabled}
+        onClick={() => !disabled && input.current?.click()}
+        onKeyDown={(e) => {
+          if (!disabled && (e.key === 'Enter' || e.key === ' ')) {
+            e.preventDefault()
+            input.current?.click()
+          }
+        }}
+        onDragEnter={(e) => {
+          e.preventDefault()
+          if (!disabled) setOver(true)
+        }}
+        onDragOver={(e) => {
+          e.preventDefault()
+          e.dataTransfer.dropEffect = disabled ? 'none' : 'copy'
+        }}
+        onDragLeave={(e) => {
+          if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setOver(false)
+        }}
+        onDrop={(e) => {
+          e.preventDefault()
+          setOver(false)
+          if (!disabled) take(e.dataTransfer.files)
+        }}
+        className={
+          'flex cursor-pointer flex-col items-center justify-center gap-0.5 rounded-md border-2 border-dashed px-3 py-4 text-center text-[12.5px] transition-colors ' +
+          (disabled
+            ? 'cursor-not-allowed border-line text-ink-3 opacity-60'
+            : over
+              ? 'border-accent bg-accent-soft text-accent-ink'
+              : 'border-line-strong text-ink-2 hover:border-accent hover:bg-surface-2')
+        }
+      >
+        <span className="font-medium">{over ? 'Thả file vào đây' : '📂 Kéo thả nhiều file vào đây, hoặc bấm để chọn'}</span>
+        <span className="text-[11.5px] text-ink-3">{hint ?? `Nhận ${extensions.join(', ')} — chọn được nhiều file một lần`}</span>
+      </div>
+      <input
+        ref={input}
+        type="file"
+        multiple
+        hidden
+        accept={extensions.join(',')}
+        onChange={(e) => {
+          take(e.target.files)
+          e.target.value = ''
+        }}
+      />
+      {skipped && <p className="mt-1 text-[12px] text-warn">{skipped}</p>}
+    </div>
+  )
 }

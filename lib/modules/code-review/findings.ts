@@ -3,7 +3,7 @@ import 'server-only'
 import type { reviewFindings } from '@/lib/db/schema'
 
 import { snippetAt } from './git'
-import { DOC_CATEGORIES, type ItemKind, type RepoPreset, SEVERITIES, type Severity } from './model'
+import { DOC_CATEGORIES, type ItemKind, type RepoPreset, SEVERITIES, type Severity, anchorInDiff } from './model'
 import type { RoundRow } from './store'
 
 /**
@@ -49,7 +49,7 @@ export async function buildFreshRows(
     const endLine = Number.isInteger(f.end_line) && f.end_line! >= (line ?? 0) ? f.end_line! : null
     let snippet = { text: '', start: 0 }
     if (repo && file && line && r.headSha) snippet = await snippetAt(repo.localPath, r.headSha, file, line, endLine)
-    const inDiff = Boolean(ranges && file && line && (ranges.get(file) ?? []).some(([a, b]) => line >= a && line <= b))
+    const inDiff = Boolean(file && anchorInDiff(ranges?.get(file), line, endLine))
     rows.push({
       roundId: r.id,
       itemId: r.itemId,

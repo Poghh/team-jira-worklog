@@ -16,6 +16,7 @@ import {
   type Addressee,
   type PrLink,
   type RoundLink,
+  type TestSuggestion,
   type RoundState,
   type RoundView,
   type Severity,
@@ -90,6 +91,7 @@ export const toRound = (r: typeof reviewRounds.$inferSelect): RoundView => ({
   prevHeadSha: r.prevHeadSha,
   docs: parseDocs(r.docs),
   links: parseJsonArray<RoundLink>(r.links),
+  testPlan: parseJsonArray<TestSuggestion>(r.testPlan),
   verdict: r.verdict as Verdict | '',
   summary: r.summary,
   message: r.message,
@@ -119,6 +121,8 @@ const toFinding = (r: typeof reviewFindings.$inferSelect): FindingView => ({
   followNote: r.followNote,
   ghCommentId: r.ghCommentId,
   ghUrl: r.ghUrl,
+  followReply: r.followReply,
+  followSentUrl: r.followSentUrl,
 })
 
 /* ── items ──────────────────────────────────────────────────────────────── */
@@ -365,7 +369,15 @@ export function insertFindings(rows: Array<typeof reviewFindings.$inferInsert>) 
 
 export function patchFinding(
   id: number,
-  patch: { body?: string; status?: FindingStatus; title?: string; ghCommentId?: number | null; ghUrl?: string },
+  patch: {
+    body?: string
+    status?: FindingStatus
+    title?: string
+    ghCommentId?: number | null
+    ghUrl?: string
+    followReply?: string
+    followSentUrl?: string
+  },
 ) {
   db.update(reviewFindings).set(patch).where(eq(reviewFindings.id, id)).run()
 }

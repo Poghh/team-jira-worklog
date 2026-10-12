@@ -31,6 +31,7 @@ import { BranchLine, BranchNote } from "./branch-note";
 import { DatesEditor } from "./dates-editor";
 import { HygieneBadge } from "./hygiene-badge";
 import { IssueDetail } from "./issue-detail";
+import { LabelFixButton } from "./label-fix";
 import { useNav } from "./navigation";
 import { PointsEditor } from "./points-editor";
 import { Popover, PopoverTitle } from "./popover";
@@ -299,8 +300,9 @@ export function SubtaskRow({
               {subtask.summary}
             </button>
             {(hygiene.missingLabel || hygiene.missingPrefix) && (
-              <span className="shrink-0 pt-px">
+              <span className="flex shrink-0 items-center gap-1 pt-px">
                 <HygieneBadge hygiene={hygiene} />
+                {hygiene.missingLabel && team.label && <LabelFixButton issueKey={subtask.key} label={team.label} />}
               </span>
             )}
           </span>

@@ -22,7 +22,7 @@ import {
   submitToExternalTesting,
 } from '@/lib/modules/ios-publish/asc'
 import { recordIosLog } from '@/lib/modules/ios-publish/store'
-import { publishBuiltTasksMentioned } from '@/lib/modules/releases/store'
+import { publishBuiltTasksMentioned, publishCodes } from '@/lib/modules/releases/store'
 
 export interface IosResult {
   ok: boolean
@@ -46,6 +46,8 @@ interface PublishInput {
   groupName: string
   buildNumber: string
   content: string
+  /** The codes the reviewer ticked as going out in this build (releases module). */
+  codes?: Array<{ taskRowId: number; code: string; kind: 'feature' | 'fix' }>
 }
 
 function enabled(): boolean {
@@ -208,10 +210,16 @@ export async function submitBuildAction(input: PublishInput): Promise<IosResult>
     // releases board so its status stays in sync with what actually went out.
     let message = outcome.message
     if (outcome.done && isModuleEnabled('releases')) {
-      const promoted = publishBuiltTasksMentioned(input.content)
+      // Recorded with the build they went out in, so the next publish knows
+      // not to announce them again. The ticked codes first, then anything the
+      // text still names (a code typed in by hand).
+      const build = `${app.name} ${input.version.trim()} (${input.buildNumber.trim()})`
+      const promoted = [
+        ...new Set([...publishCodes(input.codes ?? [], build), ...publishBuiltTasksMentioned(input.content, build)]),
+      ]
       if (promoted.length) {
         revalidatePath('/m/releases')
-        message += ` · ${promoted.length} task → đã public`
+        message += ` · ${promoted.length} mã → đã public (${promoted.join(', ')})`
       }
     }
     return { ok: outcome.done, message, status: outcome.status }

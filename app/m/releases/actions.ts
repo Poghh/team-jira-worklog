@@ -3,9 +3,10 @@
 import { revalidatePath } from 'next/cache'
 
 import { isModuleEnabled } from '@/lib/modules/state'
-import type { ProductConfig, ReleaseTaskShape, ReportExclude } from '@/lib/modules/releases/model'
+import { BUILD_STATUS, type FixCode, type ProductConfig, type ReleaseTaskShape, type ReportExclude } from '@/lib/modules/releases/model'
 import { setProducts, setReportExcludes, setTeams } from '@/lib/modules/releases/config'
 import {
+  type ReleaseTaskPatch,
   deleteReleaseTask,
   patchReleaseTask,
   saveReleaseTask,
@@ -43,7 +44,11 @@ export async function saveReleaseTaskAction(
       environment: input.environment,
       buildStatus: input.buildStatus,
       noBranch: input.noBranch,
-      refId: input.noBranch ? input.refId : null,
+      // A link is no longer only for "no branch" tasks: any Lite task can point
+      // at the MatrixRustSDK task it goes with.
+      refId: input.refId && input.refId !== input.id ? input.refId : null,
+      fixes: cleanFixes(input.fixes),
+      publishedBuild: input.publishedBuild ?? '',
     })
     revalidatePath('/m/releases')
     return { ok: true, message: 'Đã lưu task', id }
@@ -52,13 +57,25 @@ export async function saveReleaseTaskAction(
   }
 }
 
-export async function patchReleaseTaskAction(
-  id: number,
-  patch: { environment?: string; buildStatus?: string },
-): Promise<ReleaseResult> {
+/** One row per code, statuses from the known list, no blanks or duplicates. */
+function cleanFixes(fixes: FixCode[] | undefined): FixCode[] {
+  const seen = new Set<string>()
+  const out: FixCode[] = []
+  for (const f of fixes ?? []) {
+    const code = String(f.code ?? '').trim()
+    if (!code || seen.has(code.toUpperCase())) continue
+    seen.add(code.toUpperCase())
+    const status = (BUILD_STATUS as readonly string[]).includes(f.status) ? f.status : BUILD_STATUS[0]
+    out.push({ code, status, ...(f.build ? { build: String(f.build) } : {}) })
+  }
+  return out
+}
+
+export async function patchReleaseTaskAction(id: number, patch: ReleaseTaskPatch): Promise<ReleaseResult> {
   if (!enabled()) return { ok: false, message: 'Module đang tắt' }
   try {
-    patchReleaseTask(id, patch)
+    if (patch.refId === id) return { ok: false, message: 'Không liên kết task với chính nó' }
+    patchReleaseTask(id, { ...patch, ...(patch.fixes ? { fixes: cleanFixes(patch.fixes) } : {}) })
     revalidatePath('/m/releases')
     return { ok: true, message: 'Đã cập nhật' }
   } catch (error) {

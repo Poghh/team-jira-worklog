@@ -8,6 +8,7 @@ import { type FindingView, type RoundView, where } from '@/lib/modules/code-revi
 import {
   commentAction,
   discussionAction,
+  followUpAction,
   githubAccessAction,
   postFindingAction,
   replyAction,
@@ -198,9 +199,104 @@ export function FindingGithub({ f, onPosted }: { f: FindingView; onPosted: () =>
   return (
     <div className="w-full">
       <a href={f.ghUrl} target="_blank" rel="noreferrer" className="text-[12px] font-medium text-good hover:underline">
-        ✓ Đã gửi lên PR ↗
+        ✓ Đã gửi lên PR{f.ghCommentId ? '' : ' (comment chung)'} ↗
       </a>
-      {thread && <ThreadView thread={thread} skipFirst compact />}
+      {thread && <ThreadView thread={thread} skipFirst compact hideReply />}
+      {gh.canWrite && <FollowUp f={f} onSent={onPosted} />}
+    </div>
+  )
+}
+
+/**
+ * "↩ Trả lời tiếp trên PR": the next thing to say about a finding that is
+ * already on GitHub — prefilled with what Claude drafted in the later round
+ * (it read the member's replies), editable, two clicks to send.
+ */
+function FollowUp({ f, onSent }: { f: FindingView; onSent: () => void }) {
+  const gh = useGh()
+  // Where the reply text can come from: what Claude drafted for the thread in
+  // this round, the comment as it reads now (edited or not), or this round's note.
+  const sources = [
+    f.followReply && { key: 'draft', label: 'Câu Claude soạn', text: f.followReply },
+    { key: 'body', label: 'Nội dung comment', text: f.body },
+    f.followNote && { key: 'note', label: 'Ghi chú vòng này', text: f.followNote },
+  ].filter(Boolean) as Array<{ key: string; label: string; text: string }>
+  const [open, setOpen] = useState(Boolean(f.followReply && !f.followSentUrl))
+  const [source, setSource] = useState(sources[0].key)
+  const [text, setText] = useState(sources[0].text)
+  const [msg, setMsg] = useState<{ ok: boolean; text: string; url?: string } | null>(null)
+  const [busy, start] = useTransition()
+  useEffect(() => {
+    setSource(sources[0].key)
+    setText(sources[0].text)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [f.followReply, f.body])
+
+  return (
+    <div className="mt-2">
+      {f.followSentUrl && (
+        <a href={f.followSentUrl} target="_blank" rel="noreferrer" className="mr-2 text-[12px] text-good hover:underline">
+          ✓ Đã trả lời tiếp ↗
+        </a>
+      )}
+      {!open ? (
+        <button type="button" className={BTN} onClick={() => setOpen(true)}>
+          ↩ Trả lời tiếp trên PR{f.followReply && !f.followSentUrl ? ' (Claude đã soạn sẵn)' : ''}
+        </button>
+      ) : (
+        <div className="rounded-md border border-line bg-surface-2 p-2">
+          <div className="mb-1 flex flex-wrap items-center gap-1.5 text-[11.5px] text-ink-3">
+            <span>{f.ghCommentId ? 'Trả lời ngay trong thread của comment này' : 'Comment mới trên PR, có trích và link comment cũ'} · lấy nội dung từ:</span>
+            {sources.map((s) => (
+              <button
+                key={s.key}
+                type="button"
+                onClick={() => {
+                  setSource(s.key)
+                  setText(s.text)
+                }}
+                className={
+                  'rounded border px-1.5 py-px ' +
+                  (source === s.key ? 'border-accent bg-accent-soft text-accent-ink' : 'border-line bg-surface hover:bg-surface-2')
+                }
+              >
+                {s.label}
+              </button>
+            ))}
+          </div>
+          <textarea
+            value={text}
+            onChange={(e) => setText(e.target.value)}
+            rows={Math.min(10, Math.max(3, text.split('\n').length + 1))}
+            className={INPUT + ' leading-relaxed'}
+            placeholder="Nội dung trả lời tiếp…"
+          />
+          <div className="mt-1.5 flex flex-wrap items-center gap-2">
+            <ConfirmButton
+              primary
+              label="↩ Gửi trả lời"
+              confirm="Xác nhận gửi lên PR?"
+              disabled={busy || !text.trim()}
+              onConfirm={() =>
+                start(async () => {
+                  const r = await followUpAction(f.id, text)
+                  setMsg({ ok: r.ok, text: r.message, url: r.url })
+                  if (r.ok) {
+                    setOpen(false)
+                    onSent()
+                    void gh.reload()
+                  }
+                })
+              }
+            />
+            <button type="button" className={BTN} onClick={() => setOpen(false)}>
+              Đóng
+            </button>
+            {busy && <span className="text-[12px] text-ink-3">Đang gửi…</span>}
+          </div>
+        </div>
+      )}
+      {msg && <span className={'ml-2 text-[12px] ' + (msg.ok ? 'text-good' : 'text-crit')}>{msg.text}</span>}
     </div>
   )
 }
@@ -252,7 +348,18 @@ function ReplyBox({ onSend, placeholder }: { onSend: (body: string) => Promise<{
   )
 }
 
-export function ThreadView({ thread, skipFirst, compact }: { thread: GhThread; skipFirst?: boolean; compact?: boolean }) {
+export function ThreadView({
+  thread,
+  skipFirst,
+  compact,
+  hideReply,
+}: {
+  thread: GhThread
+  skipFirst?: boolean
+  compact?: boolean
+  /** The finding card has its own follow-up composer. */
+  hideReply?: boolean
+}) {
   const gh = useGh()
   const [busy, start] = useTransition()
   const [open, setOpen] = useState(!thread.isResolved)
@@ -295,7 +402,7 @@ export function ThreadView({ thread, skipFirst, compact }: { thread: GhThread; s
           {shown.map((c) => (
             <CommentView key={c.id} c={c} viewer={viewer} />
           ))}
-          {gh.canWrite && (
+          {gh.canWrite && !hideReply && (
             <ReplyBox
               placeholder="Trả lời trong thread này…"
               onSend={async (body) => {
@@ -518,5 +625,38 @@ export function SubmitReview({
         </div>
       )}
     </div>
+  )
+}
+
+/**
+ * One click (two, to confirm) to answer on the PR with the comment exactly as
+ * it reads now — after editing it in a later round — instead of copying it
+ * into a reply box. Inline comments get the reply in their thread.
+ */
+export function ReplyWithBody({ f, body, onSent }: { f: FindingView; body: string; onSent: () => void }) {
+  const gh = useGh()
+  const [busy, start] = useTransition()
+  const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null)
+  if (!gh.canWrite || !f.ghUrl) return null
+  return (
+    <span className="inline-flex items-center gap-1.5">
+      <ConfirmButton
+        label="↩ Reply nội dung này"
+        confirm={f.ghCommentId ? 'Gửi vào thread trên PR?' : 'Gửi comment tiếp trên PR?'}
+        disabled={busy || !body.trim()}
+        onConfirm={() =>
+          start(async () => {
+            const r = await followUpAction(f.id, body)
+            setMsg({ ok: r.ok, text: r.message })
+            if (r.ok) {
+              onSent()
+              void gh.reload()
+            }
+          })
+        }
+      />
+      {busy && <span className="text-[12px] text-ink-3">Đang gửi…</span>}
+      {msg && <span className={'text-[12px] ' + (msg.ok ? 'text-good' : 'text-crit')}>{msg.text}</span>}
+    </span>
   )
 }

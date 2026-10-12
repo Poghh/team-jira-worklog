@@ -11,6 +11,8 @@ import { BTN, BTN_PRI, CARD, CTITLE, INPUT } from '../ui'
 export interface ChatHandle {
   /** Starts a question about one finding and brings the chat into view. */
   ask: (f: FindingView) => void
+  /** Puts a ready-made message (e.g. a test-result template) in the box and focuses it. */
+  prefill: (text: string, caret?: number) => void
 }
 
 /**
@@ -56,6 +58,17 @@ export const ChatPanel = forwardRef<
         setText((t) => `${t ? `${t}\n` : ''}Về finding #${f.id} "${f.title}" (${where(f)}): `)
         box.current?.parentElement?.scrollIntoView({ behavior: 'smooth', block: 'start' })
         setTimeout(() => input.current?.focus(), 300)
+      },
+      prefill: (value, caret) => {
+        setText(value)
+        box.current?.parentElement?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+        setTimeout(() => {
+          const el = input.current
+          if (!el) return
+          el.focus()
+          const at = caret ?? value.length
+          el.setSelectionRange(at, at)
+        }, 300)
       },
     }))
 

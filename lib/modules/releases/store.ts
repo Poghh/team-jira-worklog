@@ -5,10 +5,23 @@ import { desc, eq, sql } from 'drizzle-orm'
 import { db } from '@/lib/db'
 import { releaseTasks } from '@/lib/db/schema'
 
-import { BUILT_STATUS, REPORTED_STATUS, type ReleaseTaskShape } from './model'
+import { BUILD_STATUS, BUILT_STATUS, type FixCode, REPORTED_STATUS, type ReleaseTaskShape } from './model'
 
 export interface ReleaseTaskRow extends ReleaseTaskShape {
   id: number
+}
+
+function parseFixes(raw: string): FixCode[] {
+  try {
+    const arr = JSON.parse(raw)
+    return Array.isArray(arr)
+      ? arr
+          .filter((f) => f && typeof f.code === 'string' && f.code.trim())
+          .map((f) => ({ code: String(f.code).trim(), status: String(f.status || BUILD_STATUS[0]), ...(f.build ? { build: String(f.build) } : {}) }))
+      : []
+  } catch {
+    return []
+  }
 }
 
 function parseSub(raw: string): string[] {
@@ -38,7 +51,13 @@ export function listReleaseTasks(): ReleaseTaskRow[] {
       buildStatus: r.buildStatus,
       noBranch: r.noBranch,
       refId: r.refId,
+      fixes: parseFixes(r.fixes),
+      publishedBuild: r.publishedBuild,
     }))
+}
+
+export function getReleaseTask(id: number): ReleaseTaskRow | undefined {
+  return listReleaseTasks().find((t) => t.id === id)
 }
 
 export function saveReleaseTask(input: ReleaseTaskShape & { id?: number }): number {
@@ -54,6 +73,8 @@ export function saveReleaseTask(input: ReleaseTaskShape & { id?: number }): numb
     buildStatus: input.buildStatus,
     noBranch: input.noBranch,
     refId: input.refId,
+    fixes: JSON.stringify(input.fixes),
+    publishedBuild: input.publishedBuild,
     updatedAt: stamp,
   }
 
@@ -64,11 +85,22 @@ export function saveReleaseTask(input: ReleaseTaskShape & { id?: number }): numb
   return db.insert(releaseTasks).values(values).returning({ id: releaseTasks.id }).get().id
 }
 
-/** Quick edits from the board card — moving column or flipping build status. */
-export function patchReleaseTask(id: number, patch: { environment?: string; buildStatus?: string }) {
+export interface ReleaseTaskPatch {
+  environment?: string
+  buildStatus?: string
+  fixes?: FixCode[]
+  refId?: number | null
+  publishedBuild?: string
+}
+
+/** Quick edits from the board card — column, build status, fix codes, link. */
+export function patchReleaseTask(id: number, patch: ReleaseTaskPatch) {
   const set: Record<string, unknown> = { updatedAt: sql`(strftime('%s','now'))` }
   if (patch.environment !== undefined) set.environment = patch.environment
   if (patch.buildStatus !== undefined) set.buildStatus = patch.buildStatus
+  if (patch.fixes !== undefined) set.fixes = JSON.stringify(patch.fixes)
+  if (patch.refId !== undefined) set.refId = patch.refId
+  if (patch.publishedBuild !== undefined) set.publishedBuild = patch.publishedBuild
   db.update(releaseTasks).set(set).where(eq(releaseTasks.id, id)).run()
 }
 
@@ -89,16 +121,59 @@ function mentions(text: string, token: string): boolean {
  * stage so a stray mention can't jump a task straight from "đang PR" to public,
  * which also makes a repeat submit a no-op.
  */
-export function publishBuiltTasksMentioned(text: string): string[] {
+export function publishBuiltTasksMentioned(text: string, build = ''): string[] {
   if (!text.trim()) return []
   const promoted: string[] = []
   for (const r of listReleaseTasks()) {
-    if (r.buildStatus !== BUILT_STATUS) continue
     const id = r.taskId.trim()
-    if (id && mentions(text, id)) {
-      patchReleaseTask(r.id, { buildStatus: REPORTED_STATUS })
+    if (r.buildStatus === BUILT_STATUS && id && mentions(text, id)) {
+      patchReleaseTask(r.id, { buildStatus: REPORTED_STATUS, publishedBuild: build })
       promoted.push(id)
     }
+    // Fix codes follow the same rule: only a built one can go public.
+    let changed = false
+    const fixes = r.fixes.map((f) => {
+      if (f.status === BUILT_STATUS && mentions(text, f.code)) {
+        changed = true
+        promoted.push(f.code)
+        return { ...f, status: REPORTED_STATUS, ...(build ? { build } : {}) }
+      }
+      return f
+    })
+    if (changed) patchReleaseTask(r.id, { fixes })
   }
   return promoted
+}
+
+/**
+ * Marks exactly the codes the reviewer ticked as public in `build` — the
+ * explicit half of what a TestFlight submit records. Only "đã build" codes
+ * move, so a repeat or a stale page cannot republish anything.
+ */
+export function publishCodes(codes: Array<{ taskRowId: number; code: string; kind: 'feature' | 'fix' }>, build: string): string[] {
+  const done: string[] = []
+  const byRow = new Map<number, typeof codes>()
+  for (const c of codes) byRow.set(c.taskRowId, [...(byRow.get(c.taskRowId) ?? []), c])
+  for (const [rowId, list] of byRow) {
+    const r = getReleaseTask(rowId)
+    if (!r) continue
+    if (list.some((c) => c.kind === 'feature') && r.buildStatus === BUILT_STATUS) {
+      patchReleaseTask(r.id, { buildStatus: REPORTED_STATUS, publishedBuild: build })
+      done.push(r.taskId)
+    }
+    const wanted = new Set(list.filter((c) => c.kind === 'fix').map((c) => c.code.toUpperCase()))
+    if (wanted.size) {
+      let changed = false
+      const fixes = r.fixes.map((f) => {
+        if (wanted.has(f.code.toUpperCase()) && f.status === BUILT_STATUS) {
+          changed = true
+          done.push(f.code)
+          return { ...f, status: REPORTED_STATUS, build }
+        }
+        return f
+      })
+      if (changed) patchReleaseTask(r.id, { fixes })
+    }
+  }
+  return done
 }
