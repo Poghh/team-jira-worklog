@@ -313,14 +313,12 @@ function CreateIssueModal({
   // title clears but the sprint prefix stays, so keying `canCreate` off the
   // combined string would leave the button armed to fire a prefix-only issue on
   // an accidental second click.
-  // Only the dates this project actually supports are required, and the panel
-  // hides entirely on a project that has neither.
+  // The panel hides entirely on a project that has neither date field.
   const wantsDates = Boolean(ctx?.supports.startDate || ctx?.supports.dueDate)
-  const datesOk =
-    !ctx ||
-    ((!ctx.supports.startDate || Boolean(startDate)) &&
-      (!ctx.supports.dueDate || Boolean(dueDate)) &&
-      !(startDate && dueDate && dueDate < startDate))
+  // Dates are optional: the board already lets you clear them on an existing
+  // issue, so refusing to create one without them was a gate in one direction
+  // only. What stays blocked is a pair that contradicts itself.
+  const datesOk = !(startDate && dueDate && dueDate < startDate)
   const canCreate = Boolean(title.trim() && ctx?.issueTypeId && datesOk && !creating)
 
   // Rendered through the body, not inline: the button lives inside the board's
@@ -558,7 +556,7 @@ function CreateIssueModal({
                 </Field>
 
                 {wantsDates && (
-                <Field label="Ngày" hint="bắt buộc">
+                <Field label="Ngày" hint="để trống được, bổ sung sau trên board">
                   <div className="flex flex-col gap-1.5">
                     <label className="flex items-center gap-2">
                       <span className="w-[34px] shrink-0 text-[11.5px] text-ink-3">Start</span>
@@ -688,7 +686,7 @@ function CreateIssueModal({
             </span>
           )}
           {!note && ctx && !datesOk && title.trim() && (
-            <span className="text-[12px] text-warn">Chọn start date và due date trước khi tạo</span>
+            <span className="text-[12px] text-warn">Due date đang sớm hơn start date</span>
           )}
           <span className="ml-auto flex items-center gap-2">
             <button
