@@ -253,6 +253,7 @@ export async function quickScanAction(): Promise<
     updated?: number;
     held?: number;
     gone?: number;
+    dropped?: number;
   }
 > {
   try {
@@ -268,9 +269,10 @@ export async function quickScanAction(): Promise<
 
     // Only branches that *became* missing this run, so a board already carrying
     // the flag stops re-announcing it on every press.
-    const { markedGone } = applyPlan(
+    const { markedGone, dropped } = applyPlan(
       safe,
       scan.gone.map((g) => g.id),
+      scan.dropped.map((g) => g.id),
     );
 
     const bits = [
@@ -278,6 +280,7 @@ export async function quickScanAction(): Promise<
       updated && `${updated} cập nhật`,
       unpushed && `${unpushed} trong đó chưa push`,
       markedGone && `${markedGone} nhánh đã mất`,
+      dropped && `gỡ ${dropped} card không còn nhánh ở đâu`,
       held && `${held} khác nhánh — cần xem ở tab GitHub`,
     ].filter(Boolean);
 
@@ -290,6 +293,7 @@ export async function quickScanAction(): Promise<
       updated,
       held,
       gone: markedGone,
+      dropped,
     };
   } catch (error) {
     return {
@@ -304,15 +308,18 @@ export async function applyPlanAction(
   rows: PlanRow[],
   /** Cards whose branch the same scan found missing — marked, never deleted. */
   goneIds: number[] = [],
+  /** Cards the same scan found gone from GitHub *and* every clone — removed. */
+  dropIds: number[] = [],
 ): Promise<ActionResult> {
   try {
-    const { written, markedGone } = applyPlan(rows, goneIds);
+    const { written, markedGone, dropped } = applyPlan(rows, goneIds, dropIds);
     const marked = markedGone ? `, đánh dấu ${markedGone} nhánh đã mất` : "";
+    const removed = dropped ? `, gỡ ${dropped} card không còn nhánh ở đâu` : "";
     return {
       ok: true,
       message:
-        written || markedGone
-          ? `Đã cập nhật ${written} card${marked}`
+        written || markedGone || dropped
+          ? `Đã cập nhật ${written} card${marked}${removed}`
           : "Không có gì để cập nhật",
     };
   } catch (error) {
