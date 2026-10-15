@@ -993,3 +993,39 @@ export function searchBranches<T extends { name: string }>(
         a.name.localeCompare(b.name),
     );
 }
+
+/* ── fetch: nhánh nào gọi được tên, nhánh nào không ───────────────────────── */
+
+export interface FetchPlan {
+  /** Nhánh có đối ứng trên origin — fetch đích danh được. */
+  named: string[];
+  /** Nhánh origin không có: nhánh chỉ sống dưới máy, hoặc đã bị xoá trên remote. */
+  unknown: string[];
+  /** Cần thêm một lượt `git fetch origin` trơn, không nêu tên nhánh nào. */
+  full: boolean;
+}
+
+/**
+ * Chia danh sách nhánh thành phần fetch được đích danh và phần không.
+ *
+ * Tách ra khỏi `fetchBoth` vì đây là chỗ đã làm hỏng cả thao tác fetch:
+ * `git fetch origin <nhánh>` **chết hẳn** khi origin không có nhánh đó —
+ * `fatal: couldn't find remote ref` — nên đứng ở một nhánh chỉ có dưới máy là
+ * không fetch được gì nữa, kể cả repo swift ở lượt sau.
+ *
+ * Không gọi được tên thì vẫn fetch được: một lượt `git fetch origin` trơn cập
+ * nhật mọi ref và không bao giờ hỏi nhánh đang đứng là nhánh nào. Nó còn đúng
+ * hơn ở một ca nữa — nhánh đồng nghiệp vừa push xong, ref `origin/<nhánh>`
+ * chưa có ở máy nên không nằm trong `named`, và chính lượt fetch trơn tìm ra nó.
+ */
+export function fetchPlan(
+  branches: readonly string[],
+  hasRemote: (branch: string) => boolean,
+): FetchPlan {
+  const named: string[] = [];
+  const unknown: string[] = [];
+  for (const b of [...new Set(branches.map((s) => s.trim()).filter(Boolean))]) {
+    (hasRemote(b) ? named : unknown).push(b);
+  }
+  return { named, unknown, full: unknown.length > 0 };
+}

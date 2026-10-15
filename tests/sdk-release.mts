@@ -24,6 +24,7 @@ import {
   parseUnifiedDiff,
   recoveryPlan,
   parseReleaseTag,
+  fetchPlan,
   releasesForBranch,
   phaseOf,
   tailLines,
@@ -478,6 +479,36 @@ eq(parseAnsi('\x1b[38;2;10;20;30mrgb\x1b[m')[0]?.color, 'rgb(10 20 30)', 'trueco
 eq(parseAnsi('\x1b[2Kxoá dòng').map((s) => s.text).join(''), 'xoá dòng',
    'mã không phải SGR bị nuốt chứ không vẽ')
 eq(parseAnsi(''), [], 'dòng rỗng')
+
+
+/* ── fetchPlan: nhánh nào gọi tên được khi fetch ──────────────────────────── */
+//
+// `git fetch origin <nhánh>` chết hẳn khi origin không có nhánh đó, và lỗi đó
+// giết cả lượt fetch — đứng trên một nhánh chỉ có dưới máy là không làm mới
+// được gì nữa. Lượt fetch trơn là đường thoát, nên luật chia việc phải đúng.
+{
+  const has = (set: string[]) => (b: string) => set.includes(b)
+
+  eq(fetchPlan(['master'], has(['master'])), { named: ['master'], unknown: [], full: false },
+     'nhánh có trên origin: gọi đích danh, không cần fetch trơn')
+  eq(fetchPlan(['local_only'], has(['master'])), { named: [], unknown: ['local_only'], full: true },
+     'nhánh chỉ có dưới máy: không gọi tên, phải fetch trơn')
+  eq(fetchPlan(['master', 'local_only'], has(['master'])),
+     { named: ['master'], unknown: ['local_only'], full: true },
+     'một có một không: vẫn fetch đích danh cái có, và thêm lượt trơn')
+  // Nhánh đang đứng trùng nhánh đang xem trước là ca thường nhất, và fetch hai
+  // lần cùng một nhánh chỉ tốn một vòng mạng vô nghĩa.
+  eq(fetchPlan(['master', 'master'], has(['master'])), { named: ['master'], unknown: [], full: false },
+     'trùng tên thì gộp')
+  eq(fetchPlan(['master', '', '  '], has(['master'])), { named: ['master'], unknown: [], full: false },
+     'tên rỗng bị bỏ, không biến thành lượt fetch trơn thừa')
+  eq(fetchPlan([], has(['master'])), { named: [], unknown: [], full: false },
+     'không có nhánh nào thì không fetch nhánh nào')
+  // Detached HEAD tới đây dưới dạng chuỗi rỗng. Nó không được kéo theo một
+  // lượt fetch toàn repo chỉ vì "không khớp ref nào".
+  eq(fetchPlan([''], has([])), { named: [], unknown: [], full: false },
+     'detached HEAD không đẻ ra lượt fetch trơn')
+}
 
 console.log(bad ? `\n${bad} of ${n} FAILED` : `\nall ${n} ok`)
 if (bad) process.exit(1)
