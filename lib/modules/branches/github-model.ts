@@ -1409,3 +1409,28 @@ export function dropCards<
     return owned.length > 0 && owned.every(vanished) && cardIsEmpty(c);
   });
 }
+
+/**
+ * Danh sách ticket của card sau khi nhánh đổi tên.
+ *
+ * Luật thường là **chỉ thêm, không bớt** — phép quét không được phép xoá một
+ * mã ai đó tự gõ vào, và một PR sửa hai ticket thì ticket thứ hai thường không
+ * nằm trong tên nhánh. Nhưng đổi tên nhánh là đúng ca luật đó sai: card học
+ * `VT-3762` **từ chính tên nhánh cũ** `…VT-3825_VT-3762`, nhánh mới
+ * `…VT-3825` không còn đánh vần nó nữa, mà card vẫn link hai ticket.
+ *
+ * Phân biệt được mà không cần lưu thêm gì: mã nào tên nhánh **cũ** đánh vần ra
+ * mà tên nhánh **mới** không, mã đó đến từ tên nhánh — bỏ. Mọi mã còn lại là
+ * của người dùng hoặc của nửa còn lại, và được giữ nguyên.
+ */
+export function keysAfterRename(
+  stored: readonly string[],
+  spelledBefore: readonly string[],
+  spelledNow: readonly string[],
+): string[] {
+  const before = new Set(spelledBefore);
+  const now = new Set(spelledNow);
+  const out = stored.filter((k) => !(before.has(k) && !now.has(k)));
+  for (const k of spelledNow) if (!out.includes(k)) out.push(k);
+  return out;
+}

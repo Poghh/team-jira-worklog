@@ -37,6 +37,7 @@ import {
   titleFromBranch,
   cardIsEmpty,
   dropCards,
+  keysAfterRename,
 } from "./github-model";
 import {
   fetchBranches,
@@ -983,6 +984,23 @@ export async function scanGitHub(): Promise<ScanResult> {
       card.sides
         .filter((x) => x.repo && x.branch.trim())
         .every(sideVanished);
+    /**
+     * Ticket của card sau lượt này.
+     *
+     * Đổi tên nhánh thì danh sách phải **theo nhánh mới**, không cộng dồn: tên
+     * cũ `…VT-3825_VT-3762` dạy cho card cả hai mã, tên mới chỉ còn một, mà
+     * card vẫn link hai ticket. Xem {@link keysAfterRename} — chỉ bỏ mã nào do
+     * chính tên nhánh cũ sinh ra.
+     */
+    const nextKeys = renamed
+      ? keysAfterRename(
+          card.issueKeys,
+          card.sides.flatMap((x) =>
+            x.branch.trim() ? extractIssueKeys(x.branch, cfg.projectKeys) : [],
+          ),
+          cardKeys,
+        )
+      : mergedKeys(card, cardKeys);
     // Every measured field lives on a side now, so one comparison covers the
     // lot — including a request opened against the next environment, which
     // changes nothing else on the card and used to go unnoticed.
@@ -990,7 +1008,7 @@ export async function scanGitHub(): Promise<ScanResult> {
       sameBranch &&
       card.repo === branch.repo &&
       serializeCardSides(card.sides) === serializeCardSides(sides) &&
-      JSON.stringify(card.issueKeys) === JSON.stringify(mergedKeys(card, cardKeys)) &&
+      JSON.stringify(card.issueKeys) === JSON.stringify(nextKeys) &&
       !stage;
 
     return {
@@ -1002,7 +1020,7 @@ export async function scanGitHub(): Promise<ScanResult> {
           ? "conflict"
           : "fill",
       noteId: card.id,
-      issueKeys: mergedKeys(card, cardKeys),
+      issueKeys: nextKeys,
       currentBranch: card.branch,
       currentStage: card.stage,
       stage,

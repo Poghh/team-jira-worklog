@@ -66,6 +66,7 @@ import {
   settleSides,
   cardIsEmpty,
   dropCards,
+  keysAfterRename,
   mergeCardPrs,
   parseCardSides,
   primarySide,
@@ -1038,6 +1039,28 @@ eq(baseFreshness(roundTrip, NOW).upToDate, true, 'và đọc ra đúng kết lu�
      'cả hai nửa biến mất thì gỡ')
   eq(dropCards([card(1, [])], vanished(['a']), none).length, 0,
      'card không trỏ vào nhánh nào thì không ai kết luận được gì về nó')
+}
+
+
+/* ── đổi tên nhánh thì danh sách ticket theo nhánh mới ─────────────────── */
+//
+// Thật: nhánh `ctalk/bugfix/VT-3825_VT-3762` đổi thành `ctalk/bugfix/VT-3825`.
+// Card học cả hai mã từ chính tên nhánh cũ, nên giữ `VT-3762` là giữ một thứ
+// không còn ai nói ra nữa.
+{
+  eq(keysAfterRename(['VT-3825', 'VT-3762'], ['VT-3825', 'VT-3762'], ['VT-3825']), ['VT-3825'],
+     'mã chỉ có ở tên nhánh cũ thì bỏ')
+  // Luật gốc vẫn phải đúng: phép quét không được xoá mã người dùng tự gõ.
+  eq(keysAfterRename(['VT-3825', 'VT-9'], ['VT-3825'], ['VT-3825']), ['VT-3825', 'VT-9'],
+     'mã không đến từ tên nhánh thì giữ, dù nhánh mới không nhắc tới')
+  eq(keysAfterRename(['VT-1'], ['VT-1'], ['VT-2']), ['VT-2'],
+     'đổi hẳn sang ticket khác: mã cũ đi, mã mới vào')
+  eq(keysAfterRename(['VT-1', 'VT-2'], ['VT-1', 'VT-2'], ['VT-2', 'VT-1']), ['VT-1', 'VT-2'],
+     'chỉ đổi thứ tự trong tên nhánh thì không đổi gì')
+  // Nửa kia của card vẫn đánh vần mã đó thì mã đó còn sống.
+  eq(keysAfterRename(['VT-1', 'VT-2'], ['VT-1', 'VT-2'], ['VT-1', 'VT-2']), ['VT-1', 'VT-2'],
+     'nhánh mới vẫn nhắc cả hai thì giữ cả hai')
+  eq(keysAfterRename([], [], ['VT-7']), ['VT-7'], 'card chưa có mã nào thì nhận mã của nhánh mới')
 }
 
 console.log(bad ? `\n${bad}/${n} FAILED` : `\nall ${n} ok`)
