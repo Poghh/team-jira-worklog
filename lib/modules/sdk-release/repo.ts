@@ -9,6 +9,7 @@ import { promisify } from "node:util";
 import {
   type ChangedFile,
   type SdkRelease,
+  fetchPlan,
   parseBumpMessage,
   parseNameStatus,
   parseNumstat,
@@ -265,10 +266,18 @@ export interface BranchChoice {
    * state, and the obvious command fails on all of them.
    */
   remoteOnly: boolean;
+  /**
+   * Origin không có nhánh này — nó chỉ sống dưới máy.
+   *
+   * Chỉ xảy ra với nhánh đang checkout, vì đó là nhánh duy nhất được thêm vào
+   * danh sách bất kể origin có hay không: bạn đang đứng trên nó, nên nó phải
+   * có mặt trong ô chọn kể cả khi không ai khác thấy nó.
+   */
+  localOnly: boolean;
 }
 
 /** Every branch worth offering, local and remote folded together. */
-export async function listBranches(dir: string): Promise<BranchChoice[]> {
+export async function listBranches(dir: string, head = ""): Promise<BranchChoice[]> {
   const local = new Set(
     (await git(dir, ["for-each-ref", "--format=%(refname:short)", "refs/heads"]))
       .split("\n")
@@ -294,7 +303,20 @@ export async function listBranches(dir: string): Promise<BranchChoice[]> {
   // thì người khác mới lần ra được. Clone này có 7 nhánh local so với 57 trên
   // remote, và phần chênh lệch đúng là rác.
   const names = [...new Set(remote)].sort();
-  return names.map((name) => ({ name, remoteOnly: !local.has(name) }));
+  const out = names.map((name) => ({
+    name,
+    remoteOnly: !local.has(name),
+    localOnly: false,
+  }));
+
+  // Ngoại lệ duy nhất của luật "chỉ lấy từ remote": nhánh đang checkout.
+  //
+  // Nó là nhánh sẽ được build — lệnh release đọc HEAD, không đọc ô chọn — nên
+  // nó vắng mặt trong chính danh sách tên là "Nhánh sẽ được build" thì ô chọn
+  // đang nói sai về trạng thái của repo.
+  if (head && !names.includes(head))
+    out.unshift({ name: head, remoteOnly: false, localOnly: true });
+  return out;
 }
 
 /**
@@ -436,6 +458,11 @@ export interface FetchResult {
   ok: boolean;
   /** What failed, in Vietnamese, when it did. */
   message: string;
+  /**
+   * Chuyện đáng nói mà không phải lỗi — nhánh origin không có, nên app fetch
+   * toàn bộ thay vì gọi tên nó. Màn hình nói ra chứ không im lặng.
+   */
+  note: string;
 }
 
 /**
@@ -456,27 +483,66 @@ export interface FetchResult {
  * `--no-tags` on the SDK: its tags are of no interest here, and fetching them
  * is the slow half of the operation.
  */
+/** Ref `origin/<branch>` có trong clone này không. */
+export async function hasRemoteBranch(dir: string, branch: string): Promise<boolean> {
+  try {
+    await git(dir, ["rev-parse", "--verify", "--quiet", `refs/remotes/origin/${branch}`]);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export async function fetchBoth(input: {
   sdkPath: string;
   packagePath: string;
-  branch: string;
+  /**
+   * Nhánh trong repo SDK cần làm mới: nhánh đang checkout, và nhánh đang xem
+   * trước nếu khác. Nhánh nào origin không có thì không gọi tên được — xem
+   * `fetchPlan`.
+   */
+  branches: string[];
 }): Promise<FetchResult> {
-  const steps: Array<[string, string[], string]> = [
-    [input.packagePath, ["fetch", "origin", "main"], "repo swift"],
-    ...(input.branch
-      ? ([[input.sdkPath, ["fetch", "--no-tags", "origin", input.branch], "repo SDK"]] as Array<
-          [string, string[], string]
-        >)
-      : []),
-  ];
-  for (const [cwd, args, what] of steps) {
+  try {
+    await git(input.packagePath, ["fetch", "origin", "main"], 60_000);
+  } catch (err) {
+    return { ok: false, message: `fetch repo swift thất bại — ${gitSays(err)}`, note: "" };
+  }
+
+  const have = new Set<string>();
+  for (const b of new Set(input.branches.map((s) => s.trim()).filter(Boolean)))
+    if (await hasRemoteBranch(input.sdkPath, b)) have.add(b);
+  const plan = fetchPlan(input.branches, (b) => have.has(b));
+
+  // Lượt trơn trước: nó là lượt duy nhất chắc chắn chạy được, và nó có thể
+  // mang về đúng cái ref mà vòng trên kết luận là không có.
+  if (plan.full) {
     try {
-      await git(cwd, args, 60_000);
+      await git(input.sdkPath, ["fetch", "--no-tags", "origin"], 120_000);
     } catch (err) {
-      return { ok: false, message: `fetch ${what} thất bại — ${gitSays(err)}` };
+      return { ok: false, message: `fetch repo SDK thất bại — ${gitSays(err)}`, note: "" };
     }
   }
-  return { ok: true, message: "" };
+  for (const b of plan.named) {
+    try {
+      await git(input.sdkPath, ["fetch", "--no-tags", "origin", b], 60_000);
+    } catch (err) {
+      return { ok: false, message: `fetch repo SDK thất bại — ${gitSays(err)}`, note: "" };
+    }
+  }
+
+  // Hỏi lại sau khi fetch trơn: nhánh vừa được đồng nghiệp push lúc nãy còn
+  // thiếu ref ở máy, giờ đã có, và nói "không có trên origin" nữa là nói sai.
+  const stillMissing: string[] = [];
+  for (const b of plan.unknown) if (!(await hasRemoteBranch(input.sdkPath, b))) stillMissing.push(b);
+
+  return {
+    ok: true,
+    message: "",
+    note: stillMissing.length
+      ? `${stillMissing.join(", ")} không có trên origin — đã fetch toàn bộ repo SDK thay vì gọi tên nhánh.`
+      : "",
+  };
 }
 
 export interface CheckoutResult {
