@@ -143,6 +143,86 @@ export async function loggedMinutesOnDate(
   return Math.round(seconds / 60)
 }
 
+/** Một ngày đã có giờ của issue này. */
+export interface WorklogDay {
+  date: string
+  seconds: number
+  /** Mấy entry trong ngày đó — nửa ngày vắt qua giờ nghỉ nằm trong Jira là hai. */
+  count: number
+}
+
+export interface IssueWorklogDays {
+  /** Ngày mới nhất trước. */
+  days: WorklogDay[]
+  mineSeconds: number
+  /**
+   * Giờ của người khác trên cùng issue.
+   *
+   * Phải tách ra, vì con số "tổng" trên board là field `timespent` của Jira —
+   * **mọi người cộng lại**, không riêng user này. Không nói rõ thì bảng phân
+   * rã ra ít hơn con số vừa bấm vào, và người đọc sẽ tưởng là mất dữ liệu.
+   */
+  othersSeconds: number
+  /** Jira còn worklog chưa đọc hết — danh sách bên dưới là chưa đủ. */
+  truncated: boolean
+}
+
+/**
+ * Mọi ngày mà issue này đã được log giờ, gộp theo ngày.
+ *
+ * Đọc thẳng `/issue/{key}/worklog`, không qua JQL: `worklogDate` là truy vấn
+ * index và luôn phải kèm một khoảng ngày, mà câu hỏi ở đây — "tổng này đến từ
+ * những ngày nào" — không có khoảng nào cả. Đọc thẳng thì không giới hạn thời
+ * gian và cũng không lệ thuộc index.
+ */
+export async function getIssueWorklogDays(
+  issueKey: string,
+  accountId: string,
+  tz = DEFAULT_TZ,
+): Promise<IssueWorklogDays> {
+  const PAGE = 100
+  const CAP = 500
+
+  const all: RawWorklog[] = []
+  let total = 0
+  for (let startAt = 0; startAt < CAP; startAt += PAGE) {
+    const res = await jiraFetch<{ worklogs?: RawWorklog[]; total?: number }>(
+      `/rest/api/3/issue/${encodeURIComponent(issueKey)}/worklog` +
+        `?startAt=${startAt}&maxResults=${PAGE}`,
+    )
+    const page = res.worklogs ?? []
+    all.push(...page)
+    total = res.total ?? all.length
+    if (all.length >= total || page.length < PAGE) break
+  }
+
+  const byDate = new Map<string, WorklogDay>()
+  let mineSeconds = 0
+  let othersSeconds = 0
+
+  for (const w of all) {
+    const seconds = w.timeSpentSeconds ?? 0
+    if (w.author?.accountId !== accountId) {
+      othersSeconds += seconds
+      continue
+    }
+    if (!w.started) continue
+    mineSeconds += seconds
+    const date = localDate(w.started, tz)
+    const row = byDate.get(date) ?? { date, seconds: 0, count: 0 }
+    row.seconds += seconds
+    row.count += 1
+    byDate.set(date, row)
+  }
+
+  return {
+    days: [...byDate.values()].sort((a, b) => b.date.localeCompare(a.date)),
+    mineSeconds,
+    othersSeconds,
+    truncated: all.length < total,
+  }
+}
+
 export function sumByDate(entries: WorklogEntry[]): Map<string, number> {
   const out = new Map<string, number>()
   for (const e of entries) out.set(e.date, (out.get(e.date) ?? 0) + e.timeSpentSeconds)
