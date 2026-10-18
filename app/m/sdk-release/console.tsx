@@ -374,6 +374,24 @@ export function SdkRelease({ view, runs }: { view: SdkConfigView; runs: RunRow[]
                       />
                     </div>
 
+                    {/*
+                      Nhánh đang đứng mà origin không có.
+
+                      Nói ra ở đây vì nó đổi nghĩa của mọi con số phía dưới:
+                      không có `origin/<nhánh>` thì không có ahead/behind, và
+                      fetch không gọi được tên nhánh này — app fetch toàn bộ.
+                      Commit bump ghi lại `<repo>/<nhánh> <sha>`, nên nhánh
+                      chưa push là bản release không ai lần ngược được.
+                    */}
+                    {ready.branches.some((b) => b.name === head && b.localOnly) && (
+                      <p className="mt-2 rounded-[5px] border border-warn bg-warn-soft px-2.5 py-2 text-[11.5px] leading-relaxed text-warn">
+                        <b>Origin không có nhánh này.</b> Nó chỉ tồn tại dưới máy, nên không
+                        so được với remote và fetch sẽ làm mới toàn bộ repo thay vì gọi tên
+                        nhánh. Release từ đây thì commit bump trỏ tới một nhánh người khác
+                        không tìm thấy — push trước khi release.
+                      </p>
+                    )}
+
                     <BranchPicker
                       branches={ready.branches}
                       head={head}
@@ -393,19 +411,44 @@ export function SdkRelease({ view, runs }: { view: SdkConfigView; runs: RunRow[]
                         <b>Repo chưa đứng ở nhánh này.</b> Đang ở{" "}
                         <span className="font-mono">{head}</span>, mà lệnh build chỉ đọc
                         nhánh đang checkout — nút Release bị khoá.
-                        <button
-                          type="button"
-                          onClick={doCheckout}
-                          disabled={busy || ready.headDirty > 0}
-                          title={
-                            ready.headDirty > 0
-                              ? "Cây làm việc còn thay đổi chưa commit — checkout sẽ mang chúng sang nhánh mới."
-                              : `git fetch rồi git checkout ${pick}`
-                          }
-                          className="mt-2 w-full rounded-md bg-crit px-3 py-1.5 text-[12.5px] font-medium text-white hover:opacity-90 disabled:opacity-50"
-                        >
-                          {busy ? "Đang chuyển…" : `Fetch & chuyển sang ${pick}`}
-                        </button>
+                        {/*
+                          Cây bẩn chặn *checkout*, không chặn *fetch*.
+
+                          Nút này từng tắt hẳn khi còn file chưa commit, và tắt
+                          cả hai việc cùng lúc: bạn không chuyển được nhánh —
+                          đúng — nhưng cũng không làm mới được `origin/<nhánh>`
+                          của chính nhánh đang xem, dù `git fetch` chỉ dịch ref
+                          và không chạm một byte nào trong cây làm việc. Nên khi
+                          bẩn, nút hạ xuống thành đúng việc nó vẫn làm được.
+                        */}
+                        {ready.headDirty > 0 ? (
+                          <>
+                            <button
+                              type="button"
+                              onClick={() => load({ branch: pick || undefined, fetch: true })}
+                              disabled={busy}
+                              title={`git fetch --no-tags origin ${pick} — không đụng cây làm việc`}
+                              className="mt-2 w-full rounded-md bg-crit px-3 py-1.5 text-[12.5px] font-medium text-white hover:opacity-90 disabled:opacity-50"
+                            >
+                              {busy ? "Đang fetch…" : `Fetch ${pick}`}
+                            </button>
+                            <p className="mt-1.5 text-[11.5px] leading-relaxed">
+                              Chưa chuyển nhánh được: còn{" "}
+                              <b>{ready.headDirty} file chưa commit</b>, mà checkout sẽ mang
+                              chúng sang nhánh mới. Commit hoặc stash rồi nút sẽ chuyển được.
+                            </p>
+                          </>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={doCheckout}
+                            disabled={busy}
+                            title={`git fetch rồi git checkout ${pick}`}
+                            className="mt-2 w-full rounded-md bg-crit px-3 py-1.5 text-[12.5px] font-medium text-white hover:opacity-90 disabled:opacity-50"
+                          >
+                            {busy ? "Đang chuyển…" : `Fetch & chuyển sang ${pick}`}
+                          </button>
+                        )}
 
                         {/* Why it did not happen, under the button that did not
                             do it. Usually git's own words, which name the file
@@ -1016,6 +1059,14 @@ function BranchPicker({
                     className="ml-auto shrink-0 text-[10px] text-ink-3"
                   >
                     chỉ ở remote
+                  </span>
+                )}
+                {b.localOnly && b.name !== head && (
+                  <span
+                    title="Origin không có nhánh này — chỉ tồn tại dưới máy bạn."
+                    className="ml-auto shrink-0 text-[10px] text-warn"
+                  >
+                    chỉ ở máy
                   </span>
                 )}
               </button>

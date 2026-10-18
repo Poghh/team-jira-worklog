@@ -174,12 +174,15 @@ export async function checkReadinessAction(input: {
 
     let fetchNote = "";
     if (input.fetch) {
+      // Cả hai nhánh: nhánh đang đứng, vì mọi phép kiểm đo theo nó, và nhánh
+      // đang xem trước, vì ahead/behind của nó là thứ đang hiện trên màn hình.
       const res = await fetchBoth({
         sdkPath: cfg.sdkPath,
         packagePath: cfg.packagePath,
-        branch: head.branch,
+        branches: [head.branch, input.branch?.trim() ?? ""],
       });
       if (!res.ok) fetchNote = res.message;
+      else if (res.note) fetchNote = res.note;
       // Fetch only moved the refs; the branches themselves still have to reach
       // them. Both repositories, for different stakes: the swift repo's `main`
       // or the push at the far end is rejected after the build, and the SDK
@@ -194,7 +197,7 @@ export async function checkReadinessAction(input: {
     }
 
     const [branches, tagInfo, bumps] = await Promise.all([
-      listBranches(cfg.sdkPath),
+      listBranches(cfg.sdkPath, head.branch),
       listTags(cfg.packagePath),
       recentBumps(cfg.packagePath),
     ]);
@@ -279,7 +282,7 @@ export async function checkoutAction(branch: string): Promise<ActionResult> {
     const fetched = await fetchBoth({
       sdkPath: cfg.sdkPath,
       packagePath: cfg.packagePath,
-      branch,
+      branches: [branch],
     });
     const res = await checkoutBranch(cfg.sdkPath, branch);
     if (!res.ok)
@@ -345,7 +348,7 @@ export async function startReleaseAction(input: {
     const fetched = await fetchBoth({
       sdkPath: cfg.sdkPath,
       packagePath: cfg.packagePath,
-      branch: head.branch,
+      branches: [head.branch],
     });
     if (!fetched.ok) return { ok: false, message: fetched.message };
     for (const ff of [
