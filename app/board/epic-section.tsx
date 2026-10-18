@@ -62,7 +62,13 @@ export function EpicHeader({
   const logged = group.parents.reduce((n, p) => n + p.childTimeSpentTotal, 0)
 
   return (
-    <div className="mb-2 mt-1 flex flex-wrap items-center gap-2 border-l-2 border-epic pl-2.5">
+    /* Dải màu, không phải một dòng chữ có vạch bên trái.
+     *
+     * Epic là tầng trên cùng của ba tầng (epic → task cha → task con), mà bản
+     * cũ vẽ nó nhạt hơn cả thẻ task cha ngay dưới — tầng cao nhất lại là thứ
+     * chìm nhất. Nền tím nhạt cộng vạch đậm bên trái cho nó đúng thứ bậc, và
+     * dùng lại cặp màu `epic` sẵn có chứ không bịa màu mới. */
+    <div className="mb-2 mt-1 flex flex-wrap items-center gap-2 rounded-[7px] rounded-l-none border-l-[3px] border-epic bg-epic-soft py-1.5 pl-2.5 pr-3">
       <span className="inline-flex items-center gap-1 rounded-[3px] bg-epic px-1.5 py-0.5 font-mono text-[9.5px] font-semibold uppercase tracking-[0.06em] text-white">
         {/* The badge is solid purple, and Jira ships this icon in its own colour —
             `brightness-0 invert` flattens any SVG to pure white, which is the only

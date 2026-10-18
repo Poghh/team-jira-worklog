@@ -179,7 +179,7 @@ export function StatusPill({
         title={readOnlyReason ?? current}
         className={
           "inline-flex items-center gap-1 rounded-[4px] px-[6px] py-[3px] font-bold uppercase tracking-[0.05em] opacity-80 " +
-          (compact ? "max-w-[192px] text-[9.5px]" : "text-[10px]") +
+          (compact ? "max-w-full text-[9.5px]" : "text-[10px]") +
           " " +
           TONE[statusTone(current)]
         }
@@ -191,7 +191,9 @@ export function StatusPill({
   }
 
   return (
-    <span className="relative inline-flex">
+    // `max-w-full min-w-0`: bọc ngoài phải chịu chung giới hạn, nếu không thì
+    // nút bên trong co lại mà cái bọc vẫn rộng và vẫn đè sang cột bên cạnh.
+    <span className="relative inline-flex min-w-0 max-w-full">
       <button
         ref={btn}
         type="button"
@@ -200,7 +202,7 @@ export function StatusPill({
         title={`${current} — bấm để đổi trạng thái`}
         className={
           "inline-flex items-center gap-1 rounded-[4px] px-[6px] py-[3px] font-bold uppercase tracking-[0.05em] disabled:opacity-60 " +
-          (compact ? "max-w-[192px] text-[9.5px]" : "text-[10px]") +
+          (compact ? "max-w-full text-[9.5px]" : "text-[10px]") +
           " " +
           TONE[statusTone(current)]
         }

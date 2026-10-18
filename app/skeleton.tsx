@@ -9,13 +9,25 @@ export function Shimmer({ className = '' }: { className?: string }) {
   return <div className={'animate-pulse rounded bg-surface-2 ' + className} />
 }
 
-export function HeaderSkeleton({ withPicker = true }: { withPicker?: boolean }) {
+/**
+ * `lines` là số dòng chữ của header thật: board có ba (nhãn sprint, tiêu đề,
+ * câu mô tả), report có hai. Chiều cao từng dòng và khoảng cách giữa chúng lấy
+ * đúng của bản thật — đo được 67px cho ba dòng — nên lúc dữ liệu về thì phần
+ * dưới không bị đẩy lên hay xuống.
+ */
+export function HeaderSkeleton({
+  lines = 3,
+  withPicker = true,
+}: {
+  lines?: 2 | 3
+  withPicker?: boolean
+}) {
   return (
     <header className="mb-4 flex flex-wrap items-end justify-between gap-4">
-      <div className="flex flex-col gap-2">
-        <Shimmer className="h-3 w-56" />
-        <Shimmer className="h-6 w-40" />
-        <Shimmer className="h-3 w-72" />
+      <div>
+        <Shimmer className="h-[13px] w-56" />
+        <Shimmer className="mt-[3px] h-7 w-40" />
+        {lines > 2 && <Shimmer className="mt-1 h-[19px] w-72" />}
       </div>
       {withPicker && (
         <div className="flex flex-col items-end gap-1.5">

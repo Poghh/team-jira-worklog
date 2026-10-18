@@ -393,3 +393,20 @@ summary {
 :root[data-theme="dark"] .theme-icon-dark {
   display: block;
 }
+
+/*
+ * Trang nào tự khai `data-wide` thì `main` bỏ cap bề ngang của nó.
+ *
+ * Cap 1340px trên `main` đúng cho trang chữ — `/settings` và `/new` có đoạn
+ * văn chạy hết bề ngang, và đo trên màn 1920 thì không cap chúng dài 1625px và
+ * 1661px, quá ngưỡng đọc được. Nhưng Task board là một bảng dữ liệu: nó muốn
+ * bao nhiêu bề ngang cũng dùng hết, và trên màn 2560 cap đó bỏ phí hơn 1000px.
+ *
+ * `:has()` thay vì sửa layout gốc theo route: trang con không thể nới bề ngang
+ * của cha bằng CSS thường, mà bắt `app/layout.tsx` tự biết mình đang ở route
+ * nào thì phải đọc header — kéo cả trang sang render động chỉ để chọn một con
+ * số. Một luật CSS, một thuộc tính ở trang, không file nào khác phải biết.
+ */
+main:has([data-wide]) {
+  max-width: none;
+}

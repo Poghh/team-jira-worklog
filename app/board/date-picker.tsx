@@ -19,12 +19,21 @@ export function DatePicker({
   sprints,
   sprintId,
   isToday,
+  today,
 }: {
   date: string
   label: string
   sprints: SprintRange[]
   sprintId: number | null
   isToday: boolean
+  /**
+   * Hôm nay theo múi giờ cấu hình, để phân biệt ngày trước với ngày sau.
+   *
+   * Không đọc từ đồng hồ trình duyệt: app chạy theo một múi giờ đặt trong
+   * settings, và một người ngồi múi khác sẽ thấy "hôm nay" lệch một ngày so
+   * với chính con số bảng đang cộng.
+   */
+  today: string
 }) {
   const params = useSearchParams()
   const { navigate, pending } = useNav()
@@ -77,7 +86,13 @@ export function DatePicker({
     'h-[30px] w-[26px] rounded-md border border-line-strong bg-surface leading-none text-ink-2 hover:bg-surface-2 hover:text-ink disabled:opacity-50'
 
   return (
-    <div className="flex flex-col items-end gap-1">
+    /* `items-start`, không phải `items-end`.
+     *
+     * Hồi nó còn nằm ở góc trên bên phải của trang thì căn phải là đúng — nó
+     * dính vào mép. Giờ nó là ô **đầu tiên** của dải tổng quan, nơi mọi ô khác
+     * căn trái, nên căn phải làm nhãn "NGÀY ĐANG LOG" trôi khỏi cột chữ của
+     * chính nó. */
+    <div className="flex flex-col items-start gap-1">
       {/* The warning used to be a banner across the middle of the board. It
           belongs on the control it describes, where it costs no vertical room. */}
       <span
@@ -87,7 +102,14 @@ export function DatePicker({
         }
       >
         <NavSpinner />
-        {isToday ? 'Ngày đang log' : 'Đang log vào ngày cũ'}
+        {/* "Ngày cũ" cho mọi ngày không phải hôm nay là sai một nửa số ca:
+            chọn 19/10 trong khi hôm nay 18/10 thì nó vẫn kêu "ngày cũ", trong
+            khi đó là ngày sau — và cảnh báo sai chỗ thì lần sau không ai đọc. */}
+        {isToday
+          ? 'Ngày đang log'
+          : date < today
+            ? 'Đang log vào ngày cũ'
+            : 'Đang log vào ngày sau'}
       </span>
 
       <div className="flex items-center gap-1">
