@@ -11,7 +11,12 @@ import {
   updateDescription,
   updateSummary,
 } from '@/lib/jira/issues'
-import { createWorklog, loggedMinutesOnDate } from '@/lib/jira/worklog'
+import {
+  type IssueWorklogDays,
+  createWorklog,
+  getIssueWorklogDays,
+  loggedMinutesOnDate,
+} from '@/lib/jira/worklog'
 import { listDaysOff } from '@/lib/days-off'
 import { scheduleForDate } from '@/lib/quota'
 import { SETTING_KEYS, getSetting, getWorkSchedule } from '@/lib/settings'
@@ -318,5 +323,30 @@ export async function addTeamLabelAction(issueKey: string): Promise<ActionResult
     return { ok: true, message: added ? `Đã gắn label ${added} cho ${issueKey}` : `${issueKey} đã có label` }
   } catch (error) {
     return { ok: false, message: error instanceof Error ? error.message : 'Không gắn được label' }
+  }
+}
+
+/**
+ * Những ngày đã log giờ cho một issue, để con số "tổng" trên hàng nói được nó
+ * đến từ đâu.
+ *
+ * Đọc theo yêu cầu chứ không kèm sẵn vào dữ liệu trang: trang chỉ fetch worklog
+ * trong khoảng sprint đang xem, mà "tổng" là con số từ đầu tới giờ — một task
+ * kéo qua ba sprint thì phần lớn số giờ của nó nằm ngoài khoảng đã fetch. Và
+ * nạp sẵn cho mọi hàng là mỗi hàng một request, trong khi gần như không ai bấm.
+ */
+export async function issueWorklogDaysAction(
+  issueKey: string,
+): Promise<{ ok: true; data: IssueWorklogDays } | { ok: false; message: string }> {
+  if (!issueKey) return { ok: false, message: 'Thiếu mã task' }
+  try {
+    const me = await getMyself()
+    const tz = me.timeZone ?? DEFAULT_TZ
+    return { ok: true, data: await getIssueWorklogDays(issueKey, me.accountId, tz) }
+  } catch (error) {
+    return {
+      ok: false,
+      message: error instanceof Error ? error.message : 'Không đọc được worklog',
+    }
   }
 }

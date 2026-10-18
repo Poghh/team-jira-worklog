@@ -2,6 +2,8 @@
 
 // Import từ types.ts, không bao giờ từ issues.ts — cái sau kéo cả tầng DB vào
 // bundle của trình duyệt.
+import { issueWorklogDaysAction } from "@/app/actions";
+import type { IssueWorklogDays } from "@/lib/jira/worklog";
 import type { BoardSubtask } from "@/lib/jira/types";
 import { issueHygiene, logDatePastDue, statusTone } from "@/lib/jira/types";
 import type { DayOffKind } from "@/lib/quota";
@@ -11,6 +13,7 @@ import {
   formatDuration,
 } from "@/lib/time";
 
+import { Spinner } from "../spinner";
 import { BOARD_COLS, WIDE_ONLY } from "./columns";
 import { CopyBtn } from "./copy";
 import { DatesEditor } from "./dates-editor";
@@ -21,7 +24,7 @@ import { LabelFixButton } from "./label-fix";
 import { PointsEditor } from "./points-editor";
 import { StatusPill } from "./status-pill";
 import { TypeIcon } from "./type-icon";
-import { useState } from "react";
+import { useEffect, useState, useTransition } from "react";
 
 /**
  * Một task con, một hàng, mọi thứ đọc được không cần bấm.
@@ -73,6 +76,11 @@ export function SubtaskRow({
   jiraBaseUrl?: string;
 }) {
   const [detailOpen, setDetailOpen] = useState(false);
+  /** Phân rã con số "tổng" theo ngày. `null` = chưa mở, `"loading"` = đang đọc. */
+  const [spread, setSpread] = useState<
+    null | "loading" | IssueWorklogDays | { error: string }
+  >(null);
+  const [, startTransition] = useTransition();
 
   const today = subtask.loggedTodaySeconds;
   const total = subtask.timeSpentSeconds;
@@ -196,13 +204,43 @@ export function SubtaskRow({
 
       <span
         title={`${dateLabel}: ${formatDuration(today)} · tổng: ${formatDuration(total)}`}
-        className="text-right font-mono text-[11px] text-ink-3"
+        className="relative text-right font-mono text-[11px] text-ink-3"
       >
         <span className={today > 0 ? "font-semibold text-ink-2" : ""}>
           {today > 0 ? formatDuration(today) : "—"}
         </span>
         <span className="opacity-60"> · </span>
-        {total > 0 ? formatDuration(total) : "—"}
+        {/* Con số tổng cũng bấm được, và trả lời một câu khác hẳn con số bên
+            trái: không phải "hôm nay bao nhiêu" mà "ngần ấy giờ rải ở những
+            ngày nào". Trước đó nó là chữ chết, và cách duy nhất để biết là mở
+            Jira ra đọc tab Work log. */}
+        {total > 0 ? (
+          <button
+            type="button"
+            onClick={() => {
+              if (spread) return setSpread(null);
+              setSpread("loading");
+              startTransition(async () => {
+                const res = await issueWorklogDaysAction(subtask.key);
+                setSpread(res.ok ? res.data : { error: res.message });
+              });
+            }}
+            title={`${formatDuration(total)} này log vào những ngày nào?`}
+            className="underline decoration-dotted underline-offset-2 hover:text-ink-2"
+          >
+            {formatDuration(total)}
+          </button>
+        ) : (
+          "—"
+        )}
+        {spread && (
+          <WorklogSpread
+            issueKey={subtask.key}
+            total={total}
+            state={spread}
+            onClose={() => setSpread(null)}
+          />
+        )}
       </span>
 
       <span className="flex items-center justify-end">
@@ -261,4 +299,125 @@ export function JiraKey({
       {issueKey} ↗
     </a>
   );
+}
+
+/**
+ * Con số "tổng" rã ra theo ngày.
+ *
+ * Gộp theo **ngày**, không liệt kê từng entry: một ngày vắt qua giờ nghỉ nằm
+ * trong Jira thành hai worklog, mà câu hỏi ở đây là "hôm nào" chứ không phải
+ * "mấy lần" — nên số lần chỉ hiện khi nhiều hơn một, như một chú thích.
+ *
+ * Giờ của người khác tách riêng ở chân hộp. Con số trên hàng là field
+ * `timespent` của Jira, tức mọi người cộng lại; không nói ra thì bảng rã ra
+ * ít hơn con số vừa bấm và đọc như mất dữ liệu.
+ */
+function WorklogSpread({
+  issueKey,
+  total,
+  state,
+  onClose,
+}: {
+  issueKey: string;
+  total: number;
+  state: "loading" | IssueWorklogDays | { error: string };
+  onClose: () => void;
+}) {
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
+  const data = typeof state === "object" && "days" in state ? state : null;
+  const peak = data?.days.reduce((n, d) => Math.max(n, d.seconds), 0) ?? 0;
+
+  return (
+    <>
+      <span
+        className="fixed inset-0 z-20 cursor-default"
+        onClick={onClose}
+        aria-hidden
+      />
+      <span className="absolute right-0 top-[calc(100%+4px)] z-30 flex w-[244px] flex-col gap-1 rounded-md border border-line-strong bg-surface p-1.5 text-left shadow-lg">
+        <span className="px-1 font-sans text-[10px] uppercase tracking-[0.06em] text-ink-3">
+          {issueKey} · {formatDuration(total)} log vào ngày nào
+        </span>
+
+        {state === "loading" && (
+          <span className="flex items-center gap-1.5 px-1 py-1 font-sans text-[11px] text-ink-3">
+            <Spinner className="size-3" />
+            Đang đọc worklog từ Jira…
+          </span>
+        )}
+
+        {typeof state === "object" && "error" in state && (
+          <span className="px-1 py-1 font-sans text-[11px] leading-snug text-crit">
+            {state.error}
+          </span>
+        )}
+
+        {data && data.days.length === 0 && (
+          <span className="px-1 py-1 font-sans text-[11px] leading-snug text-ink-3">
+            Không có worklog nào của bạn trên task này.
+          </span>
+        )}
+
+        {data?.days.map((d) => (
+          <span key={d.date} className="flex items-center gap-1.5">
+            <span className="w-[66px] shrink-0 whitespace-nowrap font-mono text-[11px] text-ink-2">
+              {dayLabel(d.date)}
+            </span>
+            {/* Vạch tỉ lệ so với ngày nhiều giờ nhất: một danh sách mười ngày
+                toàn số thì phải đọc từng dòng mới thấy ngày nào nặng. */}
+            <span className="h-[3px] flex-1 rounded-full bg-surface-2">
+              <i
+                style={{ width: `${peak ? (d.seconds / peak) * 100 : 0}%` }}
+                className="block h-full rounded-full bg-accent"
+              />
+            </span>
+            <span className="shrink-0 font-mono text-[11px] text-ink-2 tabular">
+              {formatDuration(d.seconds)}
+              {d.count > 1 && (
+                <span className="ml-0.5 text-ink-3" title={`${d.count} entry`}>
+                  ×{d.count}
+                </span>
+              )}
+            </span>
+          </span>
+        ))}
+
+        {data && data.othersSeconds > 0 && (
+          <span className="border-t border-line px-1 pt-1 font-sans text-[10.5px] leading-snug text-ink-3">
+            Của bạn {formatDuration(data.mineSeconds)} · người khác{" "}
+            {formatDuration(data.othersSeconds)} — con số trên hàng là tổng của
+            mọi người.
+          </span>
+        )}
+
+        {data?.truncated && (
+          <span className="px-1 font-sans text-[10.5px] leading-snug text-warn">
+            Task này có quá nhiều worklog — danh sách trên chưa đủ.
+          </span>
+        )}
+      </span>
+    </>
+  );
+}
+
+/**
+ * `2026-09-29` → `T3 29/09`, và `T3 29/09/25` khi khác năm hiện tại.
+ *
+ * Năm chỉ hiện khi nó nói thêm điều gì. `T3 · 29/09/2026` đầy đủ cần hơn 86px
+ * nên bị bẻ làm hai dòng trong hộp hẹp — mà mười hai chữ số năm giống hệt nhau
+ * chồng lên nhau thì không ai đọc.
+ */
+function dayLabel(d: string): string {
+  const wd = ["CN", "T2", "T3", "T4", "T5", "T6", "T7"][
+    new Date(`${d}T00:00:00`).getDay()
+  ];
+  const sameYear = d.slice(0, 4) === String(new Date().getFullYear());
+  return `${wd} ${d.slice(8, 10)}/${d.slice(5, 7)}${sameYear ? "" : `/${d.slice(2, 4)}`}`;
 }
