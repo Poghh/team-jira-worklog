@@ -1349,3 +1349,88 @@ export function planSummary(rows: PlanRow[]): string {
   ].filter(Boolean);
   return `${rows.length} nhánh${parts.length ? ` · ${parts.join(" · ")}` : ""}`;
 }
+
+/**
+ * Card này có gì sẽ mất đi nếu gỡ khỏi bảng không.
+ *
+ * Bảng là chỗ nhìn việc, không phải chỗ việc xảy ra — gỡ card không đụng nhánh
+ * trên GitHub lẫn ticket trên Jira. Thứ duy nhất mất được là những gì người
+ * dùng tự gõ hoặc tự ghim vào card, nên đó là thứ duy nhất phải hỏi trước khi
+ * gỡ tự động.
+ *
+ * Bản build cũng tính: nó là lời khai đã đối chiếu với App Store Connect, đắt
+ * và không dựng lại được từ git.
+ */
+export function cardIsEmpty(card: {
+  body: string;
+  builds: unknown[];
+  githubPinned: boolean;
+  sides: Array<{ prs: unknown[]; pinned?: boolean }>;
+}): boolean {
+  if (card.body.trim()) return false;
+  if (card.builds.length) return false;
+  if (card.githubPinned) return false;
+  return card.sides.every((s) => !s.prs.length && !s.pinned);
+}
+
+/**
+ * Card phép quét được phép gỡ hẳn khỏi bảng.
+ *
+ * Ba điều kiện, viết ở một chỗ vì thứ tự giữa chúng mới là phần dễ sai:
+ *
+ *  1. mọi nửa của card đều biến mất — phép kiểm do người gọi đưa vào, và nó
+ *     phải là phép kiểm hỏi **cả GitHub lẫn clone**, không phải chỉ GitHub;
+ *  2. card không mang gì để mất — {@link cardIsEmpty};
+ *  3. **không có nhánh nào đang thay chỗ nó**. Đây là điều kiện hay bị bỏ quên:
+ *     đổi tên nhánh làm nhánh cũ biến mất ở cả hai nơi, nên nếu chỉ xét (1) và
+ *     (2) thì card bị xoá đúng vào lúc phép quét vừa tìm ra nhánh mới cho nó —
+ *     mất cột, mất lịch sử, rồi lần quét sau dựng lại một card trắng.
+ */
+export function dropCards<
+  S extends {
+    repo: string;
+    branch: string;
+    prs: unknown[];
+    pinned?: boolean;
+    localOnly: boolean;
+    localPath: string;
+  },
+  T extends {
+    id: number;
+    body: string;
+    builds: unknown[];
+    githubPinned: boolean;
+    sides: S[];
+  },
+>(cards: readonly T[], vanished: (side: S) => boolean, repointed: ReadonlySet<number>): T[] {
+  return cards.filter((c) => {
+    if (repointed.has(c.id)) return false;
+    const owned = c.sides.filter((s) => s.repo && s.branch.trim());
+    return owned.length > 0 && owned.every(vanished) && cardIsEmpty(c);
+  });
+}
+
+/**
+ * Danh sách ticket của card sau khi nhánh đổi tên.
+ *
+ * Luật thường là **chỉ thêm, không bớt** — phép quét không được phép xoá một
+ * mã ai đó tự gõ vào, và một PR sửa hai ticket thì ticket thứ hai thường không
+ * nằm trong tên nhánh. Nhưng đổi tên nhánh là đúng ca luật đó sai: card học
+ * `VT-3762` **từ chính tên nhánh cũ** `…VT-3825_VT-3762`, nhánh mới
+ * `…VT-3825` không còn đánh vần nó nữa, mà card vẫn link hai ticket.
+ *
+ * Phân biệt được mà không cần lưu thêm gì: mã nào tên nhánh **cũ** đánh vần ra
+ * mà tên nhánh **mới** không, mã đó đến từ tên nhánh — bỏ. Mọi mã còn lại là
+ * của người dùng hoặc của nửa còn lại, và được giữ nguyên.
+ */
+export function keysAfterRename(
+  stored: readonly string[],
+  spelledBefore: readonly string[],
+  spelledNow: readonly string[],
+): string[] {
+  const before = new Set(spelledBefore);
+  const now = new Set(spelledNow);
+  const out = stored.filter((k) => !(before.has(k) && !now.has(k)));
+  for (const k of spelledNow) if (!out.includes(k)) out.push(k);
+  return out;
+}

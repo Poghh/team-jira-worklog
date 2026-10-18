@@ -1636,13 +1636,24 @@ function NoteCard({
       <Inbound card={card} cards={cards} sides={sides} onGoTo={onGoTo} />
 
       {sides.length <= 1 ? (
-        <Ladder
-          rows={cardLadder(sides[0]?.prs ?? [], card.builds, stages)}
-          repo={card.repo}
-          builds={buildsOn}
-          owners={owners}
-          onGoTo={onGoTo}
-        />
+        <>
+          {/* Cùng chỗ, cùng thứ tự như ở nhánh hai repo bên dưới: ngay trên
+              thang môi trường.
+
+              Thiếu đúng dòng này là cả tính năng "chưa rebase" vô hình với
+              **card một repo** — tức gần hết bảng. Dữ liệu vẫn được đo và vẫn
+              nằm trong card (`base=master behind=29`), chỉ là không ai vẽ nó
+              ra, nên bảng im lặng y như lúc chưa đo được gì. Ô nhãn 62px của
+              `BaseAge` khớp sẵn với `CardRow`, không phải căn lại. */}
+          {sides[0] && <BaseAge side={sides[0]} />}
+          <Ladder
+            rows={cardLadder(sides[0]?.prs ?? [], card.builds, stages)}
+            repo={card.repo}
+            builds={buildsOn}
+            owners={owners}
+            onGoTo={onGoTo}
+          />
+        </>
       ) : (
         <>
           {sides.map((side) => (

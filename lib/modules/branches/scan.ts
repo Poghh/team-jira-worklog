@@ -35,6 +35,9 @@ import {
   serializeCardSides,
   stageFor,
   titleFromBranch,
+  cardIsEmpty,
+  dropCards,
+  keysAfterRename,
 } from "./github-model";
 import {
   fetchBranches,
@@ -48,7 +51,12 @@ import {
   fetchPushedBranches,
   fetchShaContainment,
 } from "./github";
-import { type LocalScan, localIndex, readLocalBranches } from "./local";
+import {
+  type LocalScan,
+  localIndex,
+  mergeBaseSha,
+  readLocalBranches,
+} from "./local";
 import {
   applyGitHubBranch,
   deleteTaskNotes,
@@ -80,6 +88,31 @@ export interface GoneCard {
   bodyLines: number;
   prUrl: string;
   prState: string;
+}
+
+/** Một card đã lưu, kể lại dưới dạng {@link GoneCard}. */
+function goneCard(c: {
+  id: number;
+  issueKey: string;
+  title: string;
+  branch: string;
+  repo: string;
+  stage: string;
+  body: string;
+  prUrl: string;
+  sides: Array<{ prs: Array<{ state: string }> }>;
+}): GoneCard {
+  return {
+    id: c.id,
+    issueKey: c.issueKey,
+    title: c.title,
+    branch: c.branch,
+    repo: c.repo,
+    stage: c.stage,
+    bodyLines: c.body.split("\n").filter((l) => l.trim()).length,
+    prUrl: c.prUrl,
+    prState: c.sides[0]?.prs[0]?.state ?? "",
+  };
 }
 
 export interface ScanResult {
@@ -143,6 +176,11 @@ export interface ScanResult {
    * only sensible action is the opposite one — clear the card, not update it.
    */
   gone: GoneCard[];
+  /**
+   * Card nhánh đã biến mất ở cả GitHub lẫn clone, và không mang gì để mất —
+   * phép quét gỡ hẳn chứ không mời dọn. Xem chỗ dựng danh sách này.
+   */
+  dropped: GoneCard[];
 }
 
 /**
@@ -233,6 +271,42 @@ export async function scanGitHub(): Promise<ScanResult> {
         Boolean(s.localPath) && readPaths.has(s.localPath) && !localSeen.has(key)
       );
     return readRepos.has(s.repo) && !liveBranches.has(key);
+  };
+
+  /**
+   * Repo có ít nhất một clone đọc được lần này.
+   *
+   * Thiếu nó thì "không thấy nhánh dưới máy" là câu trả lời của một câu hỏi
+   * chưa từng được hỏi — và câu trả lời đó đang được dùng để **xoá card**.
+   */
+  const localRepos = new Set(local.branches.map((b) => b.repo));
+
+  /**
+   * Nhánh biến mất ở **cả hai nơi**: GitHub không có, mà clone dưới máy cũng
+   * không có — và cả hai đều thật sự được kiểm lần quét này.
+   *
+   * Chặt hơn {@link sideGone} một bậc, có chủ ý. `sideGone` chỉ hỏi GitHub, đủ
+   * để gạch tên nhánh và mời người dùng dọn; nhưng xoá card thì không được
+   * phép nhầm, mà xoá nhánh trên remote rồi giữ lại dưới máy là chuyện thường
+   * ngày của việc đang làm dở.
+   */
+  const sideVanished = (s: {
+    repo: string;
+    branch: string;
+    localOnly: boolean;
+    localPath: string;
+  }) => {
+    if (!s.repo || !s.branch.trim()) return false;
+    // Nhánh chưa từng push: clone là nhân chứng duy nhất, nên hỏi GitHub thêm
+    // một lần nữa cũng không biết gì hơn.
+    if (s.localOnly) return sideGone(s);
+    const key = `${s.repo}#${s.branch.trim()}`;
+    return (
+      readRepos.has(s.repo) &&
+      !liveBranches.has(key) &&
+      localRepos.has(s.repo) &&
+      !localSeen.has(key)
+    );
   };
 
   /** Xem {@link settleSides} — phép kiểm "mất nhánh" là của lần quét này. */
@@ -686,6 +760,7 @@ export async function scanGitHub(): Promise<ScanResult> {
    * Chỉ hỏi cho nhánh đã lọt vào `measure` — đúng những nhánh sẽ lên card.
    */
   const baseState: Record<string, BaseState & { baseBranch: string }> = {};
+  const baseByRepo = new Map<string, string>();
   {
     const byRepo = new Map<string, string[]>();
     for (const t of measure)
@@ -693,11 +768,55 @@ export async function scanGitHub(): Promise<ScanResult> {
     for (const [repo, list] of byRepo) {
       const base = await fetchBaseBranch(token, repo).catch(() => "");
       if (!base) continue;
+      baseByRepo.set(repo, base);
       const got = await fetchBaseStates(token, repo, base, list).catch(
         () => ({}) as Record<string, BaseState>,
       );
       for (const [branch, v] of Object.entries(got))
         baseState[`${repo}#${branch}`] = { ...v, baseBranch: base };
+    }
+  }
+
+  /**
+   * Nhánh chưa push: hỏi cùng câu hỏi, nhưng hỏi theo **sha điểm rẽ nhánh**.
+   *
+   * Vòng trên hỏi `compare/master...<tên nhánh>`, và GitHub không có nhánh chưa
+   * push nên nó trả 404 — card im lặng về chuyện rebase đúng lúc câu hỏi đáng
+   * giá nhất. Điểm rẽ nhánh thì khác: nó là một commit đã nằm trên `master`,
+   * nên hỏi theo sha vẫn ra đúng `behind_by` và đúng ngày.
+   *
+   * Sha đọc từ clone — {@link mergeBaseSha}, chỉ đọc — còn con số vẫn là của
+   * GitHub. Nên clone fetch lần cuối lúc nào không ảnh hưởng tới kết quả, và
+   * app vẫn giữ lời hứa không làm mới repo của người dùng.
+   *
+   * Chỉ lấp chỗ trống: nhánh nào vòng trên đã trả lời được thì không hỏi lại.
+   */
+  {
+    const shaOf = new Map<string, string>();
+    const byRepo = new Map<string, Set<string>>();
+    for (const t of measure) {
+      const key = `${t.repo}#${t.branch}`;
+      if (baseState[key]) continue;
+      const base = baseByRepo.get(t.repo);
+      const lb = local.branches.find(
+        (b) => b.repo === t.repo && b.name === t.branch,
+      );
+      if (!base || !lb) continue;
+      const sha = await mergeBaseSha(lb.path, t.branch, base).catch(() => "");
+      if (!sha) continue;
+      shaOf.set(key, sha);
+      byRepo.set(t.repo, (byRepo.get(t.repo) ?? new Set()).add(sha));
+    }
+    for (const [repo, shas] of byRepo) {
+      const base = baseByRepo.get(repo)!;
+      const got = await fetchBaseStates(token, repo, base, [...shas]).catch(
+        () => ({}) as Record<string, BaseState>,
+      );
+      for (const [key, sha] of shaOf) {
+        if (!key.startsWith(`${repo}#`)) continue;
+        const v = got[sha];
+        if (v) baseState[key] = { ...v, baseBranch: base };
+      }
     }
   }
 
@@ -893,6 +1012,45 @@ export async function scanGitHub(): Promise<ScanResult> {
     // pinned to is gone or renamed — never a silent re-point.
     const pinBroken =
       card.githubPinned && !pinnedHit.has(`${groupKey}#${card.repo}`);
+    /**
+     * Card đang trỏ vào nhánh đã biến mất ở cả GitHub lẫn clone — đổi tên nhánh.
+     *
+     * `conflict` sinh ra để bảo vệ một tên nhánh người dùng tự gõ khỏi bị đè.
+     * Nhưng khi nhánh cũ **không còn tồn tại ở đâu cả**, cái được bảo vệ là một
+     * cái tên trỏ vào hư không: card nằm im với dòng "nhánh đã xoá", nhánh mới
+     * đứng chờ trong tab GitHub, và chẳng bên nào nói cho bên nào biết.
+     *
+     * Đo trên card 55: đổi `ctalk/bugfix/VT-3825_VT-3762` thành
+     * `ctalk/bugfix/VT-3825` thì nhánh mới rơi vào `conflict`, còn card giữ
+     * nguyên tên cũ — hai nửa của cùng một việc, không nửa nào sai, mà bảng
+     * thì sai.
+     *
+     * Ghim vẫn là ngoại lệ: ghim là một quyết định tay, và quyết định tay chỉ
+     * người gỡ được.
+     */
+    const renamed =
+      !card.githubPinned &&
+      card.sides.some((x) => x.repo && x.branch.trim()) &&
+      card.sides
+        .filter((x) => x.repo && x.branch.trim())
+        .every(sideVanished);
+    /**
+     * Ticket của card sau lượt này.
+     *
+     * Đổi tên nhánh thì danh sách phải **theo nhánh mới**, không cộng dồn: tên
+     * cũ `…VT-3825_VT-3762` dạy cho card cả hai mã, tên mới chỉ còn một, mà
+     * card vẫn link hai ticket. Xem {@link keysAfterRename} — chỉ bỏ mã nào do
+     * chính tên nhánh cũ sinh ra.
+     */
+    const nextKeys = renamed
+      ? keysAfterRename(
+          card.issueKeys,
+          card.sides.flatMap((x) =>
+            x.branch.trim() ? extractIssueKeys(x.branch, cfg.projectKeys) : [],
+          ),
+          cardKeys,
+        )
+      : mergedKeys(card, cardKeys);
     // Every measured field lives on a side now, so one comparison covers the
     // lot — including a request opened against the next environment, which
     // changes nothing else on the card and used to go unnoticed.
@@ -900,7 +1058,7 @@ export async function scanGitHub(): Promise<ScanResult> {
       sameBranch &&
       card.repo === branch.repo &&
       serializeCardSides(card.sides) === serializeCardSides(sides) &&
-      JSON.stringify(card.issueKeys) === JSON.stringify(mergedKeys(card, cardKeys)) &&
+      JSON.stringify(card.issueKeys) === JSON.stringify(nextKeys) &&
       !stage;
 
     return {
@@ -908,11 +1066,11 @@ export async function scanGitHub(): Promise<ScanResult> {
       issueKey,
       action: fresh
         ? "match"
-        : pinBroken || (card.branch.trim() && !sameBranch)
+        : pinBroken || (card.branch.trim() && !sameBranch && !renamed)
           ? "conflict"
           : "fill",
       noteId: card.id,
-      issueKeys: mergedKeys(card, cardKeys),
+      issueKeys: nextKeys,
       currentBranch: card.branch,
       currentStage: card.stage,
       stage,
@@ -924,8 +1082,36 @@ export async function scanGitHub(): Promise<ScanResult> {
   });
 
 
+  /**
+   * Card bị gỡ hẳn, không phải chỉ gạch tên.
+   *
+   * Ba điều kiện, và cả ba đều cần:
+   *
+   *  1. **mọi nửa biến mất ở cả hai nơi** — {@link sideVanished}, chứ không
+   *     phải `sideGone` vốn chỉ hỏi GitHub. Xoá nhánh trên remote mà vẫn giữ
+   *     dưới máy là trạng thái bình thường của việc đang làm dở.
+   *  2. **không có gì để mất** — {@link cardIsEmpty}. Card có ghi chú, có bản
+   *     build, có PR hay có ghim thì vẫn chỉ được gạch tên và mời dọn tay; cái
+   *     mất đi ở đó không dựng lại được từ git.
+   *  3. **không có nhánh nào đang thay chỗ nó** — nếu lần quét này tìm ra một
+   *     nhánh mới cho chính card đó (đổi tên nhánh), card phải được trỏ lại chứ
+   *     không phải bị xoá rồi dựng lại từ đầu: dựng lại là mất cột, mất lịch sử
+   *     và mất chính những thứ điều kiện 2 đang giữ.
+   */
+  const repointed = new Set(
+    rows.flatMap((r) => (r.noteId && r.action !== "match" ? [r.noteId] : [])),
+  );
+  const dropped: GoneCard[] = dropCards(allCards, sideVanished, repointed).map(goneCard);
+  const droppedIds = new Set(dropped.map((c) => c.id));
+
   const gone: GoneCard[] = allCards
     .filter((c) => {
+      if (droppedIds.has(c.id)) return false;
+      // Card đang được trỏ sang nhánh khác trong chính lần quét này thì không
+      // phải "mất nhánh" — nhánh của nó vừa đổi tên. Để nó nằm trong danh sách
+      // mời dọn là mời người dùng xoá đúng cái card vừa được chữa, bằng một nút
+      // "Xoá 1 card này" đứng ngay trên dòng CẬP NHẬT của chính nó.
+      if (repointed.has(c.id)) return false;
       // Every repository the fix touched, not only the first.
       //
       // This read `c.repo`/`c.branch` — the flat columns, which mirror the
@@ -936,17 +1122,7 @@ export async function scanGitHub(): Promise<ScanResult> {
       const owned = c.sides.filter((s) => s.repo && s.branch.trim());
       return owned.length > 0 && owned.every(sideGone);
     })
-    .map((c) => ({
-      id: c.id,
-      issueKey: c.issueKey,
-      title: c.title,
-      branch: c.branch,
-      repo: c.repo,
-      stage: c.stage,
-      bodyLines: c.body.split("\n").filter((l) => l.trim()).length,
-      prUrl: c.prUrl,
-      prState: c.sides[0]?.prs[0]?.state ?? "",
-    }));
+    .map(goneCard);
 
   // Pinned cards the key-matching above never reached.
   //
@@ -1163,6 +1339,7 @@ export async function scanGitHub(): Promise<ScanResult> {
     badPaths: local.bad,
     localHidden,
     gone,
+    dropped,
   };
 }
 
@@ -1281,7 +1458,14 @@ export function safeRows(rows: PlanRow[]): PlanRow[] {
 export function applyPlan(
   rows: PlanRow[],
   goneIds: number[] = [],
-): { written: number; markedGone: number } {
+  /**
+   * Card phép quét gỡ hẳn: nhánh biến mất ở cả GitHub lẫn clone, card không
+   * mang ghi chú / bản build / PR / ghim nào, và không có nhánh nào thay chỗ.
+   * Xoá trước khi ghi, để một card sắp bị gỡ không kịp được viết lại.
+   */
+  dropIds: number[] = [],
+): { written: number; markedGone: number; dropped: number } {
+  const dropped = dropIds.length ? deleteTaskNotes(dropIds) : 0;
   const markedGone = markBranchesGone(goneIds);
 
   let n = 0;
@@ -1299,5 +1483,5 @@ export function applyPlan(
     });
     n++;
   }
-  return { written: n, markedGone };
+  return { written: n, markedGone, dropped };
 }

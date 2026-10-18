@@ -815,6 +815,7 @@ function ScanReview({
       const res = await applyPlanAction(
         chosen,
         scan.gone.map((g) => g.id),
+        scan.dropped.map((g) => g.id),
       );
       setDone(res.message);
       if (res.ok) {
@@ -925,6 +926,29 @@ function ScanReview({
               {scan.unmatchedSamples.join(" · ")}
             </p>
           )}
+        </div>
+      )}
+
+      {/* Báo chứ không mời dọn: những card này sẽ **tự biến mất** khi bấm áp
+          dụng, nên danh sách ở đây là lời khai trước, không phải việc cần làm. */}
+      {scan.dropped.length > 0 && (
+        <div className="mt-3 rounded-md border border-line bg-surface-2 px-3 py-2">
+          <p className="text-[12.5px] font-medium text-ink-2">
+            Sẽ gỡ {scan.dropped.length} card — nhánh không còn ở GitHub lẫn clone
+          </p>
+          <p className="mt-1 text-[11.5px] leading-relaxed text-ink-3">
+            Hỏi cả hai nơi rồi mới gỡ, và chỉ gỡ card không mang ghi chú, bản
+            build, PR hay ghim nào — những card đó vẫn nằm ở danh sách bên dưới
+            để bạn tự quyết. Gỡ chỉ bỏ khỏi bảng, không đụng GitHub hay Jira.
+          </p>
+          <ul className="mt-1.5 space-y-0.5">
+            {scan.dropped.map((c) => (
+              <li key={c.id} className="font-mono text-[11.5px] text-ink-3">
+                <span className="text-ink-2">{c.issueKey || "—"}</span> ·{" "}
+                {c.branch || "—"}
+              </li>
+            ))}
+          </ul>
         </div>
       )}
 

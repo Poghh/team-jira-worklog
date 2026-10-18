@@ -64,6 +64,9 @@ import {
   cardStage,
   reachedTrunk,
   settleSides,
+  cardIsEmpty,
+  dropCards,
+  keysAfterRename,
   mergeCardPrs,
   parseCardSides,
   primarySide,
@@ -972,6 +975,92 @@ eq(baseFreshness(roundTrip, NOW).upToDate, true, 'và đọc ra đúng kết lu�
   // Nhánh còn sống thì không ai bị đụng tới.
   const none = settleSides([side('o/ios', 'a'), side('o/sdk', 'b')], () => false)
   eq(none.map((x) => x.branchGone), [false, false], 'nhánh còn sống thì giữ nguyên')
+}
+
+
+/* ── card nào được phép tự gỡ khỏi bảng ────────────────────────────────── */
+//
+// Gỡ card là thao tác duy nhất ở đây phá huỷ được thứ không dựng lại được từ
+// git: ghi chú người dùng tự gõ, bản build đã đối chiếu với App Store Connect,
+// PR đã ghim. Nên luật "nhánh không còn ở đâu thì gỡ card" phải dừng lại trước
+// mọi card còn mang một trong số đó.
+{
+  const base = { body: '', builds: [] as unknown[], githubPinned: false, sides: [{ prs: [] as unknown[] }] }
+
+  eq(cardIsEmpty(base), true, 'card trắng: gỡ được')
+  eq(cardIsEmpty({ ...base, body: 'nhớ hỏi QC' }), false, 'có ghi chú thì không gỡ')
+  // Khoảng trắng không phải ghi chú — nếu tính là có thì luật không bao giờ chạy.
+  eq(cardIsEmpty({ ...base, body: '   \n  ' }), true, 'toàn khoảng trắng vẫn là trắng')
+  eq(cardIsEmpty({ ...base, builds: [{}] }), false, 'có bản build thì không gỡ')
+  eq(cardIsEmpty({ ...base, githubPinned: true }), false, 'card đã ghim thì không gỡ')
+  eq(cardIsEmpty({ ...base, sides: [{ prs: [{}] }] }), false, 'có PR thì không gỡ')
+  // Một nửa trắng không cứu được nửa kia: card là một đơn vị.
+  eq(cardIsEmpty({ ...base, sides: [{ prs: [] }, { prs: [{}] }] }), false,
+     'chỉ cần một nửa còn PR là cả card phải giữ')
+  eq(cardIsEmpty({ ...base, sides: [{ prs: [], pinned: true }] }), false,
+     'nửa đã ghim thì không gỡ')
+  eq(cardIsEmpty({ ...base, sides: [] }), true, 'không nửa nào thì không có gì để mất')
+}
+
+
+/* ── card nào bị phép quét gỡ hẳn ──────────────────────────────────────── */
+//
+// Thật: card 55 trỏ vào `ctalk/bugfix/VT-3825_VT-3762`, người dùng đổi tên
+// nhánh thành `ctalk/bugfix/VT-3825`. Nhánh cũ biến mất ở cả GitHub lẫn clone —
+// đúng diện "gỡ" — nhưng cùng lần quét đó lại tìm ra nhánh mới cho chính card
+// ấy. Gỡ nó đi là xoá đúng cái card vừa được chữa.
+{
+  const card = (id: number, branches: string[], extra: Record<string, unknown> = {}) => ({
+    id,
+    body: '',
+    builds: [] as unknown[],
+    githubPinned: false,
+    sides: branches.map((b) => ({
+      repo: 'o/ios', branch: b, prs: [] as unknown[], localOnly: false, localPath: '',
+    })),
+    ...extra,
+  })
+  const vanished = (names: string[]) => (s: { branch: string }) => names.includes(s.branch)
+  const none = new Set<number>()
+
+  eq(dropCards([card(1, ['a'])], vanished(['a']), none).map((c) => c.id), [1],
+     'nhánh biến mất ở cả hai nơi, card trắng: gỡ')
+  eq(dropCards([card(1, ['a'])], vanished([]), none).map((c) => c.id), [],
+     'nhánh còn thì không gỡ')
+  // Điều kiện hay bị bỏ quên nhất, và là chính ca đổi tên nhánh.
+  eq(dropCards([card(1, ['a'])], vanished(['a']), new Set([1])).map((c) => c.id), [],
+     'card đang được trỏ sang nhánh mới thì không gỡ, dù nhánh cũ đã biến mất')
+  eq(dropCards([card(1, ['a'], { body: 'ghi chú' })], vanished(['a']), none).length, 0,
+     'card có ghi chú thì không gỡ — để đường dọn tay lo')
+  // Một nửa còn sống là cả card còn sống: nửa kia có thể là việc đã release.
+  eq(dropCards([card(1, ['a', 'b'])], vanished(['a']), none).length, 0,
+     'chỉ một nửa biến mất thì chưa gỡ')
+  eq(dropCards([card(1, ['a', 'b'])], vanished(['a', 'b']), none).map((c) => c.id), [1],
+     'cả hai nửa biến mất thì gỡ')
+  eq(dropCards([card(1, [])], vanished(['a']), none).length, 0,
+     'card không trỏ vào nhánh nào thì không ai kết luận được gì về nó')
+}
+
+
+/* ── đổi tên nhánh thì danh sách ticket theo nhánh mới ─────────────────── */
+//
+// Thật: nhánh `ctalk/bugfix/VT-3825_VT-3762` đổi thành `ctalk/bugfix/VT-3825`.
+// Card học cả hai mã từ chính tên nhánh cũ, nên giữ `VT-3762` là giữ một thứ
+// không còn ai nói ra nữa.
+{
+  eq(keysAfterRename(['VT-3825', 'VT-3762'], ['VT-3825', 'VT-3762'], ['VT-3825']), ['VT-3825'],
+     'mã chỉ có ở tên nhánh cũ thì bỏ')
+  // Luật gốc vẫn phải đúng: phép quét không được xoá mã người dùng tự gõ.
+  eq(keysAfterRename(['VT-3825', 'VT-9'], ['VT-3825'], ['VT-3825']), ['VT-3825', 'VT-9'],
+     'mã không đến từ tên nhánh thì giữ, dù nhánh mới không nhắc tới')
+  eq(keysAfterRename(['VT-1'], ['VT-1'], ['VT-2']), ['VT-2'],
+     'đổi hẳn sang ticket khác: mã cũ đi, mã mới vào')
+  eq(keysAfterRename(['VT-1', 'VT-2'], ['VT-1', 'VT-2'], ['VT-2', 'VT-1']), ['VT-1', 'VT-2'],
+     'chỉ đổi thứ tự trong tên nhánh thì không đổi gì')
+  // Nửa kia của card vẫn đánh vần mã đó thì mã đó còn sống.
+  eq(keysAfterRename(['VT-1', 'VT-2'], ['VT-1', 'VT-2'], ['VT-1', 'VT-2']), ['VT-1', 'VT-2'],
+     'nhánh mới vẫn nhắc cả hai thì giữ cả hai')
+  eq(keysAfterRename([], [], ['VT-7']), ['VT-7'], 'card chưa có mã nào thì nhận mã của nhánh mới')
 }
 
 console.log(bad ? `\n${bad}/${n} FAILED` : `\nall ${n} ok`)
