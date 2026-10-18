@@ -72,7 +72,7 @@ export function PointsEditor({
     return (
       <span
         title={readOnlyReason ?? `Story point của ${issueKey}`}
-        className="inline-flex h-6 min-w-[26px] items-center justify-center gap-1 rounded-[5px] border border-line bg-surface-2 px-1.5 font-mono text-[11.5px] text-ink-3"
+        className="inline-flex h-6 min-w-[26px] items-center justify-center gap-1 whitespace-nowrap rounded-[5px] border border-line bg-surface-2 px-1.5 font-mono text-[11.5px] text-ink-3"
       >
         {label}
       </span>
@@ -91,7 +91,7 @@ export function PointsEditor({
             over ? 'Đã log quá ước lượng — chỉ cảnh báo, không chặn' : `Story point của ${issueKey}`
           }
           className={
-            'inline-flex h-6 min-w-[26px] items-center justify-center gap-1 rounded-[5px] border px-1.5 font-mono text-[11.5px] disabled:opacity-60 ' +
+            'inline-flex h-6 min-w-[26px] items-center justify-center gap-1 whitespace-nowrap rounded-[5px] border px-1.5 font-mono text-[11.5px] disabled:opacity-60 ' +
             (over
               ? 'border-crit bg-crit-soft text-crit'
               : mismatch

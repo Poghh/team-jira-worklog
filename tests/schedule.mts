@@ -9,6 +9,7 @@
  * past, and the overtime that runs off the end of a half day.
  */
 import { type DayOffKind, halfDayHours, quotaForDate, scheduleForDate } from '@/lib/quota'
+import { datesFromChildren } from '@/lib/time'
 import {
   DEFAULT_SCHEDULE,
   type WorkSchedule,
@@ -115,6 +116,45 @@ eq(halfDayHours(solidSchedule), { morning: 4, afternoon: 4 },
 eq(sched('morning', solidSchedule).start, 12 * 60, 'with no break, a morning off starts at the midpoint')
 eq(sched('afternoon', solidSchedule).end, 12 * 60, 'and an afternoon off ends there')
 eq(sched(null, solidSchedule), solidSchedule, 'an ordinary day on such a schedule is still untouched')
+
+
+/* ── gợi ý ngày cho task cha, suy từ task con ───────────────────────────── */
+//
+// Luật trái với phản xạ thông thường (min start / max due), nên mỗi ca ở đây
+// là một lần khẳng định lại nó đúng ý người đặt luật, không phải ý người code.
+{
+  const kid = (startDate: string | null, dueDate: string | null) => ({ startDate, dueDate })
+  const T = '2026-10-18'
+
+  eq(datesFromChildren([kid('2026-09-24', '2026-09-26'), kid('2026-09-28', '2026-09-29')], T),
+     { startDate: '2026-09-28', dueDate: '2026-09-29' },
+     'start lấy ngày bắt đầu TRỄ nhất, không phải sớm nhất')
+
+  // Ca này phân biệt "gần hôm nay nhất" với "muộn nhất": 20/10 muộn hơn nhưng
+  // 17/10 gần 18/10 hơn, nên due là 17/10.
+  eq(datesFromChildren([kid('2026-10-01', '2026-10-20'), kid('2026-10-02', '2026-10-17')], T),
+     { startDate: '2026-10-02', dueDate: '2026-10-17' },
+     'due lấy ngày gần hôm nay nhất, kể cả khi nó không phải ngày muộn nhất')
+
+  eq(datesFromChildren([kid('2026-10-01', '2026-10-17'), kid('2026-10-01', '2026-10-19')], T),
+     { startDate: '2026-10-01', dueDate: '2026-10-19' },
+     'cách hôm nay bằng nhau thì lấy ngày muộn hơn')
+
+  eq(datesFromChildren([kid(null, '2026-10-10'), kid(null, null)], T), null,
+     'không task con nào có start thì không gợi ý')
+  eq(datesFromChildren([kid('2026-10-10', null)], T), null,
+     'không task con nào có due thì không gợi ý')
+  eq(datesFromChildren([], T), null, 'không có task con thì không gợi ý')
+
+  // Ca ngược: task con mới nhất bắt đầu 15/10 nhưng due gần hôm nay nhất lại
+  // là 10/10 của một task con cũ. Cặp 15/10 → 10/10 sẽ bị chính ô ngày từ
+  // chối, nên đừng mời người dùng bấm vào nó.
+  eq(datesFromChildren([kid('2026-10-01', '2026-10-10'), kid('2026-10-15', null)], T), null,
+     'cặp suy ra bị ngược thì không gợi ý')
+
+  eq(datesFromChildren([kid('2026-10-05', '2026-10-05')], T),
+     { startDate: '2026-10-05', dueDate: '2026-10-05' }, 'một task con duy nhất')
+}
 
 console.log(bad ? `\n${bad} of ${n} FAILED` : `\nall ${n} ok`)
 if (bad) process.exit(1)

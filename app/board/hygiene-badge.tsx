@@ -24,7 +24,12 @@ export function HygieneBadge({ hygiene }: { hygiene: IssueHygiene }) {
     <span
       title={hygiene.problems.join(' · ')}
       className={
-        'inline-flex h-[18px] items-center gap-1 rounded-[3px] border px-1.5 font-mono text-[9.5px] font-semibold uppercase tracking-[0.06em] ' +
+        // `shrink-0 whitespace-nowrap`: badge có `h-[18px]` cố định, nên khi ô
+        // bị bóp mà chữ được phép xuống dòng thì ba dòng chữ tràn ra ngoài cái
+        // hộp 18px đó và **đè lên hàng trên dưới** — đo ở 1360px: "sai quy ước"
+        // thành ba dòng trong một hàng cao 39px. Badge là nhãn ngắn, thứ đáng
+        // bị bóp là tiêu đề bên cạnh, và tiêu đề đã có `truncate`.
+        'inline-flex h-[18px] shrink-0 items-center gap-1 whitespace-nowrap rounded-[3px] border px-1.5 font-mono text-[9.5px] font-semibold uppercase tracking-[0.06em] ' +
         (structural ? 'border-crit bg-crit-soft text-crit' : 'border-warn bg-warn-soft text-warn')
       }
     >

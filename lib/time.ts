@@ -319,3 +319,52 @@ export function formatDayMonth(epochSeconds: number, withTime = false, tz = DEFA
   const date = `${parts.day}/${parts.month}`
   return withTime ? `${date} ${parts.hour}:${parts.minute}` : date
 }
+
+/* ── Gợi ý ngày cho task cha, suy từ task con ────────────────────────────── */
+
+export interface ChildDates {
+  startDate: string | null
+  dueDate: string | null
+}
+
+/**
+ * Cặp ngày gợi ý cho một task cha, đọc từ ngày của task con nó.
+ *
+ * Luật do người dùng đặt, và nó **không** phải "bao trọn mọi task con":
+ *
+ *   - start = ngày bắt đầu **trễ nhất** trong các task con
+ *   - due   = ngày kết thúc **gần hôm nay nhất**
+ *
+ * Nghĩa là cửa sổ gợi ý bám vào phần việc gần đây nhất, không phải toàn bộ
+ * vòng đời của task cha. Viết rõ ra đây vì nó trái với phản xạ thông thường
+ * (min start / max due), nên người đọc code sau này sẽ tưởng là nhầm.
+ *
+ * Trả `null` khi không gợi ý được, và có **ba** ca như vậy — ca thứ ba mới là
+ * ca dễ bỏ sót: không task con nào có ngày bắt đầu; không cái nào có ngày kết
+ * thúc; hoặc cặp suy ra bị ngược (due trước start). Ca ngược xảy ra thật khi
+ * task con bắt đầu muộn lại chưa có due, còn due gần nhất thuộc về một task
+ * con cũ — và một cặp ngược thì chính `DatesEditor` sẽ từ chối lưu, nên mời
+ * người dùng bấm vào nó là mời bấm vào thứ không chạy.
+ */
+export function datesFromChildren(
+  children: readonly ChildDates[],
+  today: string,
+): { startDate: string; dueDate: string } | null {
+  const starts = children.map((c) => c.startDate).filter((d): d is string => Boolean(d))
+  const dues = children.map((c) => c.dueDate).filter((d): d is string => Boolean(d))
+  if (!starts.length || !dues.length) return null
+
+  const startDate = starts.reduce((a, b) => (b > a ? b : a))
+
+  const day = (d: string) => Date.parse(`${d}T00:00:00Z`)
+  const t = day(today)
+  const dueDate = dues.reduce((best, d) => {
+    const gap = Math.abs(day(d) - t)
+    const bestGap = Math.abs(day(best) - t)
+    // Hoà thì lấy ngày muộn hơn: hai ngày cách hôm nay bằng nhau nghĩa là một
+    // trước một sau, và nới due ra xa thì an toàn hơn là kéo nó về gần.
+    return gap < bestGap || (gap === bestGap && d > best) ? d : best
+  })
+
+  return dueDate < startDate ? null : { startDate, dueDate }
+}
