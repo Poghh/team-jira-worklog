@@ -250,6 +250,25 @@ function DayCell({
 
   return (
     <span className="group relative flex min-w-0 flex-1 flex-col items-center gap-1">
+      {/* Số giờ đứng ngay trên cột.
+          Trước đây chiều cao cột là thứ **duy nhất** nói ngày đó log bao nhiêu,
+          mà cột chỉ cho biết tỉ lệ: 6/8 và 3/4 cao bằng nhau, và một ngày
+          nghỉ hạn mức 0 thì không có cột nào để đọc. Con số thật phải nằm
+          trên dải, không phải trong tooltip — tooltip đòi rê chuột qua từng
+          ngày một, tức là đúng việc mà dải này sinh ra để khỏi phải làm. */}
+      <span
+        className={
+          "font-mono text-[8.5px] leading-none tabular " +
+          (seconds === 0
+            ? "text-ink-3 opacity-50"
+            : short
+              ? "text-warn"
+              : "text-accent-ink")
+        }
+      >
+        {hours}
+      </span>
+
       <Link
         href={href}
         title={
@@ -257,7 +276,7 @@ function DayCell({
           (dayOff ? " · ngày nghỉ, không tính" : short ? " · thiếu giờ" : "")
         }
         className={
-          "flex h-[26px] w-full items-end overflow-hidden rounded-[3px] " +
+          "flex h-[22px] w-full items-end overflow-hidden rounded-[3px] " +
           (dayOff
             ? "bg-[repeating-linear-gradient(45deg,var(--color-surface-2),var(--color-surface-2)_3px,transparent_3px,transparent_6px)]"
             : "bg-surface-2") +
@@ -274,9 +293,13 @@ function DayCell({
         )}
       </Link>
 
+      {/* Thứ và ngày/tháng **hai dòng**, không phải một.
+          Một dòng `T6 16/10` cần 41px, mà ở 1800px mỗi cột chỉ rộng 36.4px —
+          đo được cả 15 cột đều tràn, chữ của ngày này đè sang ngày bên cạnh.
+          Tách đôi thì dòng rộng nhất còn 5 ký tự. */}
       <span
         className={
-          "whitespace-nowrap font-mono text-[8.5px] " +
+          "flex flex-col items-center whitespace-nowrap font-mono text-[8.5px] leading-tight " +
           (selected
             ? "font-bold text-accent-ink"
             : isToday
@@ -284,8 +307,13 @@ function DayCell({
               : "text-ink-3")
         }
       >
-        <LinkPending className="mr-0.5 align-[-1px]" />
-        {label(date)}
+        <span>
+          <LinkPending className="mr-0.5 align-[-1px]" />
+          {weekday(date)}
+        </span>
+        <span className={selected || isToday ? "" : "opacity-80"}>
+          {date.slice(8, 10)}/{date.slice(5, 7)}
+        </span>
       </span>
 
       <span className="absolute -top-1.5 right-0">
@@ -295,12 +323,22 @@ function DayCell({
   );
 }
 
-/** `2026-10-16` → `T6 16`. */
+/**
+ * `2026-10-16` → `T6 16/10`.
+ *
+ * Có tháng chứ không chỉ ngày: dải này chạy suốt một sprint, mà sprint hay vắt
+ * qua hai tháng — `T6 30` rồi `T7 01` thì số 01 đọc ra là ngày nào phải suy từ
+ * cái trước nó.
+ */
 function label(d: string): string {
-  const wd = ["CN", "T2", "T3", "T4", "T5", "T6", "T7"][
+  return `${weekday(d)} ${d.slice(8, 10)}/${d.slice(5, 7)}`;
+}
+
+/** `2026-10-16` → `T6`. */
+function weekday(d: string): string {
+  return ["CN", "T2", "T3", "T4", "T5", "T6", "T7"][
     new Date(`${d}T00:00:00`).getDay()
   ];
-  return `${wd} ${d.slice(8, 10)}`;
 }
 
 /** Mọi ngày từ `start` tới `end`, kể cả hai đầu. */
