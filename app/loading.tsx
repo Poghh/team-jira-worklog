@@ -65,7 +65,7 @@ function StripSkeleton() {
           rơi xuống một hàng riêng y hệt. */}
       <div className="flex min-w-[460px] flex-1 items-end gap-[3px] border-l border-line px-3 py-2">
         {Array.from({ length: 14 }, (_, i) => (
-          <Shimmer key={i} className="h-[43px] flex-1" />
+          <Shimmer key={i} className="h-[60px] flex-1" />
         ))}
       </div>
 
