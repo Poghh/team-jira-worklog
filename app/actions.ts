@@ -1,7 +1,7 @@
-'use server'
+"use server";
 
-import { getMyself } from '@/lib/jira/client'
-import { generateTask, pointRulesText } from '@/lib/ai/gemini'
+import { getMyself } from "@/lib/jira/client";
+import { generateTask, pointRulesText } from "@/lib/ai/gemini";
 import {
   addTeamLabel,
   attachToSprint,
@@ -10,27 +10,33 @@ import {
   updateStoryPoints,
   updateDescription,
   updateSummary,
-} from '@/lib/jira/issues'
+} from "@/lib/jira/issues";
 import {
-  type IssueWorklogDays,
+  type IssueWorklogs,
   createWorklog,
-  getIssueWorklogDays,
+  getIssueWorklogs,
   loggedMinutesOnDate,
-} from '@/lib/jira/worklog'
-import { listDaysOff } from '@/lib/days-off'
-import { scheduleForDate } from '@/lib/quota'
-import { SETTING_KEYS, getSetting, getWorkSchedule } from '@/lib/settings'
-import { type WorklogSlice, DEFAULT_TZ, formatDuration, formatSlices, sliceWorklog } from '@/lib/time'
+} from "@/lib/jira/worklog";
+import { listDaysOff } from "@/lib/days-off";
+import { scheduleForDate } from "@/lib/quota";
+import { SETTING_KEYS, getSetting, getWorkSchedule } from "@/lib/settings";
+import {
+  type WorklogSlice,
+  DEFAULT_TZ,
+  formatDuration,
+  formatSlices,
+  sliceWorklog,
+} from "@/lib/time";
 
 export interface ActionResult {
-  ok: boolean
-  message: string
+  ok: boolean;
+  message: string;
   /**
    * Something reached Jira despite `ok` being false — a write made of several
    * calls that failed partway. The caller must refresh anyway, or the screen
    * keeps showing a total that is already stale.
    */
-  partial?: boolean
+  partial?: boolean;
 }
 
 /**
@@ -40,31 +46,36 @@ export interface ActionResult {
  * estimate, and the app only ever warns about them.
  */
 export async function logWorkAction(input: {
-  issueKey: string
-  hours: number
-  date: string
-  comment?: string
+  issueKey: string;
+  hours: number;
+  date: string;
+  comment?: string;
 }): Promise<ActionResult & { slots?: string }> {
-  const step = Number(getSetting(SETTING_KEYS.logStepHours) ?? '0.5') || 0.5
+  const step = Number(getSetting(SETTING_KEYS.logStepHours) ?? "0.5") || 0.5;
 
   if (!Number.isFinite(input.hours) || input.hours <= 0) {
-    return { ok: false, message: 'Số giờ không hợp lệ' }
+    return { ok: false, message: "Số giờ không hợp lệ" };
   }
   if (input.hours < step) {
-    return { ok: false, message: `Tối thiểu ${step}h mỗi lần log` }
+    return { ok: false, message: `Tối thiểu ${step}h mỗi lần log` };
   }
   if (!/^\d{4}-\d{2}-\d{2}$/.test(input.date)) {
-    return { ok: false, message: 'Ngày không hợp lệ' }
+    return { ok: false, message: "Ngày không hợp lệ" };
   }
 
   try {
-    const me = await getMyself()
-    const tz = me.timeZone ?? DEFAULT_TZ
+    const me = await getMyself();
+    const tz = me.timeZone ?? DEFAULT_TZ;
 
     // Where the entry lands is decided here, from what the day already holds —
     // never by the client. Entries used to be stamped 09:00 every time, so a
     // full day arrived in Jira as six overlapping blocks all starting together.
-    const already = await loggedMinutesOnDate(input.date, me.accountId, tz, input.issueKey)
+    const already = await loggedMinutesOnDate(
+      input.date,
+      me.accountId,
+      tz,
+      input.issueKey,
+    );
     // Usually one piece. Work spanning the break becomes two, because a single
     // Jira worklog runs solid through lunch — see `sliceWorklog`.
     // Half a day of leave moves where the other half sits on the clock: an
@@ -75,13 +86,13 @@ export async function logWorkAction(input: {
       input.date,
       getWorkSchedule(),
       listDaysOff(input.date, input.date),
-    )
-    const slices = sliceWorklog(already, input.hours * 60, schedule)
+    );
+    const slices = sliceWorklog(already, input.hours * 60, schedule);
 
     // Sequential, and tracking what landed: this is one POST per piece, so a
     // failure on the second leaves the first already recorded in Jira. Calling
     // that a plain failure would invite a retry that logs the first piece twice.
-    const done: WorklogSlice[] = []
+    const done: WorklogSlice[] = [];
     try {
       for (const slice of slices) {
         await createWorklog({
@@ -91,20 +102,20 @@ export async function logWorkAction(input: {
           comment: input.comment,
           startMinute: slice.start,
           tz,
-        })
-        done.push(slice)
+        });
+        done.push(slice);
       }
     } catch (error) {
-      const reason = error instanceof Error ? error.message : 'Không log được'
-      if (!done.length) return { ok: false, message: reason }
+      const reason = error instanceof Error ? error.message : "Không log được";
+      if (!done.length) return { ok: false, message: reason };
 
       // Both figures, named separately. "Log thất bại" would be a lie — part of
       // it is in Jira — and "đã log 1h" alone leaves the user to work out what
       // is still missing. The retry amount is spelled out because the obvious
       // move, logging the original figure again, is the one that double-counts.
-      const failed = slices.slice(done.length)
-      const landed = done.reduce((n, s) => n + s.minutes, 0) * 60
-      const lost = failed.reduce((n, s) => n + s.minutes, 0) * 60
+      const failed = slices.slice(done.length);
+      const landed = done.reduce((n, s) => n + s.minutes, 0) * 60;
+      const lost = failed.reduce((n, s) => n + s.minutes, 0) * 60;
 
       return {
         ok: false,
@@ -113,7 +124,7 @@ export async function logWorkAction(input: {
           `${formatDuration(landed)} (${formatSlices(done)}) đã được log, ` +
           `nhưng xảy ra lỗi khi log ${formatDuration(lost)} (${formatSlices(failed)}): ${reason} ` +
           `— log lại ${formatDuration(lost)} thôi, đừng log lại ${input.hours}h.`,
-      }
+      };
     }
 
     // No revalidatePath here: the board is fully dynamic, so there is nothing
@@ -126,12 +137,12 @@ export async function logWorkAction(input: {
       // đầy đủ lùi vào tooltip. Mã task và số giờ đã nằm sẵn trên chính hàng
       // đó; thứ duy nhất tin này nói thêm là entry rơi vào khung giờ nào.
       slots: formatSlices(slices),
-    }
+    };
   } catch (error) {
     return {
       ok: false,
-      message: error instanceof Error ? error.message : 'Không log được',
-    }
+      message: error instanceof Error ? error.message : "Không log được",
+    };
   }
 }
 
@@ -144,25 +155,32 @@ export async function setStoryPointsAction(
   issueKey: string,
   points: number | null,
 ): Promise<ActionResult> {
-  if (points !== null && (!Number.isFinite(points) || points < 0 || points > 999)) {
-    return { ok: false, message: 'Story point không hợp lệ' }
+  if (
+    points !== null &&
+    (!Number.isFinite(points) || points < 0 || points > 999)
+  ) {
+    return { ok: false, message: "Story point không hợp lệ" };
   }
 
   try {
-    await updateStoryPoints(issueKey, points)
+    await updateStoryPoints(issueKey, points);
     return {
       ok: true,
-      message: points === null ? `Đã xoá point ${issueKey}` : `${issueKey} → ${points} SP`,
-    }
+      message:
+        points === null
+          ? `Đã xoá point ${issueKey}`
+          : `${issueKey} → ${points} SP`,
+    };
   } catch (error) {
     return {
       ok: false,
-      message: error instanceof Error ? error.message : 'Không đổi được story point',
-    }
+      message:
+        error instanceof Error ? error.message : "Không đổi được story point",
+    };
   }
 }
 
-const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/
+const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
 
 /**
  * Writes start and/or due date on an existing issue.
@@ -177,20 +195,21 @@ export async function setDatesAction(
   dates: { startDate?: string | null; dueDate?: string | null },
 ): Promise<ActionResult> {
   for (const value of [dates.startDate, dates.dueDate]) {
-    if (value != null && !ISO_DATE.test(value)) return { ok: false, message: 'Ngày không hợp lệ' }
+    if (value != null && !ISO_DATE.test(value))
+      return { ok: false, message: "Ngày không hợp lệ" };
   }
   if (dates.startDate && dates.dueDate && dates.dueDate < dates.startDate) {
-    return { ok: false, message: 'Due date không được sớm hơn start date' }
+    return { ok: false, message: "Due date không được sớm hơn start date" };
   }
 
   try {
-    await updateDates(issueKey, dates)
-    return { ok: true, message: `Đã cập nhật ngày cho ${issueKey}` }
+    await updateDates(issueKey, dates);
+    return { ok: true, message: `Đã cập nhật ngày cho ${issueKey}` };
   } catch (error) {
     return {
       ok: false,
-      message: error instanceof Error ? error.message : 'Không đổi được ngày',
-    }
+      message: error instanceof Error ? error.message : "Không đổi được ngày",
+    };
   }
 }
 
@@ -207,22 +226,22 @@ export async function setSprintAction(
   sprintId: number,
 ): Promise<ActionResult> {
   if (!Number.isInteger(sprintId) || sprintId <= 0) {
-    return { ok: false, message: 'Sprint không hợp lệ' }
+    return { ok: false, message: "Sprint không hợp lệ" };
   }
 
   try {
-    const { labelAdded } = await attachToSprint(issueKey, sprintId)
+    const { labelAdded } = await attachToSprint(issueKey, sprintId);
     return {
       ok: true,
       message: labelAdded
         ? `Đã đưa ${issueKey} vào sprint và gắn label ${labelAdded}`
         : `Đã đưa ${issueKey} vào sprint`,
-    }
+    };
   } catch (error) {
     return {
       ok: false,
-      message: error instanceof Error ? error.message : 'Không gán được sprint',
-    }
+      message: error instanceof Error ? error.message : "Không gán được sprint",
+    };
   }
 }
 
@@ -235,13 +254,13 @@ export async function updateDescriptionAction(
   dod: string,
 ): Promise<ActionResult> {
   try {
-    await updateDescription(issueKey, description, dod)
-    return { ok: true, message: `Đã lưu mô tả ${issueKey}` }
+    await updateDescription(issueKey, description, dod);
+    return { ok: true, message: `Đã lưu mô tả ${issueKey}` };
   } catch (error) {
     return {
       ok: false,
-      message: error instanceof Error ? error.message : 'Không lưu được mô tả',
-    }
+      message: error instanceof Error ? error.message : "Không lưu được mô tả",
+    };
   }
 }
 
@@ -258,20 +277,24 @@ export async function regenerateDescriptionAction(
   title: string,
   parentSummary?: string,
 ): Promise<ActionResult & { description?: string; dod?: string }> {
-  if (!title.trim()) return { ok: false, message: 'Chưa có tiêu đề để dựa vào' }
+  if (!title.trim())
+    return { ok: false, message: "Chưa có tiêu đề để dựa vào" };
   try {
     const data = await generateTask(title, {
       pointRules: pointRulesText(),
       parentSummary,
-    })
+    });
     return {
       ok: true,
       message: `Đã sinh lại mô tả · ${data.model}`,
       description: data.description,
       dod: data.dod,
-    }
+    };
   } catch (error) {
-    return { ok: false, message: error instanceof Error ? error.message : 'Gemini lỗi' }
+    return {
+      ok: false,
+      message: error instanceof Error ? error.message : "Gemini lỗi",
+    };
   }
 }
 
@@ -286,13 +309,14 @@ export async function updateSummaryAction(
   summary: string,
 ): Promise<ActionResult> {
   try {
-    await updateSummary(issueKey, summary)
-    return { ok: true, message: `Đã đổi tiêu đề ${issueKey}` }
+    await updateSummary(issueKey, summary);
+    return { ok: true, message: `Đã đổi tiêu đề ${issueKey}` };
   } catch (error) {
     return {
       ok: false,
-      message: error instanceof Error ? error.message : 'Không đổi được tiêu đề',
-    }
+      message:
+        error instanceof Error ? error.message : "Không đổi được tiêu đề",
+    };
   }
 }
 
@@ -302,13 +326,14 @@ export async function transitionAction(
   toStatusName: string,
 ): Promise<ActionResult> {
   try {
-    await transitionIssue(issueKey, transitionId)
-    return { ok: true, message: `${issueKey} → ${toStatusName}` }
+    await transitionIssue(issueKey, transitionId);
+    return { ok: true, message: `${issueKey} → ${toStatusName}` };
   } catch (error) {
     return {
       ok: false,
-      message: error instanceof Error ? error.message : 'Không đổi được trạng thái',
-    }
+      message:
+        error instanceof Error ? error.message : "Không đổi được trạng thái",
+    };
   }
 }
 
@@ -316,37 +341,52 @@ export async function transitionAction(
  * Adds the team label to one issue — the "+ label" fix on a board row whose
  * subtask was created outside the app. One issue, one click, nothing else.
  */
-export async function addTeamLabelAction(issueKey: string): Promise<ActionResult> {
-  if (!/^[A-Z][A-Z0-9_]*-\d+$/.test(issueKey)) return { ok: false, message: 'Mã issue không hợp lệ' }
+export async function addTeamLabelAction(
+  issueKey: string,
+): Promise<ActionResult> {
+  if (!/^[A-Z][A-Z0-9_]*-\d+$/.test(issueKey))
+    return { ok: false, message: "Mã issue không hợp lệ" };
   try {
-    const added = await addTeamLabel(issueKey)
-    return { ok: true, message: added ? `Đã gắn label ${added} cho ${issueKey}` : `${issueKey} đã có label` }
+    const added = await addTeamLabel(issueKey);
+    return {
+      ok: true,
+      message: added
+        ? `Đã gắn label ${added} cho ${issueKey}`
+        : `${issueKey} đã có label`,
+    };
   } catch (error) {
-    return { ok: false, message: error instanceof Error ? error.message : 'Không gắn được label' }
+    return {
+      ok: false,
+      message: error instanceof Error ? error.message : "Không gắn được label",
+    };
   }
 }
 
 /**
- * Những ngày đã log giờ cho một issue, để con số "tổng" trên hàng nói được nó
- * đến từ đâu.
+ * Từng lần log giờ của một issue, để con số "tổng" trên hàng nói được nó đến
+ * từ đâu.
  *
  * Đọc theo yêu cầu chứ không kèm sẵn vào dữ liệu trang: trang chỉ fetch worklog
  * trong khoảng sprint đang xem, mà "tổng" là con số từ đầu tới giờ — một task
  * kéo qua ba sprint thì phần lớn số giờ của nó nằm ngoài khoảng đã fetch. Và
  * nạp sẵn cho mọi hàng là mỗi hàng một request, trong khi gần như không ai bấm.
  */
-export async function issueWorklogDaysAction(
+export async function issueWorklogsAction(
   issueKey: string,
-): Promise<{ ok: true; data: IssueWorklogDays } | { ok: false; message: string }> {
-  if (!issueKey) return { ok: false, message: 'Thiếu mã task' }
+): Promise<{ ok: true; data: IssueWorklogs } | { ok: false; message: string }> {
+  if (!issueKey) return { ok: false, message: "Thiếu mã task" };
   try {
-    const me = await getMyself()
-    const tz = me.timeZone ?? DEFAULT_TZ
-    return { ok: true, data: await getIssueWorklogDays(issueKey, me.accountId, tz) }
+    const me = await getMyself();
+    const tz = me.timeZone ?? DEFAULT_TZ;
+    return {
+      ok: true,
+      data: await getIssueWorklogs(issueKey, me.accountId, tz),
+    };
   } catch (error) {
     return {
       ok: false,
-      message: error instanceof Error ? error.message : 'Không đọc được worklog',
-    }
+      message:
+        error instanceof Error ? error.message : "Không đọc được worklog",
+    };
   }
 }
