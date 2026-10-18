@@ -5,7 +5,7 @@ import path from "node:path";
 
 import type { SdkConfig } from "./config";
 import type { VersionProposal } from "./model";
-import { aheadOfRemote, containsRemote, readHead, topLevel } from "./repo";
+import { aheadOfRemote, containsRemote, hasRemoteBranch, readHead, topLevel } from "./repo";
 
 /**
  * Everything that can go wrong before the build starts, asked while it is still
@@ -176,6 +176,19 @@ export async function runChecks(input: {
           "Nhánh SDK so với remote",
           `Nhánh đang có ${ahead} commit chưa push — bản SDK này sẽ build từ code chưa ai khác thấy.`,
           `git -C ${cfg.sdkPath} push`,
+        ),
+      );
+    // Nhánh origin chưa hề có là ca nặng hơn "ahead", nhưng `%(upstream:track)`
+    // trả về rỗng cho nó — không upstream thì không có gì để đếm — nên nếu chỉ
+    // hỏi `ahead` thì đúng cái ca tệ nhất lại là ca im lặng nhất.
+    else if (!(await hasRemoteBranch(cfg.sdkPath, head.branch)))
+      out.push(
+        warn(
+          "sdk-ahead",
+          "Nhánh SDK so với remote",
+          `Origin không có nhánh "${head.branch}" — nó chỉ tồn tại dưới máy này. Commit bump ghi lại ` +
+            `<repo>/<nhánh> <sha>, nên người khác sẽ không lần ra được bản release này build từ đâu.`,
+          `git -C ${cfg.sdkPath} push -u origin ${head.branch}`,
         ),
       );
   }
