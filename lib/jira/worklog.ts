@@ -161,17 +161,25 @@ export async function loggedSpansOnDate(
     .filter((s) => s.minutes > 0);
 }
 
-/** Một ngày đã có giờ của issue này. */
-export interface WorklogDay {
+/** Một lần log, đúng như Jira giữ nó. */
+export interface WorklogItem {
+  id: string;
+  /** Ngày địa phương của lần log, YYYY-MM-DD. */
   date: string;
+  /** Giờ bắt đầu địa phương, `HH:MM`. */
+  clock: string;
   seconds: number;
-  /** Mấy entry trong ngày đó — nửa ngày vắt qua giờ nghỉ nằm trong Jira là hai. */
-  count: number;
 }
 
-export interface IssueWorklogDays {
-  /** Ngày mới nhất trước. */
-  days: WorklogDay[];
+export interface IssueWorklogs {
+  /**
+   * Từng lần log một, mới nhất trước — **không** gộp theo ngày.
+   *
+   * Gộp lại thì một ngày hai lần log phải kèm số lần, mà `8h ×2` hay
+   * `8h · 2 lần` đứng cạnh con số giờ đều đọc thành 16h. Liệt kê riêng thì
+   * không còn gì để hiểu nhầm: 3h cộng 5h ra đúng 8h đang hiện trên hàng.
+   */
+  items: WorklogItem[];
   mineSeconds: number;
   /**
    * Giờ của người khác trên cùng issue.
@@ -185,19 +193,29 @@ export interface IssueWorklogDays {
   truncated: boolean;
 }
 
+/** `2026-10-16T13:00:00.000+0700` → `13:00`, theo `tz` của người đọc. */
+function localTime(iso: string, tz: string): string {
+  return new Intl.DateTimeFormat("en-GB", {
+    timeZone: tz,
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23",
+  }).format(new Date(iso));
+}
+
 /**
- * Mọi ngày mà issue này đã được log giờ, gộp theo ngày.
+ * Mọi lần log giờ của user này trên một issue.
  *
  * Đọc thẳng `/issue/{key}/worklog`, không qua JQL: `worklogDate` là truy vấn
  * index và luôn phải kèm một khoảng ngày, mà câu hỏi ở đây — "tổng này đến từ
  * những ngày nào" — không có khoảng nào cả. Đọc thẳng thì không giới hạn thời
  * gian và cũng không lệ thuộc index.
  */
-export async function getIssueWorklogDays(
+export async function getIssueWorklogs(
   issueKey: string,
   accountId: string,
   tz = DEFAULT_TZ,
-): Promise<IssueWorklogDays> {
+): Promise<IssueWorklogs> {
   const PAGE = 100;
   const CAP = 500;
 
@@ -214,7 +232,7 @@ export async function getIssueWorklogDays(
     if (all.length >= total || page.length < PAGE) break;
   }
 
-  const byDate = new Map<string, WorklogDay>();
+  const items: WorklogItem[] = [];
   let mineSeconds = 0;
   let othersSeconds = 0;
 
@@ -226,19 +244,23 @@ export async function getIssueWorklogDays(
     }
     if (!w.started) continue;
     mineSeconds += seconds;
-    const date = localDate(w.started, tz);
-    const row = byDate.get(date) ?? { date, seconds: 0, count: 0 };
-    row.seconds += seconds;
-    row.count += 1;
-    byDate.set(date, row);
+    items.push({
+      id: w.id,
+      date: localDate(w.started, tz),
+      clock: localTime(w.started, tz),
+      seconds,
+    });
   }
 
-  return {
-    days: [...byDate.values()].sort((a, b) => b.date.localeCompare(a.date)),
-    mineSeconds,
-    othersSeconds,
-    truncated: all.length < total,
-  };
+  // Mới nhất trước, và trong cùng một ngày thì sớm nhất trước — đọc xuôi theo
+  // buổi làm: sáng rồi chiều.
+  items.sort((a, b) =>
+    a.date === b.date
+      ? a.clock.localeCompare(b.clock)
+      : b.date.localeCompare(a.date),
+  );
+
+  return { items, mineSeconds, othersSeconds, truncated: all.length < total };
 }
 
 export function sumByDate(entries: WorklogEntry[]): Map<string, number> {

@@ -12,10 +12,10 @@ import {
   updateSummary,
 } from "@/lib/jira/issues";
 import {
-  type IssueWorklogDays,
+  type IssueWorklogs,
   createWorklog,
   deleteWorklog,
-  getIssueWorklogDays,
+  getIssueWorklogs,
   loggedSpansOnDate,
 } from "@/lib/jira/worklog";
 import { listDaysOff } from "@/lib/days-off";
@@ -455,26 +455,24 @@ export async function addTeamLabelAction(
 }
 
 /**
- * Những ngày đã log giờ cho một issue, để con số "tổng" trên hàng nói được nó
- * đến từ đâu.
+ * Từng lần log giờ của một issue, để con số "tổng" trên hàng nói được nó đến
+ * từ đâu.
  *
  * Đọc theo yêu cầu chứ không kèm sẵn vào dữ liệu trang: trang chỉ fetch worklog
  * trong khoảng sprint đang xem, mà "tổng" là con số từ đầu tới giờ — một task
  * kéo qua ba sprint thì phần lớn số giờ của nó nằm ngoài khoảng đã fetch. Và
  * nạp sẵn cho mọi hàng là mỗi hàng một request, trong khi gần như không ai bấm.
  */
-export async function issueWorklogDaysAction(
+export async function issueWorklogsAction(
   issueKey: string,
-): Promise<
-  { ok: true; data: IssueWorklogDays } | { ok: false; message: string }
-> {
+): Promise<{ ok: true; data: IssueWorklogs } | { ok: false; message: string }> {
   if (!issueKey) return { ok: false, message: "Thiếu mã task" };
   try {
     const me = await getMyself();
     const tz = me.timeZone ?? DEFAULT_TZ;
     return {
       ok: true,
-      data: await getIssueWorklogDays(issueKey, me.accountId, tz),
+      data: await getIssueWorklogs(issueKey, me.accountId, tz),
     };
   } catch (error) {
     return {

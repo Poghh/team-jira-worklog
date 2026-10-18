@@ -1,12 +1,12 @@
 "use client";
 
-import { deleteWorklogsAction, issueWorklogDaysAction } from "@/app/actions";
+import { deleteWorklogsAction, issueWorklogsAction } from "@/app/actions";
 // Import từ types.ts, không bao giờ từ issues.ts — cái sau kéo cả tầng DB vào
 // bundle của trình duyệt.
 import type { BoardSubtask } from "@/lib/jira/types";
 import { issueHygiene, logDatePastDue, statusTone } from "@/lib/jira/types";
 import type { StageConfig, TaskNoteRow } from "@/lib/modules/branches/model";
-import type { IssueWorklogDays } from "@/lib/jira/worklog";
+import type { IssueWorklogs } from "@/lib/jira/worklog";
 import type { DayOffKind } from "@/lib/quota";
 import {
   type BusySpan,
@@ -104,7 +104,7 @@ export function SubtaskRow({
   const [delError, setDelError] = useState<string | null>(null);
   /** Phân rã con số "tổng" theo ngày. `null` = chưa mở, `"loading"` = đang đọc. */
   const [spread, setSpread] = useState<
-    null | "loading" | IssueWorklogDays | { error: string }
+    null | "loading" | IssueWorklogs | { error: string }
   >(null);
   const [pending, startTransition] = useTransition();
   const { refresh } = useNav();
@@ -297,7 +297,7 @@ export function SubtaskRow({
               if (spread) return setSpread(null);
               setSpread("loading");
               startTransition(async () => {
-                const res = await issueWorklogDaysAction(subtask.key);
+                const res = await issueWorklogsAction(subtask.key);
                 setSpread(res.ok ? res.data : { error: res.message });
               });
             }}
@@ -492,7 +492,7 @@ function WorklogSpread({
 }: {
   issueKey: string;
   total: number;
-  state: "loading" | IssueWorklogDays | { error: string };
+  state: "loading" | IssueWorklogs | { error: string };
   onClose: () => void;
 }) {
   useEffect(() => {
@@ -503,8 +503,27 @@ function WorklogSpread({
     return () => document.removeEventListener("keydown", onKey);
   }, [onClose]);
 
-  const data = typeof state === "object" && "days" in state ? state : null;
-  const peak = data?.days.reduce((n, d) => Math.max(n, d.seconds), 0) ?? 0;
+  const data = typeof state === "object" && "items" in state ? state : null;
+
+  /**
+   * Một dòng cho **một ngày**, dù ngày đó Jira giữ thành mấy worklog.
+   *
+   * Số lần log là chuyện của Jira, không phải chuyện người đọc đang hỏi: câu
+   * hỏi là "8h này log hôm nào". Bản liệt kê riêng từng lần trả lời đúng
+   * nhưng thừa, còn bản gộp **kèm số lần** thì sai hẳn — `8h ×2` và
+   * `8h · 2 lần` đều đọc ra 16h. Gộp mà không đếm là bản duy nhất vừa gọn vừa
+   * không nói dối.
+   */
+  const days = (() => {
+    const out: Array<{ date: string; seconds: number }> = [];
+    for (const x of data?.items ?? []) {
+      const last = out[out.length - 1];
+      if (last?.date === x.date) last.seconds += x.seconds;
+      else out.push({ date: x.date, seconds: x.seconds });
+    }
+    return out;
+  })();
+  const peak = days.reduce((n, d) => Math.max(n, d.seconds), 0);
 
   return (
     <>
@@ -531,32 +550,27 @@ function WorklogSpread({
           </span>
         )}
 
-        {data && data.days.length === 0 && (
+        {data && days.length === 0 && (
           <span className="px-1 py-1 font-sans text-[11px] leading-snug text-ink-3">
             Không có worklog nào của bạn trên task này.
           </span>
         )}
 
-        {data?.days.map((d) => (
+        {days.map((d) => (
           <span key={d.date} className="flex items-center gap-1.5">
             <span className="w-[66px] shrink-0 whitespace-nowrap font-mono text-[11px] text-ink-2">
               {dayLabel(d.date)}
             </span>
-            {/* Vạch tỉ lệ so với ngày nhiều giờ nhất: một danh sách mười ngày
-                toàn số thì phải đọc từng dòng mới thấy ngày nào nặng. */}
+            {/* Vạch tỉ lệ so với ngày nặng nhất: một danh sách mười ngày toàn
+                số thì phải đọc từng dòng mới thấy ngày nào nhiều. */}
             <span className="h-[3px] flex-1 rounded-full bg-surface-2">
               <i
                 style={{ width: `${peak ? (d.seconds / peak) * 100 : 0}%` }}
                 className="block h-full rounded-full bg-accent"
               />
             </span>
-            <span className="shrink-0 font-mono text-[11px] text-ink-2 tabular">
+            <span className="shrink-0 font-mono text-[11px] tabular text-ink-2">
               {formatDuration(d.seconds)}
-              {d.count > 1 && (
-                <span className="ml-0.5 text-ink-3" title={`${d.count} entry`}>
-                  ×{d.count}
-                </span>
-              )}
             </span>
           </span>
         ))}
