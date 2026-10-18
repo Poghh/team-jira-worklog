@@ -2,6 +2,8 @@
 
 import { useState, useTransition } from "react";
 
+import { useCopy } from "./copy";
+
 import { saveNoteAction } from "@/app/m/branches/actions";
 import { NotesEditor } from "@/app/m/branches/board";
 import { EnvLadder, PR_CLS } from "@/app/m/branches/github-panel";
@@ -234,6 +236,8 @@ export function BranchLine({
   repoLabels?: Record<string, string>;
   repoColors?: Record<string, string>;
 }) {
+  // Hook phải đứng trước mọi lối ra sớm — kể cả lối ra ngay dưới đây.
+  const { copied, copy } = useCopy();
   if (!note?.branch && !note?.body) return null;
   const prog = noteProgress(parseNotes(note.body));
   // The strip shows one request, taken from the first side — the same one the
@@ -256,10 +260,20 @@ export function BranchLine({
         </span>
       )}
       {note.branch && (
-        <span className="inline-flex min-w-0 items-center gap-1">
-          <span className="shrink-0 text-accent-ink">⑂</span>
+        /* Bấm vào là copy. Tên nhánh ở đây dài và bị cắt bằng `truncate`, nên
+           bôi đen bằng chuột thì chỉ lấy được phần nhìn thấy — mà phần đuôi bị
+           cắt lại đúng là phần phân biệt hai nhánh cùng tiền tố. */
+        <button
+          type="button"
+          onClick={() => copy(note.branch)}
+          title={copied ? "Đã copy" : `Copy nhánh: ${note.branch}`}
+          className="inline-flex min-w-0 items-center gap-1 rounded px-0.5 hover:bg-accent-soft hover:text-accent-ink"
+        >
+          <span className={"shrink-0 " + (copied ? "text-good" : "text-accent-ink")}>
+            {copied ? "✓" : "⑂"}
+          </span>
           <span className="truncate">{note.branch}</span>
-        </span>
+        </button>
       )}
       {note.stage && (
         <span className="rounded-[3px] bg-surface-2 px-1 py-px text-[9.5px]">
