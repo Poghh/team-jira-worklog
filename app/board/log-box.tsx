@@ -53,9 +53,12 @@ export function InlineLog({
 }) {
   const [hours, setHours] = useState(step);
   const [comment, setComment] = useState("");
-  const [result, setResult] = useState<{ ok: boolean; message: string } | null>(
-    null,
-  );
+  const [result, setResult] = useState<{
+    ok: boolean;
+    message: string;
+    /** Bản ngắn của tin báo, cho ô hẹp — xem `logWorkAction`. */
+    slots?: string;
+  } | null>(null);
   const [pending, startTransition] = useTransition();
   const { refresh } = useNav();
 
@@ -152,15 +155,27 @@ export function InlineLog({
       </button>
 
       {/* Kết quả nằm ngay dưới cụm, chiếm trọn chiều ngang của ô nhờ
-          `basis-full` — không đẩy hàng nào khác đi. */}
+          `basis-full` — không đẩy hàng nào khác đi.
+          Báo thành công gói trong **một dòng**: ô này rộng 236px, mà câu đầy
+          đủ "Đã log 4h cho VT-3784 · 09:00–12:00 + 13:00–14:00" dài 48 ký tự
+          nên nó xuống hai dòng và dồn chữ về lề phải, xấu đúng ở khoảnh khắc
+          vừa làm xong một việc. Mã task và số giờ đã nằm sẵn trên hàng; thứ
+          duy nhất còn lại là khung giờ, nên chỉ nó hiện ra, câu đầy đủ lùi
+          vào tooltip.
+          Báo lỗi thì ngược lại — vẫn cho xuống dòng. Nó hiếm, nó dài vì có
+          việc phải làm theo, và cắt một câu như vậy là giấu đúng phần cần
+          đọc. */}
       {result && (
         <span
+          title={result.message}
           className={
-            "basis-full text-right text-[11px] leading-snug " +
-            (result.ok ? "text-good" : "text-crit")
+            "basis-full leading-snug " +
+            (result.ok
+              ? "truncate text-right font-mono text-[10.5px] text-good"
+              : "text-left text-[11px] text-crit")
           }
         >
-          {result.message}
+          {result.ok ? `✓ ${result.slots ?? result.message}` : result.message}
         </span>
       )}
     </span>

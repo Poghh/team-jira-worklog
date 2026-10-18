@@ -39,7 +39,7 @@ export async function logWorkAction(input: {
   hours: number
   date: string
   comment?: string
-}): Promise<ActionResult> {
+}): Promise<ActionResult & { slots?: string }> {
   const step = Number(getSetting(SETTING_KEYS.logStepHours) ?? '0.5') || 0.5
 
   if (!Number.isFinite(input.hours) || input.hours <= 0) {
@@ -116,6 +116,11 @@ export async function logWorkAction(input: {
     return {
       ok: true,
       message: `Đã log ${input.hours}h cho ${input.issueKey} · ${formatSlices(slices)}`,
+      // Cùng một tin, hai độ dài. Ô ghi giờ trên board rộng 236px, và câu đầy
+      // đủ ở đó xuống hai dòng rồi dồn chữ lại — nên nó hiện `slots`, còn câu
+      // đầy đủ lùi vào tooltip. Mã task và số giờ đã nằm sẵn trên chính hàng
+      // đó; thứ duy nhất tin này nói thêm là entry rơi vào khung giờ nào.
+      slots: formatSlices(slices),
     }
   } catch (error) {
     return {
