@@ -24,6 +24,7 @@ import {
 } from "@/lib/time";
 
 import { Spinner } from "../spinner";
+import { CopyTitle } from "./copy";
 import { DatesEditor } from "./dates-editor";
 import { HygieneBadge } from "./hygiene-badge";
 import { IssueDetail } from "./issue-detail";
@@ -228,6 +229,7 @@ export function SubtaskRow({
                 {hygiene.missingLabel && team.label && <LabelFixButton issueKey={subtask.key} label={team.label} />}
               </span>
             )}
+            <CopyTitle text={subtask.summary} />
           </span>
         </span>
 
