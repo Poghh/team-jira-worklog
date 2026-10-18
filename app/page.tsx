@@ -8,7 +8,7 @@ import { type SprintTask, summarisePoints } from '@/lib/jira/types'
 import { getSprints } from '@/lib/jira/sprints'
 import { getWorklogs, sumByDate, sumByIssue } from '@/lib/jira/worklog'
 import { listDaysOff } from '@/lib/days-off'
-import { type QuotaRules, quotaForDate } from '@/lib/quota'
+import { type DayOffKind, type QuotaRules, quotaForDate, scheduleForDate } from '@/lib/quota'
 import { SETTING_KEYS, getSetting, getTeamScope, getWorkSchedule } from '@/lib/settings'
 import { DEFAULT_TZ, formatDateVi, isWeekend, todayIn, weekOf } from '@/lib/time'
 
@@ -16,14 +16,11 @@ import { JiraDown } from './jira-down'
 import { LinkPending } from './link-pending'
 import { BoardFilters } from './board/filters'
 import { NavDimmer, NavProvider } from './board/navigation'
-import { CapacityBar } from './board/capacity'
-import { DatePicker } from './board/date-picker'
+import { OverviewStrip } from './board/overview-strip'
 import { EpicHeader, groupByEpic } from './board/epic-section'
 import { ParentGroup } from './board/parent-group'
+import { BoardTable } from './board/board-table'
 import { PendingTasks } from './board/pending-tasks'
-import { PointsPanel } from './board/points-panel'
-import { SprintPanel } from './board/sprint-panel'
-import { WeekPanel } from './board/week-panel'
 
 /**
  * Same boundary as the report page: every panel here is a view of Jira, so a
@@ -196,6 +193,28 @@ async function boardPage(props: PageProps<'/'>) {
 
   // One rule object, shared by every panel — the calculation used to be copied
   // into each of them and could drift apart.
+  /**
+   * Những giá trị `TaskPanel` cần, tính một lần cho cả trang.
+   *
+   * Trước đây mỗi `ParentGroup` tự đọc lại chúng từ settings rồi chuyền xuống
+   * từng hàng — tức là đọc lại một lần cho mỗi task cha trên bảng, để rồi mọi
+   * bản đọc ra cùng một kết quả. Giờ chỉ còn một nơi cần: panel.
+   */
+  const step = Number(getSetting(SETTING_KEYS.logStepHours) ?? '0.5') || 0.5
+  const presets = (getSetting(SETTING_KEYS.logPresets) ?? '0.5,1,2,4,8')
+    .split(',')
+    .map((x) => Number(x.trim()))
+    .filter((n) => Number.isFinite(n) && n > 0)
+  const budgets: Record<number, string> = {
+    1: getSetting(SETTING_KEYS.pointBudget1) ?? '1-2h',
+    2: getSetting(SETTING_KEYS.pointBudget2) ?? '4h',
+    3: getSetting(SETTING_KEYS.pointBudget3) ?? '1d-2d',
+  }
+  const daysOffToday = listDaysOff(date, date)
+  const dayOff: DayOffKind | null = daysOffToday[date] ?? null
+  const daySchedule = scheduleForDate(date, getWorkSchedule(), daysOffToday)
+  const jiraBaseUrl = getSetting(SETTING_KEYS.jiraBaseUrl)?.replace(/\/+$/, '') ?? ''
+
   const rules: QuotaRules = {
     dailyHours: Number(getSetting(SETTING_KEYS.dailyQuotaHours) ?? '8') || 8,
     // A half day is measured off the clock rather than halved — this workplace
@@ -238,41 +257,63 @@ async function boardPage(props: PageProps<'/'>) {
             bộ lọc bên dưới để thu hẹp.
           </p>
         </div>
-        <DatePicker
+      </header>
+
+      {/* Cột phải rộng 392px thay vì 296: nó không còn chỉ chở thống kê mà
+          chở cả panel — nơi mọi control của task đang chọn sống. Danh sách bên
+          trái mất 96px đó nhưng lãi về nhiều hơn, vì hàng không còn cụm control
+          rộng cứng 525px. */}
+      {/* Xem luật `main:has([data-wide])` trong globals.css — bảng dùng hết bề
+          ngang màn hình, không dừng ở cap dành cho trang chữ. */}
+      <div data-wide hidden />
+
+      <NavDimmer label="Đang cập nhật…">
+        <OverviewStrip
           date={date}
-          label={dateLabel}
+          dateLabel={dateLabel}
           isToday={isToday}
+          sprints={sprints.map((x) => ({
+            id: x.id,
+            start: x.startDate?.slice(0, 10) ?? null,
+            end: x.endDate?.slice(0, 10) ?? null,
+          }))}
           sprintId={sprintId}
+          sprintName={selectedSprint?.name ?? null}
+          start={sprintStart ?? week.days[0] ?? null}
+          end={sprintEnd ?? week.days[6] ?? null}
+          today={todayIn(tz)}
+          secondsByDate={Object.fromEntries(byDate)}
+          rules={rules}
+          baseQuery={baseQuery}
+          quotaHours={dayQuota}
+          points={pointRows.length ? summarisePoints(pointRows) : null}
+          showPoints={showPoints}
+        />
+      </NavDimmer>
+
+{/* Hàng lọc chạy hết bề ngang, nằm ngoài lưới: nó thuộc về cả trang,
+          và khi cửa sổ hẹp nó xuống hai dòng — để trong cột trái thì mỗi
+          lần xuống dòng là panel bên phải lại lệch thêm một nấc. */}
+      <BoardFilters
           sprints={sprints.map((s) => ({
             id: s.id,
+            name: s.name,
+            current: Boolean(s.current),
             start: s.startDate?.slice(0, 10) ?? null,
             end: s.endDate?.slice(0, 10) ?? null,
           }))}
+          sprintId={sprintId}
+          status={status}
+          search={search}
+          noSprintMatch={noSprintMatch}
+          epics={epicOptions}
+          epicKey={epicFilter}
+          parents={parentOptions}
+          parentKey={parentFilter}
+          sort={sort}
         />
-      </header>
 
-      <div className="grid items-start gap-4 lg:grid-cols-[minmax(0,1fr)_296px]">
-        <div>
-          <BoardFilters
-            sprints={sprints.map((s) => ({
-              id: s.id,
-              name: s.name,
-              current: Boolean(s.current),
-              start: s.startDate?.slice(0, 10) ?? null,
-              end: s.endDate?.slice(0, 10) ?? null,
-            }))}
-            sprintId={sprintId}
-            status={status}
-            search={search}
-            noSprintMatch={noSprintMatch}
-            epics={epicOptions}
-            epicKey={epicFilter}
-            parents={parentOptions}
-            parentKey={parentFilter}
-            sort={sort}
-          />
-
-          <NavDimmer>
+      <NavDimmer>
           {visibleBoard.length === 0 ? (
             <EmptyBoard
               sprintName={sprints.find((s) => s.id === sprintId)?.name}
@@ -287,7 +328,7 @@ async function boardPage(props: PageProps<'/'>) {
               {groupByEpic(inSprintParents, newestFirst).map((epic) => (
                 <div key={epic.key ?? '__none__'}>
                   <EpicHeader group={epic} boardSprintId={sprintId} />
-                  <div className="flex flex-col gap-3">
+                  <BoardTable>
                     {epic.parents.map((group) => (
                       <ParentGroup
                         key={group.key}
@@ -295,16 +336,21 @@ async function boardPage(props: PageProps<'/'>) {
                         date={date}
                         dateLabel={dateLabel}
                         isToday={isToday}
+                        step={step}
+                        presets={presets}
+                        budgets={budgets}
                         sprintEnd={sprintEnd}
                         datesSupported={datesSupported}
-                        dayLoggedSeconds={byDate.get(date) ?? 0}
-                        myAccountId={me.accountId}
+                        dayLoggedMinutes={Math.round((byDate.get(date) ?? 0) / 60)}
+                        schedule={daySchedule}
+                        dayOff={dayOff}
                         currentSprint={
                           selectedSprint ? { id: selectedSprint.id, name: selectedSprint.name } : null
                         }
+                        jiraBaseUrl={jiraBaseUrl}
                       />
                     ))}
-                  </div>
+                  </BoardTable>
                 </div>
               ))}
 
@@ -329,13 +375,18 @@ async function boardPage(props: PageProps<'/'>) {
                         date={date}
                         dateLabel={dateLabel}
                         isToday={isToday}
+                        step={step}
+                        presets={presets}
+                        budgets={budgets}
                         sprintEnd={sprintEnd}
                         datesSupported={datesSupported}
-                        dayLoggedSeconds={byDate.get(date) ?? 0}
-                        myAccountId={me.accountId}
+                        dayLoggedMinutes={Math.round((byDate.get(date) ?? 0) / 60)}
+                        schedule={daySchedule}
+                        dayOff={dayOff}
                         currentSprint={
                           selectedSprint ? { id: selectedSprint.id, name: selectedSprint.name } : null
                         }
+                        jiraBaseUrl={jiraBaseUrl}
                       />
                     ))}
                   </div>
@@ -344,47 +395,8 @@ async function boardPage(props: PageProps<'/'>) {
             </div>
           )}
             <PendingTasks tasks={uncovered} />
-          </NavDimmer>
-        </div>
+      </NavDimmer>
 
-        <NavDimmer label="Đang cập nhật…">
-        <div className="flex flex-col gap-3.5">
-        <CapacityBar
-          date={date}
-          quotaHours={dayQuota}
-          isWeekend={dayIsWeekend}
-          entries={todaysEntries.map((e) => ({ key: e.issueKey, seconds: e.timeSpentSeconds }))}
-        />
-
-        {showPoints && selectedSprint && (
-          <PointsPanel
-            sprintName={selectedSprint.name}
-            summary={summarisePoints(pointRows)}
-          />
-        )}
-
-        {selectedSprint && sprintStart && sprintEnd ? (
-          <SprintPanel
-            sprintName={selectedSprint.name}
-            start={sprintStart}
-            end={sprintEnd}
-            today={todayIn(tz)}
-            selectedDate={date}
-            secondsByDate={Object.fromEntries(byDate)}
-            rules={rules}
-            baseQuery={baseQuery}
-          />
-        ) : (
-          <WeekPanel
-            days={week.days}
-            today={date}
-            hoursByDate={Object.fromEntries([...byDate].map(([d, s]) => [d, s / 3600]))}
-            rules={rules}
-          />
-        )}
-        </div>
-        </NavDimmer>
-      </div>
     </NavProvider>
   )
 }

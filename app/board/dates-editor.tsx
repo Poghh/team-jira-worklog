@@ -3,7 +3,7 @@
 import { useEffect, useState, useTransition } from 'react'
 
 import { setDatesAction } from '@/app/actions'
-import { addDays, daysBetween, todayIn } from '@/lib/time'
+import { type ChildDates, addDays, datesFromChildren, daysBetween, todayIn } from '@/lib/time'
 
 import { DateInput } from '../date-input'
 import { Spinner } from '../spinner'
@@ -35,12 +35,21 @@ export function DatesEditor({
   loggingPastDue = null,
   readOnly = false,
   readOnlyReason,
+  childDates,
 }: {
   issueKey: string
   startDate: string | null
   dueDate: string | null
   /** End of the sprint being viewed, offered as a one-click due date. */
   sprintEnd?: string | null
+  /**
+   * Ngày của các task con, để gợi ý cặp ngày cho task cha khi nó chưa có.
+   *
+   * Chỉ truyền ở hàng task cha. Lấy từ danh sách task con **đang hiện**, tức
+   * bộ lọc có ảnh hưởng tới gợi ý — chấp nhận được vì nó là gợi ý và người
+   * dùng nhìn thấy đúng cặp ngày trên mặt nút trước khi bấm.
+   */
+  childDates?: ChildDates[]
   /** A finished issue is never "overdue", however old its due date. */
   isDone?: boolean
   /**
@@ -64,6 +73,9 @@ export function DatesEditor({
   readOnly?: boolean
   readOnlyReason?: string
 }) {
+  const suggestion = childDates?.length
+    ? datesFromChildren(childDates, todayIn())
+    : null
   const [start, setStart] = useState(startDate)
   const [due, setDue] = useState(dueDate)
   const [note, setNote] = useState<string | null>(null)
@@ -228,6 +240,15 @@ export function DatesEditor({
               <Preset
                 label={`→ hết sprint (${short(sprintEnd)})`}
                 onClick={() => save({ startDate: start ?? today, dueDate: sprintEnd }, close)}
+              />
+            )}
+            {/* Chỉ mời khi task cha **chưa có ngày nào** — gợi ý không được
+                đè lên thứ người dùng đã tự đặt. Cặp ngày in thẳng lên mặt nút
+                để bấm là biết mình sắp ghi gì, không phải bấm rồi mới thấy. */}
+            {suggestion && !startDate && !dueDate && (
+              <Preset
+                label={`Theo task con (${short(suggestion.startDate)} → ${short(suggestion.dueDate)})`}
+                onClick={() => save(suggestion, close)}
               />
             )}
           </div>
