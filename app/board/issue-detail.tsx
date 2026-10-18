@@ -1,12 +1,14 @@
 'use client'
 
 import { useEffect, useRef, useState, useTransition } from 'react'
+import { createPortal } from 'react-dom'
 
 import { type AdfBlock, adfToBlocks, splitDod, textToAdf } from '@/lib/jira/adf'
 import { statusTone } from '@/lib/jira/types'
 import { formatDuration } from '@/lib/time'
 
 import { regenerateDescriptionAction, updateDescriptionAction, updateSummaryAction } from '../actions'
+import { useNav } from './navigation'
 import { Spinner } from '../spinner'
 import { StatusPill } from './status-pill'
 import { TypeIcon } from './type-icon'
@@ -97,7 +99,15 @@ export function IssueDetail({ issueKey, onClose }: { issueKey: string; onClose: 
   }, [onClose, titleEditing, descEditing])
 
 
-  return (
+  // Dựng qua `body`, không dựng tại chỗ: modal này mở từ một dòng task nằm
+  // trong `NavDimmer` của board, mà khi refresh thì `NavDimmer` đặt
+  // `opacity-40` lên khối bọc — và opacity < 1 tạo một stacking context mới.
+  // Nằm trong đó thì `z-[90]` hết tranh được với sidebar bên ngoài, nên modal
+  // vừa mờ đi vừa bị chữ của sidebar đè lên. Portal đưa nó ra ngoài khối ấy.
+  //
+  // Cùng lý do và cùng cách với `create-issue.tsx`; ở đây chưa cần tới cho đến
+  // khi lưu tiêu đề/mô tả bắt đầu gọi `refresh()`.
+  return createPortal(
     <div
       className="fixed inset-0 z-[90] flex items-start justify-center overflow-auto bg-black/45 p-6 sm:p-10"
       onClick={(e) => {
@@ -219,7 +229,8 @@ export function IssueDetail({ issueKey, onClose }: { issueKey: string; onClose: 
           </a>
         </footer>
       </div>
-    </div>
+    </div>,
+    document.body,
   )
 }
 
@@ -250,6 +261,10 @@ function EditableTitle({
   const [text, setText] = useState(summary)
   const [err, setErr] = useState('')
   const [saving, startSaving] = useTransition()
+  // Modal chỉ sửa được state của chính nó; dòng task ngoài board là dữ liệu
+  // render từ server. Không refresh thì sửa xong tiêu đề đổi trong modal mà
+  // ngoài board vẫn là tên cũ — trông như lưu hỏng.
+  const { refresh } = useNav()
   const box = useRef<HTMLTextAreaElement>(null)
 
   useEffect(() => {
@@ -289,6 +304,7 @@ function EditableTitle({
       onSaved(next)
       setEditing(false)
       setErr('')
+      refresh()
     })
   }
 
@@ -396,6 +412,7 @@ function EditableDescription({
   const [note, setNote] = useState<{ ok: boolean; text: string } | null>(null)
   const [saving, startSaving] = useTransition()
   const [asking, startAsking] = useTransition()
+  const { refresh } = useNav()
 
   useEffect(() => {
     onEditingChange(editing)
@@ -422,6 +439,7 @@ function EditableDescription({
       // ghi, nên cái đang xem khớp cái vừa lưu mà không tốn một vòng mạng.
       onSaved(textToAdf(desc, dod))
       setEditing(false)
+      refresh()
     })
   }
 
