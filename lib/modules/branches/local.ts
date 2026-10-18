@@ -160,3 +160,38 @@ export function localIndex(scan: LocalScan): Map<string, LocalState> {
     ]),
   );
 }
+
+/**
+ * Commit mà `branch` tách ra khỏi `base`, đọc từ clone.
+ *
+ * Tồn tại cho đúng một ca: nhánh chưa push. GitHub không có nó nên
+ * `compare/master...<tên nhánh>` trả 404, và card im lặng về chuyện đã rebase
+ * hay chưa — đúng lúc câu hỏi đó đáng giá nhất, vì nhánh chưa push là nhánh
+ * đang làm dở.
+ *
+ * Trả về **sha**, không trả về con số, và đó là chỗ mẹo nằm: điểm rẽ nhánh là
+ * một commit **đã có trên master**, nên GitHub trả lời được về nó. Hỏi theo sha
+ * thì con số "tụt bao nhiêu" vẫn là của GitHub, đúng tới giây, và không phụ
+ * thuộc việc clone này fetch lần cuối lúc nào — thứ mà app không được phép làm
+ * mới hộ.
+ *
+ * `origin/<base>` trước, `<base>` sau: cả hai đều chứa điểm rẽ nhánh, nhưng
+ * ref remote là cái gần với sự thật trên server hơn. Chỉ đọc, như mọi thứ khác
+ * trong file này.
+ */
+export async function mergeBaseSha(
+  dir: string,
+  branch: string,
+  base: string,
+): Promise<string> {
+  if (!dir || !branch || !base) return "";
+  for (const ref of [`origin/${base}`, base]) {
+    try {
+      const sha = (await git(dir, "merge-base", ref, branch)).trim();
+      if (sha) return sha;
+    } catch {
+      // Ref không có ở clone này — thử cái sau.
+    }
+  }
+  return "";
+}

@@ -51,7 +51,12 @@ import {
   fetchPushedBranches,
   fetchShaContainment,
 } from "./github";
-import { type LocalScan, localIndex, readLocalBranches } from "./local";
+import {
+  type LocalScan,
+  localIndex,
+  mergeBaseSha,
+  readLocalBranches,
+} from "./local";
 import {
   applyGitHubBranch,
   deleteTaskNotes,
@@ -755,6 +760,7 @@ export async function scanGitHub(): Promise<ScanResult> {
    * Chỉ hỏi cho nhánh đã lọt vào `measure` — đúng những nhánh sẽ lên card.
    */
   const baseState: Record<string, BaseState & { baseBranch: string }> = {};
+  const baseByRepo = new Map<string, string>();
   {
     const byRepo = new Map<string, string[]>();
     for (const t of measure)
@@ -762,11 +768,55 @@ export async function scanGitHub(): Promise<ScanResult> {
     for (const [repo, list] of byRepo) {
       const base = await fetchBaseBranch(token, repo).catch(() => "");
       if (!base) continue;
+      baseByRepo.set(repo, base);
       const got = await fetchBaseStates(token, repo, base, list).catch(
         () => ({}) as Record<string, BaseState>,
       );
       for (const [branch, v] of Object.entries(got))
         baseState[`${repo}#${branch}`] = { ...v, baseBranch: base };
+    }
+  }
+
+  /**
+   * Nhánh chưa push: hỏi cùng câu hỏi, nhưng hỏi theo **sha điểm rẽ nhánh**.
+   *
+   * Vòng trên hỏi `compare/master...<tên nhánh>`, và GitHub không có nhánh chưa
+   * push nên nó trả 404 — card im lặng về chuyện rebase đúng lúc câu hỏi đáng
+   * giá nhất. Điểm rẽ nhánh thì khác: nó là một commit đã nằm trên `master`,
+   * nên hỏi theo sha vẫn ra đúng `behind_by` và đúng ngày.
+   *
+   * Sha đọc từ clone — {@link mergeBaseSha}, chỉ đọc — còn con số vẫn là của
+   * GitHub. Nên clone fetch lần cuối lúc nào không ảnh hưởng tới kết quả, và
+   * app vẫn giữ lời hứa không làm mới repo của người dùng.
+   *
+   * Chỉ lấp chỗ trống: nhánh nào vòng trên đã trả lời được thì không hỏi lại.
+   */
+  {
+    const shaOf = new Map<string, string>();
+    const byRepo = new Map<string, Set<string>>();
+    for (const t of measure) {
+      const key = `${t.repo}#${t.branch}`;
+      if (baseState[key]) continue;
+      const base = baseByRepo.get(t.repo);
+      const lb = local.branches.find(
+        (b) => b.repo === t.repo && b.name === t.branch,
+      );
+      if (!base || !lb) continue;
+      const sha = await mergeBaseSha(lb.path, t.branch, base).catch(() => "");
+      if (!sha) continue;
+      shaOf.set(key, sha);
+      byRepo.set(t.repo, (byRepo.get(t.repo) ?? new Set()).add(sha));
+    }
+    for (const [repo, shas] of byRepo) {
+      const base = baseByRepo.get(repo)!;
+      const got = await fetchBaseStates(token, repo, base, [...shas]).catch(
+        () => ({}) as Record<string, BaseState>,
+      );
+      for (const [key, sha] of shaOf) {
+        if (!key.startsWith(`${repo}#`)) continue;
+        const v = got[sha];
+        if (v) baseState[key] = { ...v, baseBranch: base };
+      }
     }
   }
 
