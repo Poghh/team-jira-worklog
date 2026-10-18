@@ -5,7 +5,11 @@
 import type { BoardSubtask } from "@/lib/jira/types";
 import { issueHygiene, logDatePastDue, statusTone } from "@/lib/jira/types";
 import type { DayOffKind } from "@/lib/quota";
-import { DEFAULT_SCHEDULE, type WorkSchedule, formatDuration } from "@/lib/time";
+import {
+  DEFAULT_SCHEDULE,
+  type WorkSchedule,
+  formatDuration,
+} from "@/lib/time";
 
 import { BOARD_COLS, WIDE_ONLY } from "./columns";
 import { CopyBtn } from "./copy";
@@ -122,13 +126,24 @@ export function SubtaskRow({
       </span>
 
       <span className="flex min-w-0 items-center gap-1.5">
-        <span className="truncate text-[13px]" title={subtask.summary}>
-          {subtask.summary}
+        {/* Tiêu đề là một **khối**, không phải một dòng: ô này phải treo
+            được thêm một dòng phụ dưới tiêu đề mà không kéo theo mọi nút của
+            hàng lên theo. Ở fork, dòng phụ đó là tên nhánh của task. */}
+        <span className="flex min-w-0 flex-col">
+          <span className="flex min-w-0 items-center gap-1.5">
+            <span className="truncate text-[13px]" title={subtask.summary}>
+              {subtask.summary}
+            </span>
+            <CopyBtn text={subtask.summary} what="tiêu đề" />
+          </span>
         </span>
-        <CopyBtn text={subtask.summary} what="tiêu đề" />
+
         {/* Hiện khi rê chuột, hoặc khi bàn phím đang ở trong hàng — một nút
             biến mất hẳn với người dùng bàn phím thì không chấp nhận được, nên
             `focus:` đi kèm `group-hover:`.
+            Đứng **ngoài** khối tiêu đề: nằm trong đó thì nó bám dòng tiêu đề,
+            nên ô nào có dòng phụ là nó lệch khỏi tâm hàng — đo được cao hơn
+            9.6px, lệch hẳn khỏi pill trạng thái và nút Log cùng hàng.
             Đứng ở ô tiêu đề chứ không ở ô ghi giờ: ô đó chỉ còn 236px và cụm
             ghi giờ đã chiếm gần hết, nhét thêm nút vào là hàng xuống ba dòng —
             đo được 98px mỗi hàng. */}
