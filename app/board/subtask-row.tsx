@@ -169,20 +169,6 @@ export function SubtaskRow({
               {subtask.summary}
             </span>
             <CopyBtn text={subtask.summary} what="tiêu đề" />
-            {/* Hiện khi rê chuột, hoặc khi bàn phím đang ở trong hàng — một nút
-            biến mất hẳn với người dùng bàn phím thì không chấp nhận được, nên
-            `focus:` đi kèm `group-hover:`.
-            Đứng ở ô tiêu đề chứ không ở ô ghi giờ: ô đó chỉ còn 236px và cụm
-            ghi giờ đã chiếm gần hết, nhét thêm nút vào là hàng xuống ba dòng —
-            đo được 98px mỗi hàng. */}
-            <button
-              type="button"
-              onClick={() => setDetailOpen(true)}
-              title={`Mô tả, Definition of Done và lịch sử của ${subtask.key}`}
-              className="shrink-0 rounded-md border border-line-strong px-1.5 py-px text-[11px] text-ink-3 opacity-0 hover:border-accent hover:text-accent-ink focus:opacity-100 group-hover:opacity-100"
-            >
-              Chi tiết
-            </button>
           </span>
 
           <BranchLine
@@ -193,6 +179,24 @@ export function SubtaskRow({
             repoColors={noteRepoColors}
           />
         </span>
+
+        {/* Hiện khi rê chuột, hoặc khi bàn phím đang ở trong hàng — một nút
+            biến mất hẳn với người dùng bàn phím thì không chấp nhận được, nên
+            `focus:` đi kèm `group-hover:`.
+            Đứng ngoài khối tiêu đề, cùng hàng với nút ghi chú và badge quy
+            ước: nằm trong khối đó thì nó bám dòng tiêu đề và lệch khỏi tâm
+            hàng ở mọi task có dòng nhánh.
+            Đứng ở ô tiêu đề chứ không ở ô ghi giờ: ô đó chỉ còn 236px và cụm
+            ghi giờ đã chiếm gần hết, nhét thêm nút vào là hàng xuống ba dòng —
+            đo được 98px mỗi hàng. */}
+        <button
+          type="button"
+          onClick={() => setDetailOpen(true)}
+          title={`Mô tả, Definition of Done và lịch sử của ${subtask.key}`}
+          className="shrink-0 rounded-md border border-line-strong px-1.5 py-px text-[11px] text-ink-3 opacity-0 hover:border-accent hover:text-accent-ink focus:opacity-100 group-hover:opacity-100"
+        >
+          Chi tiết
+        </button>
 
         {noteStages.length > 0 && (
           /* Hiện hẳn khi đã có ghi chú — lúc đó nút mang thông tin. Chưa có
