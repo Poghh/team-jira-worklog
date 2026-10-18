@@ -37,30 +37,39 @@ export function useCopy(ms = 1200) {
 }
 
 /**
- * Nút copy tiêu đề, đứng cạnh chính tiêu đề đó.
+ * Nút copy, đứng **sát** thứ nó copy.
  *
- * Glyph thôi, không chữ: hàng task đã có tám control, và một nút chữ nữa sẽ
- * đẩy phần còn lại hẹp thêm. Vẫn hiện thường trực chứ không chỉ hiện khi rê
- * chuột — thứ chỉ xuất hiện lúc hover là thứ người dùng không biết là có.
+ * Trước đây chỉ có một nút và nó nằm trong cụm bên phải cạnh nút "Chi tiết",
+ * cách mã task cả một khoảng `space-between`. Nó copy tiêu đề, nhưng ai nhìn
+ * cũng đọc ra là copy mã — vì mã là thứ gần nó nhất theo hàng ngang. Khoảng
+ * cách chính là thứ nói cho người dùng biết nút thuộc về cái gì, nên giờ mỗi
+ * nút dính liền vào phần chữ của nó.
  *
- * `self-end` để nó nằm ngang **dòng cuối** của tiêu đề, không phải dòng đầu.
- * Tiêu đề ở đây dài tới hai dòng (`line-clamp-2`), và một nút neo ở dòng đầu
- * trông như thuộc về dòng đó chứ không thuộc về cả khối chữ. Không nhét được
- * nút vào thẳng trong dòng chữ: tiêu đề đã là một `<button>` mở panel chi
- * tiết, mà nút lồng trong nút là HTML không hợp lệ và bàn phím không đi vào
- * được cái bên trong.
+ * Glyph thôi, không chữ: header panel đã chật. Hiện thường trực chứ không chỉ
+ * khi rê chuột — thứ chỉ xuất hiện lúc hover là thứ người dùng không biết là
+ * có.
  */
-export function CopyTitle({ text }: { text: string }) {
+export function CopyBtn({
+  text,
+  what,
+  className = "",
+}: {
+  text: string;
+  /** Tên của thứ được copy, cho tooltip và trình đọc màn hình. */
+  what: string;
+  className?: string;
+}) {
   const { copied, copy } = useCopy();
   return (
     <button
       type="button"
       onClick={() => copy(text)}
-      title={copied ? "Đã copy tiêu đề" : "Copy tiêu đề"}
-      aria-label="Copy tiêu đề"
+      title={copied ? `Đã copy ${what}` : `Copy ${what}`}
+      aria-label={`Copy ${what}`}
       className={
-        "mb-px shrink-0 self-end rounded px-1 py-px text-[11px] leading-none hover:bg-accent-soft hover:text-accent-ink " +
-        (copied ? "text-good" : "text-ink-3")
+        "ml-1 shrink-0 rounded px-1 py-px align-middle text-[11px] leading-none hover:bg-accent-soft hover:text-accent-ink " +
+        (copied ? "text-good" : "text-ink-3") +
+        (className ? " " + className : "")
       }
     >
       {copied ? "✓" : "⧉"}
