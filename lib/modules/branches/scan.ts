@@ -41,6 +41,7 @@ import {
   keysAfterRename,
 } from "./github-model";
 import {
+  fetchBranchPrs,
   fetchBranches,
   type BaseState,
   fetchBaseBranch,
@@ -375,6 +376,53 @@ export async function scanGitHub(): Promise<ScanResult> {
   // `pickPr` can honour the pin instead of silently falling back to whatever
   // the branch happens to own.
   const allCards = listTaskNotes();
+
+  // Nhánh do chính người dùng tạo hoặc push — đã khởi động từ đầu hàm.
+  const pushed = await pushedP;
+
+  /**
+   * Pull request, hỏi riêng và chỉ cho nhánh cần.
+   *
+   * `fetchBranches` không còn kéo theo PR của từng ref: đo thẳng trên repo
+   * lớn, cùng 100 nhánh thì kèm PR mất 3.2–3.7s còn bỏ PR chỉ 0.98s — truy
+   * vấn lồng ấy là 70% thời gian liệt kê nhánh. Mà repo này có 149 nhánh
+   * trong khi người dùng có ba.
+   *
+   * Hai nhóm cần PR, và chỉ hai nhóm:
+   *
+   * - nhánh sắp lên card — tức nhánh một luật sở hữu nào đó nhận;
+   * - nhánh mà một card đang trỏ vào, kể cả của đồng nghiệp, vì vòng cập
+   *   nhật card phía dưới duyệt `branches` chứ không duyệt `mine`.
+   *
+   * Điền tại chỗ vào chính các `RemoteBranch` ấy, nên mọi chỗ đọc
+   * `branch.prs` / `branch.pr` phía dưới không phải đổi một dòng nào.
+   */
+  {
+    const want = new Set<string>();
+    for (const b of branches)
+      if (b.local?.onlyLocal || mineBy(b, cfg.identity, pushed))
+        want.add(`${b.repo}#${b.name}`);
+    for (const c of allCards)
+      for (const side of c.sides)
+        if (side.repo && side.branch.trim())
+          want.add(`${side.repo}#${side.branch.trim()}`);
+
+    const items = branches
+      .filter((b) => want.has(`${b.repo}#${b.name}`))
+      .map((b) => ({ repo: b.repo, branch: b.name }));
+
+    if (items.length) {
+      const got = await fetchBranchPrs(token, items).catch(
+        () => new Map<string, PullRequest[]>(),
+      );
+      for (const b of branches) {
+        const prs = got.get(`${b.repo}#${b.name}`);
+        if (!prs) continue;
+        b.prs = prs;
+        b.pr = pickPr(prs);
+      }
+    }
+  }
   /**
    * Requests the user pinned, per repository.
    *
@@ -446,10 +494,6 @@ export async function scanGitHub(): Promise<ScanResult> {
         });
     }
   }
-
-  // Nhánh do chính người dùng tạo hoặc push — đã khởi động từ đầu hàm, giờ
-  // mới cần tới nên mới chờ.
-  const pushed = await pushedP;
 
   /**
    * Nhánh môi trường, lấy thẳng từ cấu hình cột.
@@ -760,7 +804,18 @@ export async function scanGitHub(): Promise<ScanResult> {
       ? [...envs, { branch: trunk }]
       : envs;
 
-  const envState = await fetchEnvState(token, measure, measured).catch(
+  /**
+   * Ba phép đo cuối khởi động cùng lúc.
+   *
+   * Vị trí so với môi trường, độ tụt so với nhánh gốc, và "nội dung đã vào
+   * bằng đường khác" đều chỉ cần `measure` / `best` / `keys` — có đủ từ trên
+   * này. Chúng không cần kết quả của nhau, mà trước đây xếp hàng chờ nhau:
+   * đo được 2.0s + 2.1s + 2.9s nối đuôi.
+   *
+   * Trong từng nhánh thì vẫn nối tiếp ở chỗ buộc phải thế — phần lấp chỗ
+   * trống bằng sha điểm rẽ cần `baseState` của vòng trên nó.
+   */
+  const envStateP = fetchEnvState(token, measure, measured).catch(
     () => ({}) as Record<string, EnvState>,
   );
 
@@ -776,69 +831,71 @@ export async function scanGitHub(): Promise<ScanResult> {
    */
   const baseState: Record<string, BaseState & { baseBranch: string }> = {};
   const baseByRepo = new Map<string, string>();
-  {
-    const byRepo = new Map<string, string[]>();
-    for (const t of measure)
-      byRepo.set(t.repo, [...(byRepo.get(t.repo) ?? []), t.branch]);
-    // Mỗi repo một luồng: hỏi nhánh gốc rồi đo theo nó là hai bước nối tiếp
-    // trong cùng một repo, nhưng hai repo không chờ nhau. `baseState` khoá
-    // theo `repo#branch` nên không có chỗ nào đụng nhau.
-    await Promise.all(
-      [...byRepo].map(async ([repo, list]) => {
-        const base = await fetchBaseBranch(token, repo).catch(() => "");
-        if (!base) return;
-        baseByRepo.set(repo, base);
-        const got = await fetchBaseStates(token, repo, base, list).catch(
+  const basesP = (async () => {
+    {
+      const byRepo = new Map<string, string[]>();
+      for (const t of measure)
+        byRepo.set(t.repo, [...(byRepo.get(t.repo) ?? []), t.branch]);
+      // Mỗi repo một luồng: hỏi nhánh gốc rồi đo theo nó là hai bước nối tiếp
+      // trong cùng một repo, nhưng hai repo không chờ nhau. `baseState` khoá
+      // theo `repo#branch` nên không có chỗ nào đụng nhau.
+      await Promise.all(
+        [...byRepo].map(async ([repo, list]) => {
+          const base = await fetchBaseBranch(token, repo).catch(() => "");
+          if (!base) return;
+          baseByRepo.set(repo, base);
+          const got = await fetchBaseStates(token, repo, base, list).catch(
+            () => ({}) as Record<string, BaseState>,
+          );
+          for (const [branch, v] of Object.entries(got))
+            baseState[`${repo}#${branch}`] = { ...v, baseBranch: base };
+        }),
+      );
+    }
+
+    /**
+     * Nhánh chưa push: hỏi cùng câu hỏi, nhưng hỏi theo **sha điểm rẽ nhánh**.
+     *
+     * Vòng trên hỏi `compare/master...<tên nhánh>`, và GitHub không có nhánh chưa
+     * push nên nó trả 404 — card im lặng về chuyện rebase đúng lúc câu hỏi đáng
+     * giá nhất. Điểm rẽ nhánh thì khác: nó là một commit đã nằm trên `master`,
+     * nên hỏi theo sha vẫn ra đúng `behind_by` và đúng ngày.
+     *
+     * Sha đọc từ clone — {@link mergeBaseSha}, chỉ đọc — còn con số vẫn là của
+     * GitHub. Nên clone fetch lần cuối lúc nào không ảnh hưởng tới kết quả, và
+     * app vẫn giữ lời hứa không làm mới repo của người dùng.
+     *
+     * Chỉ lấp chỗ trống: nhánh nào vòng trên đã trả lời được thì không hỏi lại.
+     */
+    {
+      const shaOf = new Map<string, string>();
+      const byRepo = new Map<string, Set<string>>();
+      for (const t of measure) {
+        const key = `${t.repo}#${t.branch}`;
+        if (baseState[key]) continue;
+        const base = baseByRepo.get(t.repo);
+        const lb = local.branches.find(
+          (b) => b.repo === t.repo && b.name === t.branch,
+        );
+        if (!base || !lb) continue;
+        const sha = await mergeBaseSha(lb.path, t.branch, base).catch(() => "");
+        if (!sha) continue;
+        shaOf.set(key, sha);
+        byRepo.set(t.repo, (byRepo.get(t.repo) ?? new Set()).add(sha));
+      }
+      for (const [repo, shas] of byRepo) {
+        const base = baseByRepo.get(repo)!;
+        const got = await fetchBaseStates(token, repo, base, [...shas]).catch(
           () => ({}) as Record<string, BaseState>,
         );
-        for (const [branch, v] of Object.entries(got))
-          baseState[`${repo}#${branch}`] = { ...v, baseBranch: base };
-      }),
-    );
-  }
-
-  /**
-   * Nhánh chưa push: hỏi cùng câu hỏi, nhưng hỏi theo **sha điểm rẽ nhánh**.
-   *
-   * Vòng trên hỏi `compare/master...<tên nhánh>`, và GitHub không có nhánh chưa
-   * push nên nó trả 404 — card im lặng về chuyện rebase đúng lúc câu hỏi đáng
-   * giá nhất. Điểm rẽ nhánh thì khác: nó là một commit đã nằm trên `master`,
-   * nên hỏi theo sha vẫn ra đúng `behind_by` và đúng ngày.
-   *
-   * Sha đọc từ clone — {@link mergeBaseSha}, chỉ đọc — còn con số vẫn là của
-   * GitHub. Nên clone fetch lần cuối lúc nào không ảnh hưởng tới kết quả, và
-   * app vẫn giữ lời hứa không làm mới repo của người dùng.
-   *
-   * Chỉ lấp chỗ trống: nhánh nào vòng trên đã trả lời được thì không hỏi lại.
-   */
-  {
-    const shaOf = new Map<string, string>();
-    const byRepo = new Map<string, Set<string>>();
-    for (const t of measure) {
-      const key = `${t.repo}#${t.branch}`;
-      if (baseState[key]) continue;
-      const base = baseByRepo.get(t.repo);
-      const lb = local.branches.find(
-        (b) => b.repo === t.repo && b.name === t.branch,
-      );
-      if (!base || !lb) continue;
-      const sha = await mergeBaseSha(lb.path, t.branch, base).catch(() => "");
-      if (!sha) continue;
-      shaOf.set(key, sha);
-      byRepo.set(t.repo, (byRepo.get(t.repo) ?? new Set()).add(sha));
-    }
-    for (const [repo, shas] of byRepo) {
-      const base = baseByRepo.get(repo)!;
-      const got = await fetchBaseStates(token, repo, base, [...shas]).catch(
-        () => ({}) as Record<string, BaseState>,
-      );
-      for (const [key, sha] of shaOf) {
-        if (!key.startsWith(`${repo}#`)) continue;
-        const v = got[sha];
-        if (v) baseState[key] = { ...v, baseBranch: base };
+        for (const [key, sha] of shaOf) {
+          if (!key.startsWith(`${repo}#`)) continue;
+          const v = got[sha];
+          if (v) baseState[key] = { ...v, baseBranch: base };
+        }
       }
     }
-  }
+  })();
 
   // Content that reached an environment by another route.
   //
@@ -847,7 +904,7 @@ export async function scanGitHub(): Promise<ScanResult> {
   // the original branch looks permanently behind. The merged pull request's
   // own merge commit is the thing to ask about instead — it is either in the
   // environment or it is not, and no patches need reading to find out.
-  const landed = await landedByKey(
+  const landedP = landedByKey(
     token,
     keys,
     best,
@@ -860,6 +917,8 @@ export async function scanGitHub(): Promise<ScanResult> {
       { envs: Record<string, boolean>; via: string; at: number }
     > => ({}),
   );
+
+  const [envState, landed] = await Promise.all([envStateP, landedP, basesP]);
 
   /** `repo#key` → the branch that carried the work in, when it detoured. */
   const via = new Map<string, string>();
