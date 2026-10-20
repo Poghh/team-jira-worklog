@@ -14,6 +14,7 @@ import {
   withLocalState,
 } from "./model";
 import {
+  cardSide,
   type EnvState,
   type PlanRow,
   type PullRequest,
@@ -924,10 +925,11 @@ export async function scanGitHub(): Promise<ScanResult> {
         builtBranchesOf(card),
         branch.name,
       );
-      const side: CardSide = {
+      const base = baseState[`${branch.repo}#${branch.name}`];
+      const side = cardSide({
         repo: branch.repo,
         branch: branch.name,
-        ...(stored?.pinned ? { pinned: true as const } : {}),
+        pinned: stored?.pinned,
         prs,
         envState: envJson(envs),
         landedVia: via.get(`${branch.repo}#${groupKey}`) ?? "",
@@ -938,10 +940,10 @@ export async function scanGitHub(): Promise<ScanResult> {
         localOnly: Boolean(branch.local?.onlyLocal),
         localPath: branch.local?.path ?? "",
         branchUpdatedAt: branch.committedAt || null,
-        baseAt: baseState[`${branch.repo}#${branch.name}`]?.baseAt ?? null,
-        baseBranch: baseState[`${branch.repo}#${branch.name}`]?.baseBranch ?? "",
-        behind: baseState[`${branch.repo}#${branch.name}`]?.behind ?? null,
-      };
+        baseAt: base?.baseAt ?? null,
+        behind: base?.behind ?? null,
+        baseBranch: base?.baseBranch ?? "",
+      });
       return { branch, envs, target, side };
     });
 
