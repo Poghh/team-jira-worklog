@@ -886,26 +886,6 @@ export interface TaskNoteRow extends TaskNoteShape, GitHubLink {
   updatedAt: number;
 }
 
-/**
- * How far along a status is. Mirrors the tones in `lib/jira/types.ts`, which
- * derive from the status *name* because this instance reports everything
- * between To Do and Done as the same category.
- */
-const TONE_RANK: Record<string, number> = {
-  todo: 0,
-  prog: 1,
-  test: 2,
-  ver: 3,
-  done: 4,
-};
-
-/**
- * Threshold each expectation is satisfied at.
- *
- * `done` is satisfied by Verified as well as Done — both are terminal here, and
- * flagging a Verified ticket as behind would be noise on every shipped task.
- */
-const EXPECT_RANK: Record<string, number> = { prog: 1, test: 2, done: 3 };
 
 export interface StageDrift {
   /** Short phrase naming what is behind — the badge's text. */
@@ -955,8 +935,32 @@ export function stageDrift(
   const envs = envSteps(stages);
   const envNames = envs.map((e) => e.name);
   const at = envs.findIndex((e) => e.branch === step.branch);
+  /**
+   * Ngưỡng mỗi kỳ vọng được coi là thoả.
+   *
+   * `done` **không** đòi đúng chữ "Done". Ở đây từng có hai bảng `TONE_RANK`
+   * và `EXPECT_RANK` viết thẳng ý định ấy — "Verified cũng là kết thúc, kêu
+   * một ticket đã Verified là nhiễu trên mọi task đã ship" — nhưng không ai
+   * gọi chúng, còn luật chạy thật đòi `statusRank === 99`, mà 99 chỉ dành cho
+   * đúng chuỗi "DONE". Hậu quả: cột `đã build staging` kêu cả ticket đang
+   * `VERIFIED ON STAGING`.
+   *
+   * Nhận Verified, nhưng **đúng môi trường của cột** chứ không phải Verified
+   * bất kỳ: một ticket mới `VERIFIED ON DEVELOP` mà card đã tới cột staging
+   * thì vẫn đang tụt lại thật. `statusRank` xếp `VERIFIED <env thứ i>` ngay
+   * trên `READY TO TEST <env thứ i>`, nên ngưỡng chỉ là một nấc cao hơn `test`.
+   *
+   * Cột không gắn môi trường nào — cột cuối, nhánh `master` — thì vẫn đòi
+   * đúng "Done": đó là chỗ duy nhất "xong" còn nghĩa đen.
+   */
   const need =
-    expects === "done" ? 99 : expects === "test" && at >= 0 ? 2 + at * 2 : 1;
+    expects === "done"
+      ? at >= 0
+        ? 2 + at * 2 + 1
+        : 99
+      : expects === "test" && at >= 0
+        ? 2 + at * 2
+        : 1;
   const have = statusRank(statusName, envNames);
   if (have >= need) return null;
 
