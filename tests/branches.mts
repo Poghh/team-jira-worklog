@@ -54,6 +54,7 @@ import {
   serializeSeenBuilds,
 } from '@/lib/modules/branches/build-model'
 import {
+  cardSide,
   extractIssueKey,
   extractIssueKeys,
   isRevertBranch,
@@ -425,6 +426,27 @@ eq(parseCardSides('', { ...flat, repo: 'o/ios', branch: 'b' }).map((x: { repo: s
 eq(parseCardSides('', { ...flat, repo: '', branch: '' }), [], 'a card with no branch has no sides')
 eq(parseCardSides('rác', { ...flat, repo: 'o/ios', branch: 'b' }).length, 1,
    'unreadable JSON falls back rather than throwing')
+
+/* Ghim nhánh: ghi xuống rồi phải đọc lại được.
+   Bản cũ dựng lại side bằng cách liệt kê tay từng trường và **quên `pinned`**,
+   nên cờ ghim mất im lặng — quét sau trỏ lại nhánh người dùng vừa sửa. */
+eq(parseCardSides(JSON.stringify([{ repo: 'o/ios', branch: 'b', pinned: true }]), { ...flat, repo: '', branch: '' })[0]!.pinned,
+   true, 'a pinned branch survives the round trip')
+eq(parseCardSides(JSON.stringify([{ repo: 'o/ios', branch: 'b' }]), { ...flat, repo: '', branch: '' })[0]!.pinned,
+   undefined, 'an unpinned branch carries no flag at all')
+
+/* Phép so "card này có gì đổi không" là so chuỗi `JSON.stringify`, mà nó giữ
+   thứ tự chèn. Vòng quét và bộ đọc từng xếp `baseAt, baseBranch, behind` và
+   `baseAt, behind, baseBranch` ⇒ hai chuỗi không bao giờ bằng nhau ⇒ không
+   card nào từng được coi là không đổi, mỗi lần quét ghi lại cả bảng. */
+{
+  const fromScan = cardSide({ repo: 'o/ios', branch: 'b', baseAt: 5, baseBranch: 'master', behind: 3 })
+  const roundTrip = parseCardSides(serializeCardSides([fromScan]), { ...flat, repo: '', branch: '' })
+  eq(serializeCardSides(roundTrip), serializeCardSides([fromScan]),
+     'a side serialises identically after a round trip')
+  eq(Object.keys(fromScan), Object.keys(roundTrip[0]!),
+     'both paths build the side with the same keys in the same order')
+}
 const two = [
   { repo: 'o/ios', branch: 'b', prs: [{ number: 1, url: '', state: 'MERGED', base: 'ctalk/develop' }],
     envState: '', landedVia: '', branchGone: false, localAhead: 0, localOnly: false, localPath: '', branchUpdatedAt: null },
@@ -503,6 +525,25 @@ eq(stageDrift('đã build integration', 'VERIFIED ON INTEGRATION', 'ver', S), nu
 eq(stageDrift('đã build integration', 'DONE', 'done', S), null, 'Done is past everything')
 eq(stageDrift('đã build integration', 'VERIFIED ON DEVELOP', 'ver', S)?.detail.includes('chờ test trên integration'),
    true, 'the warning names the environment the ticket has to move to')
+
+/* Cột khai `expects: "done"` không đòi đúng chữ "Done".
+   Luật cũ đặt ngưỡng 99, mà `statusRank` chỉ trả 99 cho đúng chuỗi "DONE" —
+   nên `đã build staging` kêu cả ticket đang VERIFIED ON STAGING, tức kêu trên
+   mọi task đã ship. Hai bảng `TONE_RANK`/`EXPECT_RANK` viết thẳng ý định
+   ngược lại nhưng không ai gọi chúng. */
+eq(S.filter((s) => s.expects === 'done').map((s) => s.name),
+   ['đã build staging', 'done'], 'hai cột đòi "xong"')
+eq(stageDrift('đã build staging', 'VERIFIED ON STAGING', 'ver', S, 'VT-900'), null,
+   'verified trên đúng môi trường của cột là đã xong phần của cột đó')
+eq(stageDrift('đã build staging', 'DONE', 'done', S, 'VT-900'), null, 'Done thì khỏi bàn')
+/* Nhưng Verified ở môi trường *trước đó* thì vẫn là tụt lại thật. */
+eq(stageDrift('đã build staging', 'VERIFIED ON DEVELOP', 'ver', S, 'VT-901')?.label,
+   'VT-901 vẫn: VERIFIED ON DEVELOP', 'verified ở môi trường sớm hơn vẫn bị kêu')
+/* Cột cuối không gắn môi trường nào, nên nó vẫn đòi đúng "Done" — đó là chỗ
+   duy nhất "xong" còn nghĩa đen. */
+eq(stageDrift('done', 'VERIFIED ON STAGING', 'ver', S, 'VT-902')?.label,
+   'VT-902 vẫn: VERIFIED ON STAGING', 'cột cuối vẫn đòi Done')
+eq(stageDrift('done', 'DONE', 'done', S, 'VT-902'), null, 'và Done thoả nó')
 
 /* ── cột tính từ chính card, không cần mạng ─────────────────────────────── */
 const sideAt = (repo: string, prs: Array<{number:number;url:string;state:string;base:string}>, env = '') => ({

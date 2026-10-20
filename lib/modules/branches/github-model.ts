@@ -706,37 +706,92 @@ export function serializeCardSides(list: CardSide[]): string {
  * it is also what a card touched by an older build of the app keeps — so no
  * rescan is needed before a card works again.
  */
+/**
+ * Dựng một `CardSide` từ dữ liệu rời rạc — **nơi duy nhất** quyết hình dạng nó.
+ *
+ * Trước đây ba chỗ tự liệt kê từng trường: vòng quét, bộ đọc, và đường lùi về
+ * cột phẳng. Hai hậu quả đo được:
+ *
+ * - Bộ đọc **quên `pinned`**, nên cờ ghim nhánh ghi xuống rồi không bao giờ
+ *   đọc lại được: người dùng ghim một nhánh, lần quét sau trỏ lại như chưa có
+ *   gì, và mọi `if (!side.pinned)` phía sau là code chết.
+ * - Vòng quét xếp `baseAt, baseBranch, behind`, bộ đọc xếp `baseAt, behind,
+ *   baseBranch`. `serializeCardSides` là `JSON.stringify` trần nên giữ thứ tự
+ *   chèn ⇒ hai chuỗi không bao giờ bằng nhau ⇒ phép so "card này có gì đổi
+ *   không" luôn trả lời "có" ⇒ mỗi lần quét ghi lại toàn bộ bảng.
+ *
+ * Một hàm thì cả hai lỗi đó không còn chỗ để tồn tại: thêm trường mới chỉ sửa
+ * ở đây, và thứ tự chỉ có một.
+ */
+export function cardSide(x: {
+  repo: string;
+  branch?: string;
+  prs?: CardPr[];
+  envState?: string;
+  landedVia?: string;
+  branchGone?: boolean;
+  localAhead?: number;
+  localOnly?: boolean;
+  localPath?: string;
+  branchUpdatedAt?: number | null;
+  baseAt?: number | null;
+  behind?: number | null;
+  baseBranch?: string;
+  pinned?: boolean;
+}): CardSide {
+  const side: CardSide = {
+    repo: x.repo,
+    branch: x.branch ?? "",
+    prs: x.prs ?? [],
+    envState: x.envState ?? "",
+    landedVia: x.landedVia ?? "",
+    branchGone: Boolean(x.branchGone),
+    localAhead: x.localAhead ?? 0,
+    localOnly: Boolean(x.localOnly),
+    localPath: x.localPath ?? "",
+    branchUpdatedAt: x.branchUpdatedAt ?? null,
+    baseAt: x.baseAt ?? null,
+    behind: x.behind ?? null,
+    baseBranch: x.baseBranch ?? "",
+  };
+  // Chỉ gắn khi bật: một `pinned: false` nằm trong JSON sẽ làm chuỗi của card
+  // chưa ghim khác chuỗi của card chưa ghim ở bản cũ, mà chuỗi ấy là thứ phép
+  // so "có gì đổi không" đọc.
+  if (x.pinned) side.pinned = true;
+  return side;
+}
+
 export function parseCardSides(raw: string, row: FlatSide): CardSide[] {
   try {
     const v = JSON.parse(raw) as unknown;
     if (Array.isArray(v)) {
       const out = v.flatMap((x) => {
         const o = x as Record<string, unknown>;
-        return typeof o?.repo === "string" && o.repo
-          ? [
-              {
-                repo: o.repo,
-                branch: String(o.branch ?? ""),
-                prs: parseCardPrs(
-                  typeof o.prs === "string" ? o.prs : JSON.stringify(o.prs ?? []),
-                  { prNumber: null, prUrl: "", prState: "", prBase: "" },
-                ),
-                envState: String(o.envState ?? ""),
-                landedVia: String(o.landedVia ?? ""),
-                branchGone: Boolean(o.branchGone),
-                localAhead: Number(o.localAhead) || 0,
-                localOnly: Boolean(o.localOnly),
-                localPath: String(o.localPath ?? ""),
-                branchUpdatedAt:
-                  typeof o.branchUpdatedAt === "number" ? o.branchUpdatedAt : null,
-                // Thiếu thì `null`, không phải 0: chưa đo được khác hẳn với đo
-                // rồi và ra "đã up to date".
-                baseAt: typeof o.baseAt === "number" ? o.baseAt : null,
-                behind: typeof o.behind === "number" ? o.behind : null,
-                baseBranch: typeof o.baseBranch === "string" ? o.baseBranch : "",
-              },
-            ]
-          : [];
+        if (typeof o?.repo !== "string" || !o.repo) return [];
+        return [
+          cardSide({
+            repo: o.repo,
+            branch: String(o.branch ?? ""),
+            prs: parseCardPrs(
+              typeof o.prs === "string" ? o.prs : JSON.stringify(o.prs ?? []),
+              { prNumber: null, prUrl: "", prState: "", prBase: "" },
+            ),
+            envState: String(o.envState ?? ""),
+            landedVia: String(o.landedVia ?? ""),
+            branchGone: Boolean(o.branchGone),
+            localAhead: Number(o.localAhead) || 0,
+            localOnly: Boolean(o.localOnly),
+            localPath: String(o.localPath ?? ""),
+            // Thiếu thì `null`, không phải 0: chưa đo được khác hẳn với đo rồi
+            // và ra "đã up to date".
+            branchUpdatedAt:
+              typeof o.branchUpdatedAt === "number" ? o.branchUpdatedAt : null,
+            baseAt: typeof o.baseAt === "number" ? o.baseAt : null,
+            behind: typeof o.behind === "number" ? o.behind : null,
+            baseBranch: typeof o.baseBranch === "string" ? o.baseBranch : "",
+            pinned: Boolean(o.pinned),
+          }),
+        ];
       });
       if (out.length) return out;
     }
@@ -745,7 +800,7 @@ export function parseCardSides(raw: string, row: FlatSide): CardSide[] {
   }
   return row.repo || row.branch
     ? [
-        {
+        cardSide({
           repo: row.repo,
           branch: row.branch,
           prs: parseCardPrs(row.prs, row),
@@ -756,7 +811,7 @@ export function parseCardSides(raw: string, row: FlatSide): CardSide[] {
           localOnly: row.localOnly,
           localPath: row.localPath,
           branchUpdatedAt: row.branchUpdatedAt,
-        },
+        }),
       ]
     : [];
 }
