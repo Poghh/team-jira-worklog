@@ -54,6 +54,7 @@ import {
   serializeSeenBuilds,
 } from '@/lib/modules/branches/build-model'
 import {
+  cardSide,
   extractIssueKey,
   extractIssueKeys,
   isRevertBranch,
@@ -425,6 +426,27 @@ eq(parseCardSides('', { ...flat, repo: 'o/ios', branch: 'b' }).map((x: { repo: s
 eq(parseCardSides('', { ...flat, repo: '', branch: '' }), [], 'a card with no branch has no sides')
 eq(parseCardSides('rác', { ...flat, repo: 'o/ios', branch: 'b' }).length, 1,
    'unreadable JSON falls back rather than throwing')
+
+/* Ghim nhánh: ghi xuống rồi phải đọc lại được.
+   Bản cũ dựng lại side bằng cách liệt kê tay từng trường và **quên `pinned`**,
+   nên cờ ghim mất im lặng — quét sau trỏ lại nhánh người dùng vừa sửa. */
+eq(parseCardSides(JSON.stringify([{ repo: 'o/ios', branch: 'b', pinned: true }]), { ...flat, repo: '', branch: '' })[0]!.pinned,
+   true, 'a pinned branch survives the round trip')
+eq(parseCardSides(JSON.stringify([{ repo: 'o/ios', branch: 'b' }]), { ...flat, repo: '', branch: '' })[0]!.pinned,
+   undefined, 'an unpinned branch carries no flag at all')
+
+/* Phép so "card này có gì đổi không" là so chuỗi `JSON.stringify`, mà nó giữ
+   thứ tự chèn. Vòng quét và bộ đọc từng xếp `baseAt, baseBranch, behind` và
+   `baseAt, behind, baseBranch` ⇒ hai chuỗi không bao giờ bằng nhau ⇒ không
+   card nào từng được coi là không đổi, mỗi lần quét ghi lại cả bảng. */
+{
+  const fromScan = cardSide({ repo: 'o/ios', branch: 'b', baseAt: 5, baseBranch: 'master', behind: 3 })
+  const roundTrip = parseCardSides(serializeCardSides([fromScan]), { ...flat, repo: '', branch: '' })
+  eq(serializeCardSides(roundTrip), serializeCardSides([fromScan]),
+     'a side serialises identically after a round trip')
+  eq(Object.keys(fromScan), Object.keys(roundTrip[0]!),
+     'both paths build the side with the same keys in the same order')
+}
 const two = [
   { repo: 'o/ios', branch: 'b', prs: [{ number: 1, url: '', state: 'MERGED', base: 'ctalk/develop' }],
     envState: '', landedVia: '', branchGone: false, localAhead: 0, localOnly: false, localPath: '', branchUpdatedAt: null },
