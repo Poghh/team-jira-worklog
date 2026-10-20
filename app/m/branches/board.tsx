@@ -755,7 +755,9 @@ function Board({
     startTx(async () => {
       const res = await quickScanAction();
       setScanNote(res.message);
-      if (res.ok && (res.created || res.updated || res.gone)) {
+      // `dropped` cũng phải nằm đây: thiếu nó thì thông báo nói "đã gỡ N
+      // card" trong khi N card ấy vẫn nằm nguyên trên màn hình.
+      if (res.ok && (res.created || res.updated || res.gone || res.dropped)) {
         setTimeout(() => window.location.reload(), 600);
       } else {
         setScanning(false);
@@ -826,7 +828,10 @@ function Board({
     const q = search.trim().toLowerCase();
     let out = q
       ? cards.filter((c) =>
-          [c.issueKey, c.title, c.branch, c.body].some((v) =>
+          // `issueKeys`, không chỉ `issueKey`: cả module dựng quanh tiền đề
+          // "một nhánh sửa nhiều ticket", nên gõ mã thứ hai mà ra 0 kết quả
+          // là ô tìm kiếm nói dối về chính thứ module này tồn tại để làm.
+          [...c.issueKeys, c.issueKey, c.title, c.branch, c.body].some((v) =>
             v.toLowerCase().includes(q),
           ),
         )

@@ -34,18 +34,14 @@ import {
   type PlanRow,
   type PullRequest,
   advanceStage,
-  asPullRequest,
   cardStage,
   mergeCardPrs,
-  parseEnvState,
   parseGitHubLink,
-  pickPr,
   planSummary,
   prStateTag,
   prsForCard,
   serializeCardPrs,
   serializeCardSides,
-  stageFor,
 } from "@/lib/modules/branches/github-model";
 import {
   type StageConfig,
@@ -656,25 +652,18 @@ export async function refreshPrsAction(): Promise<
     const writes = cards.flatMap((c) => {
       // `local` null means no clone is configured — leave the stored values
       // alone rather than clearing them, which an empty index would do.
+      // Chỉ dựng lại các nửa; cột của card tính một lần ở dưới bằng
+      // `cardStage`. Ở đây từng có thêm một lượt `stageFor` cho **từng** nửa
+      // rồi không ai đọc kết quả — hai cách tính cột trong cùng một hàm, nên
+      // sửa luật ở một chỗ mà quên chỗ kia là lỗi không ai thấy.
       const judged = (local ? withLocalState(c.sides, local) : c.sides).map((side) => {
         const prs = found.get(`${side.repo}#${side.branch.trim()}`);
         // Absent, not empty: the branch was not in the reply, so nothing is
         // known about it and this side is carried through untouched.
-        if (!prs) return { side, target: null as string | null };
-        const merged = mergeCardPrs(prsForCard(prs), side.prs, livePins);
-        const target = stageFor(
-          parseEnvState(side.envState),
-          pickPr(merged.map(asPullRequest)),
-          stages,
-          merged.map(asPullRequest),
-          built(c),
-          side.branch,
-        );
-        return { side: { ...side, prs: merged }, target };
+        if (!prs) return { side };
+        return { side: { ...side, prs: mergeCardPrs(prsForCard(prs), side.prs, livePins) } };
       });
 
-      // Least advanced first, same rule the scan uses: a ticket is only as far
-      // along as its slowest repository.
       // Same rule as the scan and the hand-edit path, from the same function.
       // A side GitHub said nothing about is carried through as it was, so it
       // contributes whatever it already held rather than counting as behind.

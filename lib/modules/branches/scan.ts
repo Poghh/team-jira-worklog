@@ -948,24 +948,13 @@ export async function scanGitHub(): Promise<ScanResult> {
     });
 
     /**
-     * The furthest any half of the work has got, not the least far.
+     * Lưu theo thứ tự repo trong cấu hình — một thứ tự, không phải hai.
      *
-     * A branch here is never deleted until release, so a repository keeps an
-     * abandoned branch — a closed request, commits that never landed — long
-     * after the change itself shipped through some other branch. Reading that
-     * as "this half is behind" is reading a leftover as work in progress.
-     *
-     * The build settles it: a build of an environment exists only because the
-     * code reached that environment, so a build naming this ticket is proof
-     * for the whole card, whatever the branches look like.
+     * Ở đây từng có một lần sắp "nửa đi xa nhất trước" rồi `void computed[0]`
+     * vứt kết quả đi, và ba file khác vẫn ghi chú mô tả thứ tự ấy như thể nó
+     * còn hiệu lực. Cột của card do `cardStage` quyết — nó xét **mọi** nửa và
+     * lấy nửa đi xa nhất — nên thứ tự lưu không cần nói gì về chuyện đó.
      */
-    computed.sort(
-      (a, b) => stageNames.indexOf(b.target) - stageNames.indexOf(a.target),
-    );
-    void computed[0];
-    // Stored in the order the repositories are configured, which is the order
-    // the card is read in — one order instead of two, and the flat columns
-    // then describe the repository the user put first.
     const ordered = orderSides(
       computed.map((c) => ({ ...c, repo: c.side.repo })),
       cfg.repos,
