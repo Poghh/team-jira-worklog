@@ -124,15 +124,24 @@ export async function fetchRepos(
   return list.map((r) => r.full_name);
 }
 
+/**
+ * Không hỏi pull request ở đây — đó là 70% thời gian của truy vấn này.
+ *
+ * Đo thẳng trên `atthetalk/viptalk-ios-x`, cùng 100 nhánh, cùng cost 1:
+ *
+ *   kèm `associatedPullRequests(first:10)`   3673ms · 3220ms
+ *   bỏ hẳn                                    983ms ·  982ms
+ *
+ * Mà phần lớn nhánh trong repo không bao giờ cần tới PR của nó: repo này có
+ * 149 nhánh còn người dùng có ba. PR được hỏi riêng ở {@link fetchBranchPrs},
+ * chỉ cho những nhánh thật sự lên card — xem `scanGitHub`.
+ */
 const REF_FIELDS = `
   name
   target { ... on Commit {
     committedDate
     author { email user { login } }
-  } }
-  associatedPullRequests(first:10) {
-    nodes { number url state isDraft baseRefName }
-  }`;
+  } }`;
 
 interface RefNode {
   name: string;
@@ -140,15 +149,6 @@ interface RefNode {
     committedDate?: string;
     author?: { email?: string | null; user?: { login?: string } | null };
   } | null;
-  associatedPullRequests: {
-    nodes: Array<{
-      number: number;
-      url: string;
-      state: string;
-      isDraft: boolean;
-      baseRefName: string;
-    }>;
-  };
 }
 
 /**
@@ -302,15 +302,6 @@ export async function fetchBranches(
       }
 
       for (const ref of repo.refs.nodes) {
-        const prs: PullRequest[] = ref.associatedPullRequests.nodes.map(
-          (p) => ({
-            number: p.number,
-            url: p.url,
-            state: p.state,
-            isDraft: p.isDraft,
-            baseRefName: p.baseRefName,
-          }),
-        );
         out.push({
           repo: repo.nameWithOwner,
           name: ref.name,
@@ -319,8 +310,9 @@ export async function fetchBranches(
             : 0,
           login: ref.target?.author?.user?.login ?? "",
           email: ref.target?.author?.email ?? "",
-          prs,
-          pr: pickPr(prs),
+          // Điền sau, chỉ cho nhánh cần — xem ghi chú ở `REF_FIELDS`.
+          prs: [],
+          pr: null,
         });
       }
 
