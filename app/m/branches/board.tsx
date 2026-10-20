@@ -273,6 +273,14 @@ function Ladder({
                 >
                   ↳ {host.issueKey || shortBase(r.branch)}
                 </button>
+              ) : !r.isEnv && r.branch ? (
+                // Không card nào giữ nhánh đích — vẫn phải rút gọn. `r.name`
+                // ở hàng này là nguyên `p.base`, đo được cần 151px trong cột
+                // nhãn rộng 62px, nên nó xuống hai dòng và đè sang hàng dưới.
+                // Lấy đoạn cuối vì đó là phần phân biệt được; tiền tố
+                // `ctalk/feature/` giống nhau ở mọi nhánh. Tên đầy đủ nằm
+                // trong tooltip.
+                <span title={r.branch}>{shortBase(r.branch)}</span>
               ) : (
                 r.name
               )
@@ -501,7 +509,11 @@ function CardRow({
 }) {
   return (
     <span className="flex min-w-0 items-start gap-1.5">
-      <span className="w-[62px] shrink-0 pt-[3px] font-mono text-[8.5px] uppercase leading-[1.2] tracking-[0.06em] text-ink-3">
+      {/* `truncate`: cột này rộng cứng 62px, nên một nhãn dài hơn thế mà
+          được phép xuống dòng sẽ cao gấp đôi hàng bên cạnh và đè lên hàng
+          dưới — đọc ra là vỡ giao diện chứ không phải là tràn chữ. Người gọi
+          nào cũng nên tự rút gọn trước, nhưng đây là chốt chặn cuối. */}
+      <span className="w-[62px] shrink-0 truncate pt-[3px] font-mono text-[8.5px] uppercase leading-[1.2] tracking-[0.06em] text-ink-3">
         {label}
       </span>
       <span className="flex min-w-0 flex-1 flex-wrap items-center gap-1">
