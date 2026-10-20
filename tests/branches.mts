@@ -54,6 +54,7 @@ import {
   serializeSeenBuilds,
 } from '@/lib/modules/branches/build-model'
 import {
+  prBaseBranches,
   cardSide,
   extractIssueKey,
   extractIssueKeys,
@@ -434,6 +435,39 @@ eq(parseCardSides(JSON.stringify([{ repo: 'o/ios', branch: 'b', pinned: true }])
    true, 'a pinned branch survives the round trip')
 eq(parseCardSides(JSON.stringify([{ repo: 'o/ios', branch: 'b' }]), { ...flat, repo: '', branch: '' })[0]!.pinned,
    undefined, 'an unpinned branch carries no flag at all')
+
+/* ── luật sở hữu thứ tư: nhánh đích của PR trên nhánh của mình ───────────── */
+const ENV = new Set(['ctalk/develop', 'develop', 'staging', 'master'])
+const pr = (base: string) => ({ number: 1, url: '', state: 'OPEN', isDraft: false, baseRefName: base })
+
+/* Ca thật: VT-2323 trượt cả ba luật kia — tác giả tip là đồng nghiệp, feed sự
+   kiện không với tới, và nhánh +0 commit so với master. Thứ duy nhất còn đúng
+   là có một PR của mình nhắm vào nó. */
+eq(prBaseBranches([{ repo: 'o/ios', name: 'ctalk/bugfix/x', prs: [pr('ctalk/feature/VT-2323_a')] }], ENV),
+   ['o/ios#ctalk/feature/VT-2323_a'], 'nhánh đích của PR trên nhánh của mình là của mình')
+
+/* Nhánh môi trường thì không: thiếu cổng này, mọi PR nhắm vào develop sẽ đẻ ra
+   một card cho chính nhánh môi trường ấy. */
+eq(prBaseBranches([{ repo: 'o/ios', name: 'ctalk/bugfix/x', prs: [pr('ctalk/develop')] }], ENV),
+   [], 'PR nhắm vào nhánh môi trường không sinh card cho môi trường')
+
+/* Nhánh đã được một luật khác nhận rồi thì không nhận lại. */
+eq(prBaseBranches([
+     { repo: 'o/ios', name: 'ctalk/feature/f', prs: [] },
+     { repo: 'o/ios', name: 'ctalk/bugfix/x', prs: [pr('ctalk/feature/f')] },
+   ], ENV), [], 'nhánh đã là của mình rồi thì không đếm hai lần')
+
+/* Cùng repo: `baseRefName` là tên nhánh trong chính repo chứa PR. */
+eq(prBaseBranches([
+     { repo: 'o/ios', name: 'a', prs: [pr('ctalk/feature/f')] },
+     { repo: 'o/sdk', name: 'b', prs: [pr('ctalk/feature/f')] },
+   ], ENV).sort(), ['o/ios#ctalk/feature/f', 'o/sdk#ctalk/feature/f'],
+   'mỗi repo một nhánh đích riêng, dù trùng tên')
+
+/* Hai PR cùng nhắm một nhánh thì nhánh ấy chỉ kể một lần. */
+eq(prBaseBranches([{ repo: 'o/ios', name: 'a', prs: [pr('ctalk/feature/f'), pr('ctalk/feature/f')] }], ENV),
+   ['o/ios#ctalk/feature/f'], 'không trùng lặp')
+eq(prBaseBranches([{ repo: 'o/ios', name: 'a', prs: [pr('  ')] }], ENV), [], 'base rỗng thì bỏ qua')
 
 /* Phép so "card này có gì đổi không" là so chuỗi `JSON.stringify`, mà nó giữ
    thứ tự chèn. Vòng quét và bộ đọc từng xếp `baseAt, baseBranch, behind` và

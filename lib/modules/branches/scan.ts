@@ -14,6 +14,7 @@ import {
   withLocalState,
 } from "./model";
 import {
+  prBaseBranches,
   cardSide,
   type EnvState,
   type PlanRow,
@@ -535,6 +536,50 @@ export async function scanGitHub(): Promise<ScanResult> {
     byRule[how] = (byRule[how] ?? 0) + 1;
     return true;
   });
+
+  /**
+   * Nhánh đích của một PR do chính người dùng mở cũng là việc của người dùng.
+   *
+   * Luật thứ tư, và là luật duy nhất bắt được ca thật này: nhánh
+   * `ctalk/feature/VT-2323_…` do người dùng tạo ra, nhưng
+   *
+   * - tác giả commit mới nhất là đồng nghiệp — nhánh chưa có commit riêng nào
+   *   nên "commit mới nhất" chính là commit mới nhất của `master`;
+   * - feed sự kiện chỉ với tới được 21 ngày vì trần 300 event của GitHub, và
+   *   lần tạo nhánh nằm ngoài cửa sổ đó;
+   * - so với `master` nó **+0 commit**, nên cả luật "tôi có commit trên nhánh"
+   *   cũng trượt.
+   *
+   * Thứ duy nhất còn nói đúng là: PR #1757 nhắm vào nó, và PR ấy nằm trên
+   * nhánh của người dùng. Dữ liệu đã có sẵn trong `baseRefName`, chỉ là chưa
+   * ai hỏi tới.
+   *
+   * Phạm vi hẹp có chủ ý — chỉ nhánh đích của PR **trên nhánh của mình**, chứ
+   * không phải mọi nhánh của đồng nghiệp. Và cổng môi trường vẫn phải áp:
+   * thiếu nó thì mọi PR nhắm vào `ctalk/develop` sẽ đẻ ra một card cho chính
+   * nhánh môi trường ấy.
+   */
+  {
+    const wanted = new Set(prBaseBranches(mine, envBranches));
+    const extra = branches.filter((b) => wanted.has(`${b.repo}#${b.name}`));
+    if (extra.length) {
+      // Nhánh này chưa được hỏi PR ở vòng trên — lúc đó chưa ai biết nó sẽ
+      // được nhận. Một request nữa, chỉ cho đúng mấy nhánh này.
+      const got = await fetchBranchPrs(
+        token,
+        extra.map((b) => ({ repo: b.repo, branch: b.name })),
+      ).catch(() => new Map<string, PullRequest[]>());
+      for (const b of extra) {
+        const prs = got.get(`${b.repo}#${b.name}`);
+        if (prs) {
+          b.prs = prs;
+          b.pr = pickPr(prs);
+        }
+        byRule.prbase = (byRule.prbase ?? 0) + 1;
+        mine.push(b);
+      }
+    }
+  }
 
   // Newest tip wins when several branches name the same ticket: a ticket
   // reopened on a fresh branch is the common case, and the stale branch is

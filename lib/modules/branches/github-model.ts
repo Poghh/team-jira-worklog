@@ -120,6 +120,42 @@ export type MineBy = "push" | "login" | null;
  * last commit happens to carry my name". The author rules stay behind it to
  * cover work older than the feed reaches.
  */
+/**
+ * Nhánh đích của những PR nằm trên nhánh của người dùng.
+ *
+ * Luật sở hữu thứ tư, và là luật duy nhất bắt được ca thật này: nhánh
+ * `ctalk/feature/VT-2323_…` do người dùng tạo ra, nhưng ba luật kia đều trượt
+ * — tác giả commit mới nhất là đồng nghiệp (nhánh chưa có commit riêng nào nên
+ * commit ấy là của `master`), feed sự kiện chỉ với tới 21 ngày vì trần 300
+ * event của GitHub, và so với `master` nó **+0 commit** nên cả luật "tôi có
+ * commit trên nhánh" cũng không nói được gì.
+ *
+ * Thứ duy nhất còn đúng: có một PR nhắm vào nó, và PR ấy nằm trên nhánh của
+ * người dùng. Dữ liệu đã nằm sẵn trong `baseRefName`.
+ *
+ * Phạm vi hẹp có chủ ý. Chỉ nhánh đích của PR **trên nhánh của mình**, không
+ * phải mọi nhánh của đồng nghiệp. Cùng repo, vì `baseRefName` là tên nhánh
+ * trong chính repo chứa PR. Và nhánh môi trường bị loại — thiếu bước ấy thì
+ * mọi PR nhắm vào `ctalk/develop` sẽ đẻ ra một card cho chính nhánh môi
+ * trường đó.
+ */
+export function prBaseBranches(
+  mine: Array<{ repo: string; name: string; prs: PullRequest[] }>,
+  envBranches: Set<string>,
+): string[] {
+  const claimed = new Set(mine.map((b) => `${b.repo}#${b.name}`));
+  const out: string[] = [];
+  for (const b of mine)
+    for (const pr of b.prs) {
+      const base = pr.baseRefName?.trim();
+      if (!base || envBranches.has(base)) continue;
+      const id = `${b.repo}#${base}`;
+      if (claimed.has(id) || out.includes(id)) continue;
+      out.push(id);
+    }
+  return out;
+}
+
 export function mineBy(
   branch: RemoteBranch,
   me: Identity,
