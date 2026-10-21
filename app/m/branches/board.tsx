@@ -2792,12 +2792,31 @@ function NoteModal({
 
 // ── stage config ─────────────────────────────────────────────────────────────
 
-const EXPECT_LABEL: Array<{ value: StageConfig["expects"]; label: string }> = [
-  { value: "", label: "không kiểm tra" },
-  { value: "prog", label: "phải đang làm" },
-  { value: "test", label: "phải chờ test" },
-  { value: "done", label: "phải xong" },
-];
+/**
+ * Nhãn của ô cảnh báo, gọi tên **đúng môi trường của dòng ấy**.
+ *
+ * "phải chờ test" nói thiếu một nửa: `stageDrift` không hỏi "ticket đã chờ
+ * test chưa" mà hỏi "đã chờ test **trên môi trường của cột này** chưa" —
+ * `VERIFIED ON DEVELOP` vẫn là lệch ở một cột staging. Nhãn chung chung khiến
+ * người dùng tưởng mình đang chọn một trạng thái, trong khi đang chọn một cặp
+ * trạng thái-và-môi-trường.
+ *
+ * Cột không gắn môi trường thì `test` không đo được gì — `stageDrift` tụt
+ * ngưỡng về "đang làm" — nên nhãn nói thẳng là nó cần một nhánh.
+ */
+function expectLabels(
+  env: string,
+): Array<{ value: StageConfig["expects"]; label: string }> {
+  return [
+    { value: "", label: "không kiểm tra" },
+    { value: "prog", label: "phải đang làm" },
+    {
+      value: "test",
+      label: env ? `phải chờ test trên ${env}` : "phải chờ test — cần điền nhánh",
+    },
+    { value: "done", label: "phải xong" },
+  ];
+}
 
 function StagesManager({ stages }: { stages: StageConfig[] }) {
   const [list, setList] = useState<StageConfig[]>(
@@ -2868,7 +2887,7 @@ function StagesManager({ stages }: { stages: StageConfig[] }) {
           <span className="w-[212px] shrink-0">Card vào cột này khi</span>
           {/* Không cùng loại với ba ô bên trái, nên không được đọc như nhau:
               ba ô kia quyết định card vào cột nào, ô này chỉ bật cảnh báo. */}
-          <span className="w-[128px] shrink-0 text-ink-3/70">⚠ Cảnh báo Jira</span>
+          <span className="w-[190px] shrink-0 text-ink-3/70">⚠ Cảnh báo Jira</span>
           <span className="w-7 shrink-0" />
         </div>
 
@@ -2984,10 +3003,12 @@ function StagesManager({ stages }: { stages: StageConfig[] }) {
               onChange={(e) =>
                 patch(i, { expects: e.target.value as StageConfig["expects"] })
               }
-              title={"Chỉ bật cảnh báo, không quyết định card vào cột nào.\nTới cột này mà Jira chưa tới trạng thái đã chọn thì card hiện cảnh báo lệch."}
-              className="w-[128px] shrink-0 rounded-md border border-line bg-ground px-2 py-1 text-[12px]"
+              title={"Chỉ bật cảnh báo, không quyết định card vào cột nào.\nTới cột này mà Jira chưa tới trạng thái đã chọn thì card hiện cảnh báo lệch.\n\n\"Chờ test\" được tính theo đúng môi trường của cột này: một ticket mới verified ở môi trường trước đó vẫn là lệch."}
+              className="w-[190px] shrink-0 rounded-md border border-line bg-ground px-2 py-1 text-[12px]"
             >
-              {EXPECT_LABEL.map((o) => (
+              {expectLabels(
+                envSteps(list).find((e) => e.branch === s.branch)?.name ?? "",
+              ).map((o) => (
                 <option key={o.value} value={o.value}>
                   {o.label}
                 </option>
