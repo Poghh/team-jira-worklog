@@ -10,6 +10,7 @@
  */
 import { logDatePastDue, statusRank, statusTone } from '@/lib/jira/types'
 import {
+  nextEnvToRequest,
   DEFAULT_STAGES,
   envSteps,
   hostOf,
@@ -578,6 +579,35 @@ eq(stageDrift('đã build staging', 'VERIFIED ON DEVELOP', 'ver', S, 'VT-901')?.
 eq(stageDrift('done', 'VERIFIED ON STAGING', 'ver', S, 'VT-902')?.label,
    'VT-902 vẫn: VERIFIED ON STAGING', 'cột cuối vẫn đòi Done')
 eq(stageDrift('done', 'DONE', 'done', S, 'VT-902'), null, 'và Done thoả nó')
+
+/* ── gợi ý mở PR lên môi trường kế tiếp ─────────────────────────────────── */
+const E = envSteps(S)
+eq(E.map((e) => e.name), ['develop', 'integration', 'staging'], 'ba bậc môi trường')
+
+/* Ca thật trên card VT-3724: verified ở integration, mời lên staging. */
+eq(nextEnvToRequest(['VERIFIED ON INTEGRATION'], E)?.name, 'staging',
+   'verified ở integration thì mời lên staging')
+eq(nextEnvToRequest(['VERIFIED ON DEVELOP'], E)?.name, 'integration',
+   'và verified ở develop thì mời lên integration')
+
+/* Chỉ một bậc, không nhảy cóc — bậc cuối thì hết đường. */
+eq(nextEnvToRequest(['VERIFIED ON STAGING'], E), null, 'verified ở bậc cuối thì không còn gì để mời')
+eq(nextEnvToRequest(['DONE'], E), null, 'Done là hết đường')
+
+/* Chưa verified thì chưa mời. */
+eq(nextEnvToRequest(['READY TO TEST ON INTEGRATION'], E), null, 'mới chờ test thì chưa mời')
+eq(nextEnvToRequest(['IN PROGRESS'], E), null, 'đang làm thì chưa mời')
+eq(nextEnvToRequest(['TO DO'], E), null, 'chưa làm thì chưa mời')
+
+/* Card nhiều ticket: lấy cái kém tiến nhất, không lấy cái đại diện. */
+eq(nextEnvToRequest(['VERIFIED ON INTEGRATION', 'IN PROGRESS'], E), null,
+   'một ticket còn đang làm thì cả card chưa có gì để đẩy lên')
+eq(nextEnvToRequest(['VERIFIED ON STAGING', 'VERIFIED ON DEVELOP'], E)?.name, 'integration',
+   'ticket kém tiến nhất quyết định bậc kế tiếp')
+
+/* Không có trạng thái nào đọc được thì im. */
+eq(nextEnvToRequest([null, '', undefined], E), null, 'không biết trạng thái thì không đoán')
+eq(nextEnvToRequest(['VERIFIED ON DEVELOP'], []), null, 'không cấu hình môi trường thì không mời')
 
 /* ── cột tính từ chính card, không cần mạng ─────────────────────────────── */
 const sideAt = (repo: string, prs: Array<{number:number;url:string;state:string;base:string}>, env = '') => ({

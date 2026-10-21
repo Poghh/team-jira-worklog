@@ -895,6 +895,41 @@ export interface StageDrift {
 }
 
 /**
+ * Môi trường kế tiếp đáng mở PR vào, khi ticket đã verified ở môi trường dưới.
+ *
+ * Chỉ **một** bậc. Verified trên `integration` thì mời mở PR vào `staging`,
+ * không mời nhảy cóc: đường ống có thứ tự, và hai lời mời cùng lúc thì không
+ * lời nào còn là lời mời.
+ *
+ * Lấy ticket **kém tiến nhất** của card, không lấy ticket đại diện. Card hai
+ * ticket mà một cái còn đang làm thì chưa có gì để đẩy lên, và mời đẩy lúc ấy
+ * là mời làm sai.
+ *
+ * `statusRank` xếp `READY TO TEST <env thứ i>` thành `2 + 2i` và
+ * `VERIFIED <env thứ i>` thành `2 + 2i + 1`, nên đọc ngược ra được cả "đang ở
+ * môi trường nào" lẫn "đã verified chưa" từ đúng một con số. Trạng thái không
+ * khớp môi trường nào rơi vào `env = envNames.length`, tức chỉ số ngoài dải —
+ * `envs[at + 1]` khi đó tự trả `undefined`, không cần chặn riêng.
+ */
+export function nextEnvToRequest(
+  statusNames: Array<string | null | undefined>,
+  envs: StageConfig[],
+): StageConfig | null {
+  const names = statusNames.filter((n): n is string => Boolean(n && n.trim()));
+  if (!names.length || !envs.length) return null;
+
+  const envNames = envs.map((e) => e.name);
+  const rank = Math.min(...names.map((n) => statusRank(n, envNames)));
+  // Done là hết đường, không còn môi trường nào để mời.
+  if (rank === 99 || rank < 2) return null;
+
+  const verified = (rank - 2) % 2 === 1;
+  if (!verified) return null;
+
+  return envs[Math.floor((rank - 2) / 2) + 1] ?? null;
+}
+
+/**
  * Whether the ticket is lagging the branch, and how to say so.
  *
  * Returns null when they agree, when the stage has no expectation, or when the
