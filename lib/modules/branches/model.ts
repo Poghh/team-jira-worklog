@@ -164,7 +164,17 @@ export const DEFAULT_STAGES: StageConfig[] = [
 
   env("staging", "staging", "queued", "prog"),
   env("đã merge staging", "staging", "merged", "prog"),
-  env("đã build staging", "staging", "built", "done"),
+  // `test`, cùng khuôn với hai cột build kia — không phải `done`.
+  //
+  // Ba cột build nói cùng một điều: môi trường ấy đã có bản build, tức ticket
+  // **test được ở đó**. Đòi "xong" ngay sau bản build staging là kêu mọi ticket
+  // đang `READY TO TEST ON STAGING` — đúng cái ticket đang làm đúng.
+  //
+  // Và chính `addBuildColumns` — hàm sinh cột build khi nâng cấu hình cũ —
+  // luôn ghi `expects: "test"`. Nên cấu hình đã migrate thì đúng khuôn, chỉ
+  // riêng bản mặc định đóng gói sẵn là lạc. Hai nguồn cùng dựng một thứ mà
+  // nói khác nhau thì cái ít được chạy hơn là cái sai.
+  env("đã build staging", "staging", "built", "test"),
 
   // The end of the line. Without it the last build column holds two different
   // kinds of card — work QC is still testing, and work closed months ago — and

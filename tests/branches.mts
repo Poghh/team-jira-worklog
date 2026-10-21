@@ -545,7 +545,8 @@ eq(stageDrift('đã build integration', 'COMMITED CODE FEATURE BRANCH', 'prog', 
    'VT-467 vẫn: COMMITED CODE FEATURE BRANCH', 'the warning names the ticket that is behind')
 eq(stageDrift('đã build integration', 'X', 'prog', S)?.label, 'ticket vẫn: X', 'generic when no key is given')
 eq(S.filter((s) => s.expects === 'test').map((s) => s.name),
-   ['đã build develop', 'đã build integration'], 'only build columns ask for a test status')
+   ['đã build develop', 'đã build integration', 'đã build staging'],
+   'only build columns ask for a test status')
 // The environment, not just the colour. A ticket verified on develop is past
 // testing *there* and nowhere else — its card has since reached the
 // integration build, which is a different thing to be tested on.
@@ -567,9 +568,14 @@ eq(stageDrift('đã build integration', 'VERIFIED ON DEVELOP', 'ver', S)?.detail
    mọi task đã ship. Hai bảng `TONE_RANK`/`EXPECT_RANK` viết thẳng ý định
    ngược lại nhưng không ai gọi chúng. */
 eq(S.filter((s) => s.expects === 'done').map((s) => s.name),
-   ['đã build staging', 'done'], 'hai cột đòi "xong"')
+   ['done'], 'chỉ cột cuối đòi "xong" — ba cột build đều chỉ đòi "chờ test"')
+eq(S.filter((s) => s.expects === 'test').map((s) => s.name),
+   ['đã build develop', 'đã build integration', 'đã build staging'],
+   'ba cột build cùng khuôn, kể cả staging')
+eq(stageDrift('đã build staging', 'READY TO TEST ON STAGING', 'test', S, 'VT-900'), null,
+   'có bản build staging thì chờ test trên staging là đúng, không phải lệch')
 eq(stageDrift('đã build staging', 'VERIFIED ON STAGING', 'ver', S, 'VT-900'), null,
-   'verified trên đúng môi trường của cột là đã xong phần của cột đó')
+   'verified thì càng không lệch')
 eq(stageDrift('đã build staging', 'DONE', 'done', S, 'VT-900'), null, 'Done thì khỏi bàn')
 /* Nhưng Verified ở môi trường *trước đó* thì vẫn là tụt lại thật. */
 eq(stageDrift('đã build staging', 'VERIFIED ON DEVELOP', 'ver', S, 'VT-901')?.label,
