@@ -263,8 +263,20 @@ export function branchSegments(branch: string): string[] {
  * nào vẫn chạy y như trước.
  */
 export function kindMatches(branch: string, kind: string): boolean {
-  const want = kind.trim().toLowerCase();
-  if (!want) return true;
+  // Nhận **danh sách** ngăn bởi dấu phẩy, không chỉ một loại.
+  //
+  // Một cột `review` thường phục vụ nhiều cặp cùng đích: `task → feature` và
+  // `bugfix → feature` là cùng một bước việc, nên chúng phải là **một** cột
+  // chứ không phải hai cột trùng tên. Một loại vẫn viết như cũ, không có dấu
+  // phẩy thì danh sách chỉ có một phần tử.
+  const wants = kind
+    .split(",")
+    .map((k) => k.trim().toLowerCase())
+    .filter(Boolean);
+  if (!wants.length) return true;
+  if (wants.length > 1) return wants.some((w) => kindMatches(branch, w));
+
+  const want = wants[0]!;
   const segs = branchSegments(branch);
   if (segs.includes(want)) return true;
   // Khớp theo **từ** bên trong một đoạn, ngăn bởi `_` hoặc `-`.

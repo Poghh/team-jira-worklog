@@ -125,6 +125,15 @@ eq(stageRule({ name: 'x', expects: '', branch: 'staging', phase: 'open', reach: 
    'code đã nằm trong staging, và PR đang mở', 'hai điều kiện thì nói cả hai')
 
 /* ── cột điểm bắt đầu, tách theo loại nhánh ─────────────────────────────── */
+/* Ô loại nhánh nhận danh sách: một cột `review` phục vụ nhiều cặp cùng đích —
+   `task → feature` và `bugfix → feature` là cùng một bước việc, nên chúng phải
+   là MỘT cột chứ không phải hai cột trùng tên. */
+eq(kindMatches('ctalk/task/VT-1', 'task, bugfix'), true, 'danh sách: khớp phần tử đầu')
+eq(kindMatches('ctalk/bugfix/VT-2', 'task, bugfix'), true, 'danh sách: khớp phần tử sau')
+eq(kindMatches('ctalk/feature/VT-3', 'task, bugfix'), false, 'danh sách: không khớp thì vẫn không khớp')
+eq(kindMatches('ctalk/task/VT-1', 'task'), true, 'một loại vẫn viết như cũ')
+eq(kindMatches('ctalk/task/VT-1', ' , , '), true, 'danh sách rỗng = không kén')
+
 //
 // Đếm trên 220 nhánh thật của hai repo: 123 `feature`, 44 `bugfix`, 31 `task`,
 // rồi `release`/`hotfix`/`chore` và 6 nhánh không có `/` nào.
