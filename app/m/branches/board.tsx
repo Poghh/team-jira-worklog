@@ -26,6 +26,7 @@ import {
   repoLabel,
 } from "@/lib/modules/branches/github-model";
 import {
+  nextEnvToRequest,
   type NoteItem,
   type StageConfig,
   type TaskNoteRow,
@@ -107,6 +108,7 @@ export function BranchBoard({
   jiraError,
   offSite,
   ghView,
+  statusNames = [],
 }: {
   initial: TaskNoteRow[];
   stages: StageConfig[];
@@ -119,6 +121,8 @@ export function BranchBoard({
   /** Ticket key → the other Jira host its pinned link points at. */
   offSite: Record<string, string>;
   ghView: GitHubConfigView;
+  /** Tên trạng thái thật của project — rỗng khi Jira không trả lời được. */
+  statusNames?: string[];
 }) {
   const [tab, setTab] = useState<"board" | "config" | "github">(
     stages.length ? "board" : "config",
@@ -170,7 +174,9 @@ export function BranchBoard({
           buildsOn={ghView.buildEnabled}
         />
       )}
-      {tab === "config" && <StagesManager stages={stages} />}
+      {tab === "config" && (
+        <StagesManager stages={stages} statusNames={statusNames} />
+      )}
       {tab === "github" && (
         <GitHubPanel view={ghView} stages={stages} baseUrl={baseUrl} />
       )}
@@ -230,6 +236,7 @@ function Ladder({
   builds = true,
   owners,
   onGoTo,
+  suggest = null,
 }: {
   rows: LadderRow[];
   repo: string;
@@ -240,6 +247,13 @@ function Ladder({
   prs?: boolean;
   /** False on the per-repository passes, where builds would be duplicated. */
   builds?: boolean;
+  /**
+   * Môi trường kế tiếp đáng mở PR vào — xem {@link nextEnvToRequest}.
+   *
+   * Chỉ một, và chỉ khi hàng ấy còn trống: hai lời mời cùng lúc thì không lời
+   * nào còn là lời mời.
+   */
+  suggest?: { base: string; head: string; url: string; why: string } | null;
 }) {
   return (
     <>
@@ -306,6 +320,28 @@ function Ladder({
                     }
                   >
                     {b.label}
+                  </a>
+                ) : suggest && suggest.base === r.branch ? (
+                  /* Ô trống của **đúng** môi trường kế tiếp: đứng yên trông y
+                     như mọi ô trống khác, rê chuột vào mới hiện ra là bấm
+                     được. Không hét lên ở trạng thái nghỉ — phần lớn ô trống
+                     trên bảng là chuyện bình thường, và một ô tự sáng lên sẽ
+                     đọc thành cảnh báo chứ không phải lời mời.
+
+                     Là link sang GitHub chứ không phải nút gọi API: app này
+                     chưa bao giờ ghi vào repo của ai, và mở PR là một cú ghi. */
+                  <a
+                    href={suggest.url}
+                    target="_blank"
+                    rel="noreferrer"
+                    onClick={(e) => e.stopPropagation()}
+                    title={`${suggest.why}\n\nMở trang tạo PR trên GitHub: ${r.branch} ← ${suggest.head}\nApp không tự tạo PR — bạn vẫn xem lại rồi bấm Create.`}
+                    className="group/pr flex min-w-0 flex-auto justify-center truncate rounded-[3px] border border-dashed border-line-strong px-1 py-px font-mono text-[9.5px] text-ink-3 hover:border-solid hover:border-accent hover:bg-accent-soft hover:text-accent-ink"
+                  >
+                    <span className="group-hover/pr:hidden">chưa tạo PR</span>
+                    <span className="hidden group-hover/pr:inline">
+                      + tạo PR ↗
+                    </span>
                   </a>
                 ) : (
                   <span
@@ -1395,6 +1431,36 @@ function NoteCard({
    * moves that one and the card keeps warning, or worse, stops warning while
    * the other is still behind.
    */
+  /**
+   * Lời mời mở PR lên môi trường kế tiếp.
+   *
+   * Tính một lần cho cả card: luật đọc ticket kém tiến nhất, nên nó là chuyện
+   * của card chứ không của từng nửa. Nhưng chỉ mời khi hàng ấy **còn trống** —
+   * đã có PR rồi thì lời mời là nhiễu, và khi code đã tới nơi thì càng vô
+   * nghĩa.
+   *
+   * Link sang GitHub, không phải nút gọi API: app này chưa bao giờ ghi vào
+   * repo của ai, và mở PR là một cú ghi. Người dùng vẫn xem lại rồi tự bấm
+   * Create.
+   */
+  const nextEnv = nextEnvToRequest(
+    card.statuses.map((st) => st.name),
+    envSteps(stages),
+  );
+  const suggestFor = (
+    side: { repo: string; branch: string; prs: CardPr[] } | undefined,
+  ) => {
+    if (!nextEnv?.branch || !side?.repo || !side.branch.trim()) return null;
+    if (side.prs.some((p) => p.base === nextEnv.branch)) return null;
+    const head = side.branch.trim();
+    return {
+      base: nextEnv.branch,
+      head,
+      url: `https://github.com/${side.repo}/compare/${nextEnv.branch}...${head}?expand=1`,
+      why: `Ticket đã verified ở môi trường trước, ${nextEnv.name} là bậc kế tiếp.`,
+    };
+  };
+
   const drifts = card.statuses.flatMap((st) =>
     st.name
       ? (stageDrift(
@@ -1667,6 +1733,7 @@ function NoteCard({
             rows={cardLadder(sides[0]?.prs ?? [], card.builds, stages)}
             repo={card.repo}
             builds={buildsOn}
+            suggest={suggestFor(sides[0])}
             owners={owners}
             onGoTo={onGoTo}
           />
@@ -2730,14 +2797,64 @@ function NoteModal({
 
 // ── stage config ─────────────────────────────────────────────────────────────
 
-const EXPECT_LABEL: Array<{ value: StageConfig["expects"]; label: string }> = [
-  { value: "", label: "không kiểm tra" },
-  { value: "prog", label: "phải đang làm" },
-  { value: "test", label: "phải chờ test" },
-  { value: "done", label: "phải xong" },
-];
+/**
+ * Nhãn của ô cảnh báo, gọi **đúng tên trạng thái Jira** của môi trường dòng ấy.
+ *
+ * Trước đây ô này nói "phải chờ test" — diễn đạt lại thay vì gọi tên, và thiếu
+ * một nửa: `stageDrift` không hỏi "ticket đã chờ test chưa" mà hỏi "đã chờ
+ * test **trên môi trường của cột này** chưa", nên `VERIFIED ON DEVELOP` vẫn là
+ * lệch ở một cột staging.
+ *
+ * Tên lấy từ Jira chứ không ghép tay: hai cách viết rất gần nhau cùng tồn tại
+ * ngoài đời — `READY TO TEST ON X` và `READY FOR TEST ON X` — và project này
+ * dùng cách thứ nhất. Đoán sai một chữ thì nhãn nói dối về chính thứ người
+ * dùng sắp chọn.
+ *
+ * Ngưỡng là *ít nhất*, không phải so bằng: `stageDrift` so `have >= need`, nên
+ * ticket đã `VERIFIED ON DEVELOP` vẫn thoả ô `READY TO TEST ON DEVELOP`. Chữ
+ * "ít nhất" ấy nằm ở **tiêu đề cột**, nói một lần, để từng lựa chọn giữ đúng
+ * tên Jira và không có chữ nào của app lẫn vào. Nhét nó vào từng dòng thì nhãn
+ * vừa dài vừa lặp; bỏ hẳn thì nhãn hứa một sự so bằng mà luật không làm.
+ */
+function expectLabels(
+  env: string,
+  statusNames: string[],
+): Array<{ value: StageConfig["expects"]; label: string }> {
+  const up = env.trim().toUpperCase();
+  const find = (re: RegExp) =>
+    statusNames.find((n) => re.test(n.toUpperCase()) && n.toUpperCase().includes(up));
 
-function StagesManager({ stages }: { stages: StageConfig[] }) {
+  const ready = up ? find(/^READY\b.*\bTEST\b/) : "";
+  const verified = up ? find(/^VERIFIED\b/) : "";
+  const done = statusNames.find((n) => n.trim().toUpperCase() === "DONE");
+
+  const prog = statusNames.find((n) => n.trim().toUpperCase() === "IN PROGRESS");
+
+  // Từng lựa chọn là **tên Jira nguyên văn**, không kèm chữ nào của mình.
+  // Nghĩa "ít nhất" nằm ở tiêu đề cột, nói một lần — xem ghi chú trên hàm.
+  return [
+    { value: "", label: "không kiểm tra" },
+    { value: "prog", label: prog || "In Progress" },
+    {
+      value: "test",
+      label: ready || (up ? `(Jira chưa có READY TO TEST ON ${up})` : "(cần điền nhánh)"),
+    },
+    {
+      value: "done",
+      // Cột gắn môi trường thì `VERIFIED` trên chính môi trường ấy đã thoả;
+      // cột cuối không gắn môi trường nào nên nó đòi đúng `Done`.
+      label: verified || done || "Done",
+    },
+  ];
+}
+
+function StagesManager({
+  stages,
+  statusNames,
+}: {
+  stages: StageConfig[];
+  statusNames: string[];
+}) {
   const [list, setList] = useState<StageConfig[]>(
     stages.length
       ? stages
@@ -2749,6 +2866,7 @@ function StagesManager({ stages }: { stages: StageConfig[] }) {
             phase: "nopr",
             reach: "queued",
             kind: "",
+            intoKind: "",
           },
         ],
   );
@@ -2788,6 +2906,14 @@ function StagesManager({ stages }: { stages: StageConfig[] }) {
         sự thật trong repo, còn PR chỉ là ý định.
       </p>
 
+      {/* Thứ tự môi trường, nói thẳng ra.
+          Nó vốn đã được suy từ danh sách dưới đây — các cột `đã merge` theo
+          đúng thứ tự bạn xếp — nhưng không màn hình nào nói điều đó, nên
+          người dùng không có cách nào biết app đang hiểu đường ống thế nào
+          cho tới lúc nhìn một card và thấy nó sai. Và đây cũng chính là thứ
+          tự quyết định lời mời "tạo PR lên bậc kế tiếp". */}
+      <EnvPipeline list={list} />
+
       <div className="mt-3 flex flex-col gap-2">
         <div className="flex items-center gap-2 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-3">
           <span className="w-[52px] shrink-0" />
@@ -2796,9 +2922,10 @@ function StagesManager({ stages }: { stages: StageConfig[] }) {
           {/* Ô này chưa bao giờ có tiêu đề, nên nó đọc như một cái hộp không rõ
               hỏi gì — trong khi nó mới là ô quyết định chính. */}
           <span className="w-[212px] shrink-0">Card vào cột này khi</span>
+          <span className="w-[0px] shrink-0" />
           {/* Không cùng loại với ba ô bên trái, nên không được đọc như nhau:
               ba ô kia quyết định card vào cột nào, ô này chỉ bật cảnh báo. */}
-          <span className="w-[128px] shrink-0 text-ink-3/70">⚠ Cảnh báo Jira</span>
+          <span className="w-[232px] shrink-0 text-ink-3/70">⚠ Yêu cầu ticket ít nhất ở trạng thái</span>
           <span className="w-7 shrink-0" />
         </div>
 
@@ -2909,15 +3036,59 @@ function StagesManager({ stages }: { stages: StageConfig[] }) {
               />
             )}
 
+            {/*
+             * Cột "PR đang mở" là một **cặp**: nhánh loại X gửi PR vào nhánh
+             * loại Y. Hai ô cạnh nhau, đọc liền thành câu.
+             *
+             * Vế đích để trống thì cột **không nhận nhánh nào** — nói thẳng
+             * bằng placeholder và viền cảnh báo, vì một cột im lặng không nhận
+             * gì sẽ đọc thành "chưa có card nào" chứ không phải "chưa khai".
+             */}
+            {!s.branch.trim() && s.reach !== "gone" && s.phase === "open" && (
+              <>
+                <input
+                  value={s.kind}
+                  onChange={(e) => patch(i, { kind: e.target.value })}
+                  placeholder="— mọi loại —"
+                  title={
+                    "Vế nguồn: nhánh loại nào gửi PR.\n" +
+                    "Để trống thì mọi loại nhánh đều tính."
+                  }
+                  className="w-[104px] shrink-0 rounded-md border border-line bg-ground px-2 py-1 font-mono text-[12px]"
+                />
+                <span className="shrink-0 text-[11px] text-ink-3">gửi PR vào</span>
+                <input
+                  value={s.intoKind}
+                  onChange={(e) => patch(i, { intoKind: e.target.value })}
+                  placeholder="— chưa khai —"
+                  title={
+                    "Vế đích: PR nhắm vào nhánh loại nào.\n" +
+                    "Ví dụ `feature` — nhánh bugfix gửi PR vào nhánh tính năng.\n\n" +
+                    "Để trống thì cột này KHÔNG nhận nhánh nào: luật là một cặp, " +
+                    "thiếu một vế thì nó im thay vì đoán."
+                  }
+                  className={
+                    "w-[118px] shrink-0 rounded-md border bg-ground px-2 py-1 font-mono text-[12px] " +
+                    (s.intoKind.trim()
+                      ? "border-line"
+                      : "border-warn bg-warn-soft text-warn placeholder:text-warn/70")
+                  }
+                />
+              </>
+            )}
+
             <select
               value={s.expects}
               onChange={(e) =>
                 patch(i, { expects: e.target.value as StageConfig["expects"] })
               }
-              title={"Chỉ bật cảnh báo, không quyết định card vào cột nào.\nTới cột này mà Jira chưa tới trạng thái đã chọn thì card hiện cảnh báo lệch."}
-              className="w-[128px] shrink-0 rounded-md border border-line bg-ground px-2 py-1 text-[12px]"
+              title={"Chỉ bật cảnh báo, không quyết định card vào cột nào.\nTới cột này mà Jira chưa tới trạng thái đã chọn thì card hiện cảnh báo lệch.\n\nNgưỡng là **ít nhất**: chọn READY TO TEST ON DEVELOP thì ticket đã VERIFIED ON DEVELOP cũng thoả. Nhưng tính theo đúng môi trường của cột này — verified ở môi trường trước đó vẫn là lệch."}
+              className="w-[232px] shrink-0 rounded-md border border-line bg-ground px-2 py-1 text-[12px]"
             >
-              {EXPECT_LABEL.map((o) => (
+              {expectLabels(
+                envSteps(list).find((e) => e.branch === s.branch)?.name ?? "",
+                statusNames,
+              ).map((o) => (
                 <option key={o.value} value={o.value}>
                   {o.label}
                 </option>
@@ -2953,6 +3124,7 @@ function StagesManager({ stages }: { stages: StageConfig[] }) {
                 phase: "",
                 reach: "queued",
                 kind: "",
+                intoKind: "",
               },
             ])
           }
@@ -2974,5 +3146,50 @@ function StagesManager({ stages }: { stages: StageConfig[] }) {
         </span>
       </div>
     </section>
+  );
+}
+
+/**
+ * Đường ống môi trường mà cấu hình cột đang nói ra.
+ *
+ * Đọc bằng đúng `envSteps` của phần còn lại, không dựng lại luật ở đây — nếu
+ * hai chỗ hiểu khác nhau thì màn hình này thành lời trấn an sai.
+ */
+function EnvPipeline({ list }: { list: StageConfig[] }) {
+  const envs = envSteps(list);
+
+  return (
+    <div className="mt-3 rounded-md border border-line bg-ground px-3 py-2">
+      <div className="font-mono text-[9.5px] uppercase tracking-[0.08em] text-ink-3">
+        Thứ tự môi trường app đang hiểu
+      </div>
+      {envs.length ? (
+        <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
+          {envs.map((e, i) => (
+            <span key={e.branch} className="flex items-center gap-1.5">
+              {i > 0 && <span className="font-mono text-[11px] text-ink-3">→</span>}
+              <span
+                title={`Nhánh: ${e.branch}`}
+                className="rounded-[3px] border border-line-strong bg-surface px-1.5 py-px font-mono text-[11px] text-ink-2"
+              >
+                {e.name}
+                <span className="ml-1 text-ink-3">{e.branch}</span>
+              </span>
+            </span>
+          ))}
+        </div>
+      ) : (
+        <p className="mt-1 text-[12px] text-warn">
+          Chưa có môi trường nào. Một môi trường là một cột có điền{" "}
+          <b>nhánh</b> và điều kiện <b>đã merge</b> — thêm cột như vậy thì nó
+          hiện ở đây.
+        </p>
+      )}
+      <p className="mt-1.5 text-[11.5px] leading-relaxed text-ink-3">
+        Suy từ các cột <b>đã merge</b> bên dưới, theo đúng thứ tự bạn xếp. Đổi
+        chỗ cột là đổi thứ tự đường ống — và đó cũng là thứ tự quyết định lời
+        mời “tạo PR lên bậc kế tiếp” khi ticket đã verified.
+      </p>
+    </div>
   );
 }

@@ -14,6 +14,7 @@ import {
   withLocalState,
 } from "./model";
 import {
+  prBaseBranches,
   cardSide,
   type EnvState,
   type PlanRow,
@@ -41,6 +42,7 @@ import {
   keysAfterRename,
 } from "./github-model";
 import {
+  fetchBranchPrs,
   fetchBranches,
   type BaseState,
   fetchBaseBranch,
@@ -215,20 +217,34 @@ export async function scanGitHub(): Promise<ScanResult> {
     );
   }
 
-  const { branches, skipped, truncated } = await fetchBranches(
-    token,
-    cfg.repos,
-  );
-
-  // Clones on this machine. A branch that was never pushed exists nowhere else,
-  // and one that is ahead of its upstream is work the server cannot see.
-  // Read after the server so the server's richer record wins on everything the
-  // two both know about.
-  const local = cfg.localPaths.length
-    ? await readLocalBranches(cfg.localPaths).catch(
+  /**
+   * Ba việc không cần kết quả của nhau, nên cùng khởi động một lúc.
+   *
+   * Đo trên lần quét thật: 22.0s tổng, 19.2s nằm trong request, tức mức song
+   * song 0.9x — mọi thứ nối đuôi nhau và máy ngồi chờ GitHub 87% thời gian.
+   * Danh sách nhánh tốn 6.6s, event feed 3.2s, mà event feed hỏi
+   * `/users/<login>/events` chứ không hỏi gì về nhánh; đọc clone thì không
+   * chạm GitHub chút nào.
+   *
+   * Khởi động sớm rồi `await` ở đúng chỗ dùng, không đảo thứ tự **gộp** dữ
+   * liệu: bản của server vẫn thắng bản dưới máy ở mọi thứ cả hai cùng biết,
+   * y như trước.
+   */
+  const branchesP = fetchBranches(token, cfg.repos);
+  const localP: Promise<LocalScan> = cfg.localPaths.length
+    ? readLocalBranches(cfg.localPaths).catch(
         () => ({ branches: [], bad: [] }) as LocalScan,
       )
-    : ({ branches: [], bad: [] } as LocalScan);
+    : Promise.resolve({ branches: [], bad: [] } as LocalScan);
+  // Best-effort: event feed hỏng thì mất mấy nhánh mới, không mất cả lần quét.
+  const pushedP = cfg.useEvents
+    ? fetchPushedBranches(token, logins).catch(() => new Set<string>())
+    : Promise.resolve(new Set<string>());
+
+  const [{ branches, skipped, truncated }, local] = await Promise.all([
+    branchesP,
+    localP,
+  ]);
 
   // The same scan as a lookup, for sides that never pass through `best` — see
   // the carried-through branch far below.
@@ -269,7 +285,9 @@ export async function scanGitHub(): Promise<ScanResult> {
     // clone was readable this time round.
     if (s.localOnly)
       return (
-        Boolean(s.localPath) && readPaths.has(s.localPath) && !localSeen.has(key)
+        Boolean(s.localPath) &&
+        readPaths.has(s.localPath) &&
+        !localSeen.has(key)
       );
     return readRepos.has(s.repo) && !liveBranches.has(key);
   };
@@ -311,8 +329,8 @@ export async function scanGitHub(): Promise<ScanResult> {
   };
 
   /** Xem {@link settleSides} — phép kiểm "mất nhánh" là của lần quét này. */
-  const settle = <T extends CardSide>(sides: T[]): T[] => settleSides(sides, sideGone);
-
+  const settle = <T extends CardSide>(sides: T[]): T[] =>
+    settleSides(sides, sideGone);
 
   const watched = new Set(cfg.repos);
   // An index, not a membership set: the loop below needs the branch itself, and
@@ -359,6 +377,53 @@ export async function scanGitHub(): Promise<ScanResult> {
   // `pickPr` can honour the pin instead of silently falling back to whatever
   // the branch happens to own.
   const allCards = listTaskNotes();
+
+  // Nhánh do chính người dùng tạo hoặc push — đã khởi động từ đầu hàm.
+  const pushed = await pushedP;
+
+  /**
+   * Pull request, hỏi riêng và chỉ cho nhánh cần.
+   *
+   * `fetchBranches` không còn kéo theo PR của từng ref: đo thẳng trên repo
+   * lớn, cùng 100 nhánh thì kèm PR mất 3.2–3.7s còn bỏ PR chỉ 0.98s — truy
+   * vấn lồng ấy là 70% thời gian liệt kê nhánh. Mà repo này có 149 nhánh
+   * trong khi người dùng có ba.
+   *
+   * Hai nhóm cần PR, và chỉ hai nhóm:
+   *
+   * - nhánh sắp lên card — tức nhánh một luật sở hữu nào đó nhận;
+   * - nhánh mà một card đang trỏ vào, kể cả của đồng nghiệp, vì vòng cập
+   *   nhật card phía dưới duyệt `branches` chứ không duyệt `mine`.
+   *
+   * Điền tại chỗ vào chính các `RemoteBranch` ấy, nên mọi chỗ đọc
+   * `branch.prs` / `branch.pr` phía dưới không phải đổi một dòng nào.
+   */
+  {
+    const want = new Set<string>();
+    for (const b of branches)
+      if (b.local?.onlyLocal || mineBy(b, cfg.identity, pushed))
+        want.add(`${b.repo}#${b.name}`);
+    for (const c of allCards)
+      for (const side of c.sides)
+        if (side.repo && side.branch.trim())
+          want.add(`${side.repo}#${side.branch.trim()}`);
+
+    const items = branches
+      .filter((b) => want.has(`${b.repo}#${b.name}`))
+      .map((b) => ({ repo: b.repo, branch: b.name }));
+
+    if (items.length) {
+      const got = await fetchBranchPrs(token, items).catch(
+        () => new Map<string, PullRequest[]>(),
+      );
+      for (const b of branches) {
+        const prs = got.get(`${b.repo}#${b.name}`);
+        if (!prs) continue;
+        b.prs = prs;
+        b.pr = pickPr(prs);
+      }
+    }
+  }
   /**
    * Requests the user pinned, per repository.
    *
@@ -431,12 +496,6 @@ export async function scanGitHub(): Promise<ScanResult> {
     }
   }
 
-  // Branches the user themselves created or pushed. Best-effort: the event feed
-  // going missing costs recent branches, not the whole scan.
-  const pushed = cfg.useEvents
-    ? await fetchPushedBranches(token, logins).catch(() => new Set<string>())
-    : new Set<string>();
-
   /**
    * Nhánh môi trường, lấy thẳng từ cấu hình cột.
    *
@@ -477,6 +536,50 @@ export async function scanGitHub(): Promise<ScanResult> {
     byRule[how] = (byRule[how] ?? 0) + 1;
     return true;
   });
+
+  /**
+   * Nhánh đích của một PR do chính người dùng mở cũng là việc của người dùng.
+   *
+   * Luật thứ tư, và là luật duy nhất bắt được ca thật này: nhánh
+   * `ctalk/feature/VT-2323_…` do người dùng tạo ra, nhưng
+   *
+   * - tác giả commit mới nhất là đồng nghiệp — nhánh chưa có commit riêng nào
+   *   nên "commit mới nhất" chính là commit mới nhất của `master`;
+   * - feed sự kiện chỉ với tới được 21 ngày vì trần 300 event của GitHub, và
+   *   lần tạo nhánh nằm ngoài cửa sổ đó;
+   * - so với `master` nó **+0 commit**, nên cả luật "tôi có commit trên nhánh"
+   *   cũng trượt.
+   *
+   * Thứ duy nhất còn nói đúng là: PR #1757 nhắm vào nó, và PR ấy nằm trên
+   * nhánh của người dùng. Dữ liệu đã có sẵn trong `baseRefName`, chỉ là chưa
+   * ai hỏi tới.
+   *
+   * Phạm vi hẹp có chủ ý — chỉ nhánh đích của PR **trên nhánh của mình**, chứ
+   * không phải mọi nhánh của đồng nghiệp. Và cổng môi trường vẫn phải áp:
+   * thiếu nó thì mọi PR nhắm vào `ctalk/develop` sẽ đẻ ra một card cho chính
+   * nhánh môi trường ấy.
+   */
+  {
+    const wanted = new Set(prBaseBranches(mine, envBranches));
+    const extra = branches.filter((b) => wanted.has(`${b.repo}#${b.name}`));
+    if (extra.length) {
+      // Nhánh này chưa được hỏi PR ở vòng trên — lúc đó chưa ai biết nó sẽ
+      // được nhận. Một request nữa, chỉ cho đúng mấy nhánh này.
+      const got = await fetchBranchPrs(
+        token,
+        extra.map((b) => ({ repo: b.repo, branch: b.name })),
+      ).catch(() => new Map<string, PullRequest[]>());
+      for (const b of extra) {
+        const prs = got.get(`${b.repo}#${b.name}`);
+        if (prs) {
+          b.prs = prs;
+          b.pr = pickPr(prs);
+        }
+        byRule.prbase = (byRule.prbase ?? 0) + 1;
+        mine.push(b);
+      }
+    }
+  }
 
   // Newest tip wins when several branches name the same ticket: a ticket
   // reopened on a fresh branch is the common case, and the stale branch is
@@ -746,7 +849,18 @@ export async function scanGitHub(): Promise<ScanResult> {
       ? [...envs, { branch: trunk }]
       : envs;
 
-  const envState = await fetchEnvState(token, measure, measured).catch(
+  /**
+   * Ba phép đo cuối khởi động cùng lúc.
+   *
+   * Vị trí so với môi trường, độ tụt so với nhánh gốc, và "nội dung đã vào
+   * bằng đường khác" đều chỉ cần `measure` / `best` / `keys` — có đủ từ trên
+   * này. Chúng không cần kết quả của nhau, mà trước đây xếp hàng chờ nhau:
+   * đo được 2.0s + 2.1s + 2.9s nối đuôi.
+   *
+   * Trong từng nhánh thì vẫn nối tiếp ở chỗ buộc phải thế — phần lấp chỗ
+   * trống bằng sha điểm rẽ cần `baseState` của vòng trên nó.
+   */
+  const envStateP = fetchEnvState(token, measure, measured).catch(
     () => ({}) as Record<string, EnvState>,
   );
 
@@ -762,64 +876,71 @@ export async function scanGitHub(): Promise<ScanResult> {
    */
   const baseState: Record<string, BaseState & { baseBranch: string }> = {};
   const baseByRepo = new Map<string, string>();
-  {
-    const byRepo = new Map<string, string[]>();
-    for (const t of measure)
-      byRepo.set(t.repo, [...(byRepo.get(t.repo) ?? []), t.branch]);
-    for (const [repo, list] of byRepo) {
-      const base = await fetchBaseBranch(token, repo).catch(() => "");
-      if (!base) continue;
-      baseByRepo.set(repo, base);
-      const got = await fetchBaseStates(token, repo, base, list).catch(
-        () => ({}) as Record<string, BaseState>,
+  const basesP = (async () => {
+    {
+      const byRepo = new Map<string, string[]>();
+      for (const t of measure)
+        byRepo.set(t.repo, [...(byRepo.get(t.repo) ?? []), t.branch]);
+      // Mỗi repo một luồng: hỏi nhánh gốc rồi đo theo nó là hai bước nối tiếp
+      // trong cùng một repo, nhưng hai repo không chờ nhau. `baseState` khoá
+      // theo `repo#branch` nên không có chỗ nào đụng nhau.
+      await Promise.all(
+        [...byRepo].map(async ([repo, list]) => {
+          const base = await fetchBaseBranch(token, repo).catch(() => "");
+          if (!base) return;
+          baseByRepo.set(repo, base);
+          const got = await fetchBaseStates(token, repo, base, list).catch(
+            () => ({}) as Record<string, BaseState>,
+          );
+          for (const [branch, v] of Object.entries(got))
+            baseState[`${repo}#${branch}`] = { ...v, baseBranch: base };
+        }),
       );
-      for (const [branch, v] of Object.entries(got))
-        baseState[`${repo}#${branch}`] = { ...v, baseBranch: base };
     }
-  }
 
-  /**
-   * Nhánh chưa push: hỏi cùng câu hỏi, nhưng hỏi theo **sha điểm rẽ nhánh**.
-   *
-   * Vòng trên hỏi `compare/master...<tên nhánh>`, và GitHub không có nhánh chưa
-   * push nên nó trả 404 — card im lặng về chuyện rebase đúng lúc câu hỏi đáng
-   * giá nhất. Điểm rẽ nhánh thì khác: nó là một commit đã nằm trên `master`,
-   * nên hỏi theo sha vẫn ra đúng `behind_by` và đúng ngày.
-   *
-   * Sha đọc từ clone — {@link mergeBaseSha}, chỉ đọc — còn con số vẫn là của
-   * GitHub. Nên clone fetch lần cuối lúc nào không ảnh hưởng tới kết quả, và
-   * app vẫn giữ lời hứa không làm mới repo của người dùng.
-   *
-   * Chỉ lấp chỗ trống: nhánh nào vòng trên đã trả lời được thì không hỏi lại.
-   */
-  {
-    const shaOf = new Map<string, string>();
-    const byRepo = new Map<string, Set<string>>();
-    for (const t of measure) {
-      const key = `${t.repo}#${t.branch}`;
-      if (baseState[key]) continue;
-      const base = baseByRepo.get(t.repo);
-      const lb = local.branches.find(
-        (b) => b.repo === t.repo && b.name === t.branch,
-      );
-      if (!base || !lb) continue;
-      const sha = await mergeBaseSha(lb.path, t.branch, base).catch(() => "");
-      if (!sha) continue;
-      shaOf.set(key, sha);
-      byRepo.set(t.repo, (byRepo.get(t.repo) ?? new Set()).add(sha));
-    }
-    for (const [repo, shas] of byRepo) {
-      const base = baseByRepo.get(repo)!;
-      const got = await fetchBaseStates(token, repo, base, [...shas]).catch(
-        () => ({}) as Record<string, BaseState>,
-      );
-      for (const [key, sha] of shaOf) {
-        if (!key.startsWith(`${repo}#`)) continue;
-        const v = got[sha];
-        if (v) baseState[key] = { ...v, baseBranch: base };
+    /**
+     * Nhánh chưa push: hỏi cùng câu hỏi, nhưng hỏi theo **sha điểm rẽ nhánh**.
+     *
+     * Vòng trên hỏi `compare/master...<tên nhánh>`, và GitHub không có nhánh chưa
+     * push nên nó trả 404 — card im lặng về chuyện rebase đúng lúc câu hỏi đáng
+     * giá nhất. Điểm rẽ nhánh thì khác: nó là một commit đã nằm trên `master`,
+     * nên hỏi theo sha vẫn ra đúng `behind_by` và đúng ngày.
+     *
+     * Sha đọc từ clone — {@link mergeBaseSha}, chỉ đọc — còn con số vẫn là của
+     * GitHub. Nên clone fetch lần cuối lúc nào không ảnh hưởng tới kết quả, và
+     * app vẫn giữ lời hứa không làm mới repo của người dùng.
+     *
+     * Chỉ lấp chỗ trống: nhánh nào vòng trên đã trả lời được thì không hỏi lại.
+     */
+    {
+      const shaOf = new Map<string, string>();
+      const byRepo = new Map<string, Set<string>>();
+      for (const t of measure) {
+        const key = `${t.repo}#${t.branch}`;
+        if (baseState[key]) continue;
+        const base = baseByRepo.get(t.repo);
+        const lb = local.branches.find(
+          (b) => b.repo === t.repo && b.name === t.branch,
+        );
+        if (!base || !lb) continue;
+        const sha = await mergeBaseSha(lb.path, t.branch, base).catch(() => "");
+        if (!sha) continue;
+        shaOf.set(key, sha);
+        byRepo.set(t.repo, (byRepo.get(t.repo) ?? new Set()).add(sha));
+      }
+      for (const [repo, shas] of byRepo) {
+        const base = baseByRepo.get(repo)!;
+        const got = await fetchBaseStates(token, repo, base, [...shas]).catch(
+          () => ({}) as Record<string, BaseState>,
+        );
+        for (const [key, sha] of shaOf) {
+          if (!key.startsWith(`${repo}#`)) continue;
+          const v = got[sha];
+          if (v) baseState[key] = { ...v, baseBranch: base };
+        }
       }
     }
-  }
+  })();
 
   // Content that reached an environment by another route.
   //
@@ -828,7 +949,7 @@ export async function scanGitHub(): Promise<ScanResult> {
   // the original branch looks permanently behind. The merged pull request's
   // own merge commit is the thing to ask about instead — it is either in the
   // environment or it is not, and no patches need reading to find out.
-  const landed = await landedByKey(
+  const landedP = landedByKey(
     token,
     keys,
     best,
@@ -841,6 +962,8 @@ export async function scanGitHub(): Promise<ScanResult> {
       { envs: Record<string, boolean>; via: string; at: number }
     > => ({}),
   );
+
+  const [envState, landed] = await Promise.all([envStateP, landedP, basesP]);
 
   /** `repo#key` → the branch that carried the work in, when it detoured. */
   const via = new Map<string, string>();
@@ -991,7 +1114,8 @@ export async function scanGitHub(): Promise<ScanResult> {
         currentStage: "",
         stage: stage || stageNames[0] || "",
         title:
-          summaries[issueKey]?.summary || titleFromBranch(branch.name, issueKey),
+          summaries[issueKey]?.summary ||
+          titleFromBranch(branch.name, issueKey),
         envState: head.envs,
         landedVia: head.side.landedVia,
         sides,
@@ -1022,9 +1146,7 @@ export async function scanGitHub(): Promise<ScanResult> {
     const renamed =
       !card.githubPinned &&
       card.sides.some((x) => x.repo && x.branch.trim()) &&
-      card.sides
-        .filter((x) => x.repo && x.branch.trim())
-        .every(sideVanished);
+      card.sides.filter((x) => x.repo && x.branch.trim()).every(sideVanished);
     /**
      * Ticket của card sau lượt này.
      *
@@ -1072,7 +1194,6 @@ export async function scanGitHub(): Promise<ScanResult> {
     };
   });
 
-
   /**
    * Card bị gỡ hẳn, không phải chỉ gạch tên.
    *
@@ -1092,7 +1213,9 @@ export async function scanGitHub(): Promise<ScanResult> {
   const repointed = new Set(
     rows.flatMap((r) => (r.noteId && r.action !== "match" ? [r.noteId] : [])),
   );
-  const dropped: GoneCard[] = dropCards(allCards, sideVanished, repointed).map(goneCard);
+  const dropped: GoneCard[] = dropCards(allCards, sideVanished, repointed).map(
+    goneCard,
+  );
   const droppedIds = new Set(dropped.map((c) => c.id));
 
   const gone: GoneCard[] = allCards
@@ -1130,7 +1253,9 @@ export async function scanGitHub(): Promise<ScanResult> {
   // `issueKey` alone stopped working the moment ticketless cards existed: they
   // all share the empty string, so one of them in `rows` would have excluded
   // every other one from this loop.
-  const claimed = new Set(rows.flatMap((r) => (r.issueKey ? [r.issueKey] : [])));
+  const claimed = new Set(
+    rows.flatMap((r) => (r.issueKey ? [r.issueKey] : [])),
+  );
   const claimedBranch = new Set(
     rows.map((r) => `${r.branch.repo}#${r.branch.name}`),
   );
@@ -1366,59 +1491,76 @@ async function landedByKey(
     ...new Set(keys.flatMap((k) => [...(best.get(k)?.keys() ?? [])])),
   ];
 
-  for (const repo of repos) {
-    const prs = await fetchMergedPrs(token, repo).catch(() => []);
-    if (!prs.length) continue;
+  /**
+   * Mỗi repo một luồng.
+   *
+   * Trong một repo thì hai bước phải nối tiếp — biết PR nào đã merge rồi mới
+   * hỏi được sha của nó đã nằm trong môi trường nào. Nhưng repo này không
+   * biết gì về repo kia, và `out` khoá theo `repo#key` nên không đụng nhau.
+   *
+   * Đo trên lần quét thật: riêng "PR đã merge" tốn 3.6s, 23% cả lần quét.
+   */
+  await Promise.all(
+    repos.map(async (repo) => {
+      const prs = await fetchMergedPrs(token, repo).catch(() => []);
+      if (!prs.length) return;
 
-    // Newest merge per key wins, so a later revert displaces an earlier merge.
-    const newest = new Map<string, (typeof prs)[number]>();
-    for (const pr of prs) {
-      const key = extractIssueKey(pr.headRefName, projectKeys);
-      if (!key) continue;
-      const prev = newest.get(key);
-      if (!prev || pr.mergedAt > prev.mergedAt) newest.set(key, pr);
-    }
-
-    // A pinned pull request outranks everything worked out here, revert guard
-    // included. The user looked at the repository and said "this is the merge
-    // that carried it" — this function only ever guessed at that, and it can
-    // guess wrong.
-    const inRepo = keys.filter((k) => best.get(k)?.has(repo));
-    const chosen = new Map<string, { sha: string; head: string; at: number }>();
-    for (const k of inRepo) {
-      const pinned = pinnedMerge.get(`${repo}#${k}`);
-      if (pinned) chosen.set(k, pinned);
-      else if (newest.has(k) && !isRevertBranch(newest.get(k)!.headRefName)) {
-        const pr = newest.get(k)!;
-        chosen.set(k, {
-          sha: pr.mergeCommit,
-          head: pr.headRefName,
-          at: Math.floor(new Date(pr.mergedAt).getTime() / 1000) || 0,
-        });
+      // Newest merge per key wins, so a later revert displaces an earlier merge.
+      const newest = new Map<string, (typeof prs)[number]>();
+      for (const pr of prs) {
+        const key = extractIssueKey(pr.headRefName, projectKeys);
+        if (!key) continue;
+        const prev = newest.get(key);
+        if (!prev || pr.mergedAt > prev.mergedAt) newest.set(key, pr);
       }
-    }
-    const usable = [...chosen.keys()];
-    if (!usable.length) continue;
 
-    const shas = [...new Set(usable.map((k) => chosen.get(k)!.sha))];
-    const contained = await fetchShaContainment(token, repo, shas, envs).catch(
-      () => ({}) as Record<string, Record<string, boolean>>,
-    );
+      // A pinned pull request outranks everything worked out here, revert guard
+      // included. The user looked at the repository and said "this is the merge
+      // that carried it" — this function only ever guessed at that, and it can
+      // guess wrong.
+      const inRepo = keys.filter((k) => best.get(k)?.has(repo));
+      const chosen = new Map<
+        string,
+        { sha: string; head: string; at: number }
+      >();
+      for (const k of inRepo) {
+        const pinned = pinnedMerge.get(`${repo}#${k}`);
+        if (pinned) chosen.set(k, pinned);
+        else if (newest.has(k) && !isRevertBranch(newest.get(k)!.headRefName)) {
+          const pr = newest.get(k)!;
+          chosen.set(k, {
+            sha: pr.mergeCommit,
+            head: pr.headRefName,
+            at: Math.floor(new Date(pr.mergedAt).getTime() / 1000) || 0,
+          });
+        }
+      }
+      const usable = [...chosen.keys()];
+      if (!usable.length) return;
 
-    for (const key of usable) {
-      const pick = chosen.get(key)!;
-      const per = contained[pick.sha];
-      // The head branch is only meaningful when it is not the card's own: a
-      // branch merged under its own name did not take a detour, and saying it
-      // did would invent a warning.
-      if (per)
-        out[`${repo}#${key}`] = {
-          envs: per,
-          via: pick.head === best.get(key)?.get(repo)?.name ? "" : pick.head,
-          at: pick.at,
-        };
-    }
-  }
+      const shas = [...new Set(usable.map((k) => chosen.get(k)!.sha))];
+      const contained = await fetchShaContainment(
+        token,
+        repo,
+        shas,
+        envs,
+      ).catch(() => ({}) as Record<string, Record<string, boolean>>);
+
+      for (const key of usable) {
+        const pick = chosen.get(key)!;
+        const per = contained[pick.sha];
+        // The head branch is only meaningful when it is not the card's own: a
+        // branch merged under its own name did not take a detour, and saying it
+        // did would invent a warning.
+        if (per)
+          out[`${repo}#${key}`] = {
+            envs: per,
+            via: pick.head === best.get(key)?.get(repo)?.name ? "" : pick.head,
+            at: pick.at,
+          };
+      }
+    }),
+  );
 
   return out;
 }
