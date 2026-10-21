@@ -17,6 +17,7 @@ import {
   groupPairs,
   groupProblem,
   newGroup,
+  retagGroup,
   renameGroup,
   setGroupBranch,
   setGroupExpects,
@@ -171,8 +172,19 @@ export function StagesManager({
     setOver(null);
   }
 
-  function add(tag: Exclude<GroupTag, "raw">) {
-    setGroups((l) => [...l, newGroup(tag)]);
+  /**
+   * Thêm một dòng và mở nó ra ngay.
+   *
+   * Một nút chứ không phải bốn: loại dòng là ô đầu tiên của phần chi tiết,
+   * nên chọn loại và đặt tên là cùng một thao tác ở cùng một chỗ. Bốn nút thì
+   * loại đã bị chốt trước khi người dùng thấy dòng, và đổi ý là phải xoá đi
+   * thêm lại.
+   *
+   * Loại mặc định là "loại nhánh" — một cột, không đòi nhánh, nên là dòng ít
+   * dở dang nhất trong lúc người dùng còn chưa chọn.
+   */
+  function add() {
+    setGroups((l) => [...l, newGroup("kind")]);
     setOpen(groups.length);
   }
 
@@ -201,8 +213,9 @@ export function StagesManager({
       <p className="mt-1 max-w-prose text-[12.5px] text-ink-3">
         <b>Một danh sách duy nhất, đúng thứ tự thật.</b> Kéo{" "}
         <span className="font-mono">⠿</span> để sắp xếp, bấm một dòng để sửa chi
-        tiết. App không tự sinh dòng nào — bạn thêm bằng các nút ở cuối. Một
-        dòng <b>môi trường</b> thành ba cột trên bảng; các dòng khác thành một.
+        tiết. App không tự sinh dòng nào — bạn thêm bằng nút ở cuối rồi chọn
+        loại ngay trong dòng. Một dòng <b>môi trường</b> thành ba cột trên
+        bảng; các dòng khác thành một.
       </p>
 
       {/* Thứ tự môi trường, nói thẳng ra. Nó vốn đã được suy từ danh sách này,
@@ -276,8 +289,11 @@ export function StagesManager({
                   {GROUP_LABEL[g.tag]}
                 </span>
                 <span className="min-w-0 flex-1 truncate font-mono text-[12.5px]">
+                  {/* Ngoặc chứ không phải gạch: vế sau đã mở đầu bằng một
+                      dấu gạch rồi, hai cái liền nhau thì không cái nào còn
+                      ngăn được gì. */}
                   {groupName(g) || (
-                    <span className="text-warn">— chưa đặt tên —</span>
+                    <span className="text-warn">(chưa đặt tên)</span>
                   )}{" "}
                   <span className={sum.warn ? "text-warn" : "text-ink-3"}>
                     — {sum.text}
@@ -316,19 +332,10 @@ export function StagesManager({
         })}
       </div>
 
-      <div className="mt-3 flex flex-wrap gap-1.5">
-        {(
-          [
-            ["kind", "+ loại nhánh"],
-            ["env", "+ môi trường"],
-            ["review", "+ review"],
-            ["end", "+ kết thúc"],
-          ] as const
-        ).map(([tag, label]) => (
-          <button key={tag} type="button" onClick={() => add(tag)} className={BTN}>
-            {label}
-          </button>
-        ))}
+      <div className="mt-3">
+        <button type="button" onClick={add} className={BTN}>
+          + Thêm dòng
+        </button>
       </div>
 
       <div className="mt-4 flex flex-wrap items-center gap-2 border-t border-line pt-3">
@@ -386,6 +393,24 @@ function Detail({
 }) {
   const name = (
     <>
+      {/* Ô đầu tiên, trước cả tên: nó quyết định những ô còn lại là gì. */}
+      <span className={LBL}>loại dòng</span>
+      <select
+        value={g.tag}
+        onChange={(e) =>
+          onChange(retagGroup(g, e.target.value as Exclude<GroupTag, "raw">))
+        }
+        className={`w-[130px] ${SEL}`}
+      >
+        {(["kind", "env", "review", "end"] as const).map((t) => (
+          <option key={t} value={t}>
+            {GROUP_LABEL[t]}
+          </option>
+        ))}
+        {/* Chỉ hiện khi dòng đang là cột lẻ, để nó không mất tăm khỏi ô này
+            trước khi người dùng kịp chọn loại khác. */}
+        {g.tag === "raw" && <option value="raw">{GROUP_LABEL.raw}</option>}
+      </select>
       <span className={LBL}>tên cột</span>
       <input
         value={groupName(g)}

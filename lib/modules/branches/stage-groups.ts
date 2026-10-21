@@ -184,3 +184,26 @@ export function groupProblem(g: StageGroup): string {
     return "chưa chọn nhánh";
   return "";
 }
+
+/**
+ * Đổi loại một dòng, giữ lại những gì còn nghĩa.
+ *
+ * Tên luôn theo, vì nó là thứ người dùng vừa gõ. Nhánh chỉ theo khi cả hai
+ * loại đều dùng tới nhánh — môi trường và kết thúc; mang nhánh sang một dòng
+ * loại nhánh thì nó thành cấu hình chết mà vẫn trông như còn tác dụng.
+ *
+ * Mọi thứ khác dựng lại từ đầu thay vì giữ: một dòng môi trường đổi thành
+ * review mà vẫn còn `reach: "built"` trên cột thì nó không còn là dòng review
+ * nữa, và lần mở sau nó hiện ra thành cột lẻ.
+ */
+export function retagGroup(
+  g: StageGroup,
+  tag: Exclude<GroupTag, "raw">,
+): StageGroup {
+  if (g.tag === tag) return g;
+  const out = renameGroup(newGroup(tag), groupName(g));
+  const branch = groupBranch(g);
+  return branch && (tag === "env" || tag === "end")
+    ? setGroupBranch(out, branch)
+    : out;
+}
