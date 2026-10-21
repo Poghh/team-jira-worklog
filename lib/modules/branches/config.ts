@@ -13,7 +13,12 @@ import {
   type GitHubConfigView,
   type Identity,
 } from "./github-model";
-import { DEFAULT_STAGES, type StageConfig } from "./model";
+import {
+  DEFAULT_STAGES,
+  cleanStages,
+  parseStages,
+  type StageConfig,
+} from "./model";
 
 /**
  * The board's columns, stored in the shared settings table under
@@ -63,46 +68,6 @@ function setRaw(key: string, value: string) {
       set: { value, updatedAt: stamp },
     })
     .run();
-}
-
-const EXPECTS = new Set(["", "prog", "test", "done"]);
-const PHASES = new Set(["", "nopr", "open"]);
-const REACHES = new Set(["queued", "merged", "built", "gone"]);
-
-function parseStages(raw: string): StageConfig[] {
-  try {
-    const arr = JSON.parse(raw);
-    if (!Array.isArray(arr)) return [];
-    return arr
-      .filter((s) => s && typeof s === "object")
-      .map((s) => ({
-        name: String(s.name ?? "").trim(),
-        intoKind: String(s.intoKind ?? "").trim(),
-        // An unknown value means "no expectation" rather than a crash: this is
-        // hand-editable JSON in a settings row.
-        expects: (EXPECTS.has(String(s.expects))
-          ? String(s.expects)
-          : "") as StageConfig["expects"],
-        branch: String(s.branch ?? "").trim(),
-        phase: (PHASES.has(String(s.phase))
-          ? String(s.phase)
-          : "") as StageConfig["phase"],
-        // `merged: true` is how the previous shape spelled it; read it so a
-        // pipeline saved before the build step parses rather than silently
-        // collapsing every environment to "queued".
-        reach: (REACHES.has(String(s.reach))
-          ? String(s.reach)
-          : s.merged
-            ? "merged"
-            : "queued") as StageConfig["reach"],
-        // Thiếu hẳn là bình thường: mọi cấu hình lưu trước khi có cột theo loại
-        // đều không có trường này, và '' nghĩa là không kén — đúng hành vi cũ.
-        kind: String(s.kind ?? "").trim(),
-      }))
-      .filter((s) => s.name);
-  } catch {
-    return [];
-  }
 }
 
 /**
@@ -199,7 +164,7 @@ function addBuildColumns(stages: StageConfig[]): StageConfig[] {
       phase: "",
       reach: "built",
       kind: "",
-      intoKind: "",
+      pairs: [],
     });
   }
   return out;
@@ -370,39 +335,7 @@ export function setGitHubLogins(logins: string[]) {
 }
 
 export function setStages(list: StageConfig[]) {
-  const clean = list
-    .map((s) => ({
-      name: s.name.trim(),
-      expects: (EXPECTS.has(s.expects)
-        ? s.expects
-        : "") as StageConfig["expects"],
-      branch: s.branch.trim(),
-      // A step with a branch is decided by containment, and the terminal step
-      // by the branch being gone — a PR phase on either would be dead
-      // configuration that still looks meaningful on screen.
-      phase: (s.branch.trim() || s.reach === "gone"
-        ? ""
-        : PHASES.has(s.phase)
-          ? s.phase
-          : "") as StageConfig["phase"],
-      // Only a step with a branch can be merged into or built from. The
-      // terminal step is the exception: it has no branch precisely because
-      // what it records is the branch being gone.
-      reach: (s.branch.trim()
-        ? s.reach
-        : s.reach === "gone"
-          ? "gone"
-          : "queued") as StageConfig["reach"],
-      // Loại nhánh chỉ có nghĩa ở cột "chưa mở PR" — đó là chỗ một nhánh bắt
-      // đầu. Trên cột môi trường hay cột PR-đang-mở thì nó là cấu hình chết mà
-      // vẫn trông như còn tác dụng, nên xoá thẳng thay vì để lại.
-      kind:
-        !s.branch.trim() && s.phase === "nopr" && s.reach !== "gone"
-          ? s.kind.trim()
-          : "",
-    }))
-    .filter((s) => s.name);
-  setRaw(K.stages, JSON.stringify(clean));
+  setRaw(K.stages, JSON.stringify(cleanStages(list)));
 }
 
 /* ------------------------------- GitHub ---------------------------------- */
