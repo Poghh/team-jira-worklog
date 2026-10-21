@@ -54,6 +54,7 @@ import {
   setGroupExpects,
   newGroup,
   groupProblem,
+  retagGroup,
 } from '@/lib/modules/branches/stage-groups'
 import {
   buildCarries,
@@ -284,6 +285,26 @@ eq(S.slice(0, 5).map((x) => x.name), ['resolve', 'task', 'bugfix', 'feature', 'r
   /* Và nếu lỡ lưu được thật thì đúng là hỏng như trên — nên mới phải chặn. */
   eq(toGroups(cleanStages(fromGroups([renameGroup(newGroup('env'), 'qa')]))).map((x) => x.tag),
      ['kind', 'kind', 'kind'], 'môi trường thiếu nhánh mà lưu thì vỡ thành ba dòng rác')
+
+  /* Đổi loại ngay trong dòng: giữ tên, giữ nhánh khi còn nghĩa, dựng lại
+     phần còn lại — sót một trường cũ là dòng thành cột lẻ ở lần mở sau. */
+  eq(retagGroup(dev, 'end').cols.map((s) => [s.name, s.branch, s.reach]),
+     [['develop', 'ctalk/develop', 'gone']], 'môi trường → kết thúc: giữ tên và nhánh, còn một cột')
+  eq(retagGroup(dev, 'review').cols.map((s) => [s.name, s.branch, s.phase, s.reach]),
+     [['develop', '', 'open', 'queued']], 'môi trường → review: bỏ nhánh, không sót reach cũ')
+  eq(retagGroup(G[1], 'env').cols.map((s) => s.name), ['task', 'đã merge task', 'đã build task'],
+     'loại nhánh → môi trường: nở ra ba cột đúng khuôn')
+  eq(retagGroup(G[1], 'kind'), G[1], 'đổi về chính loại đang có thì không đụng gì')
+  /* Đổi loại rồi lưu rồi đọc lại phải ra đúng loại ấy — với hai loại cần
+     nhánh thì chỉ đúng khi đã chọn nhánh, mà `groupProblem` vốn đã chặn lưu
+     khi chưa chọn. */
+  for (const tag of ['kind', 'review', 'env', 'end'] as const) {
+    let g = retagGroup(G[1], tag)
+    if (tag === 'env' || tag === 'end') g = setGroupBranch(g, 'qa')
+    eq(groupProblem(g), '', `đổi sang ${tag} rồi khai đủ thì lưu được`)
+    eq(toGroups(cleanStages(fromGroups([g])))[0].tag, tag,
+       `đổi sang ${tag}, lưu rồi đọc lại vẫn đúng loại ấy`)
+  }
 }
 
 /* ── đọc/ghi ô JSON của bảng cột ────────────────────────────────────────── */
