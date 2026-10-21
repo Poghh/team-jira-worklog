@@ -26,6 +26,7 @@ import {
   repoLabel,
 } from "@/lib/modules/branches/github-model";
 import {
+  nextEnvToRequest,
   type NoteItem,
   type StageConfig,
   type TaskNoteRow,
@@ -230,6 +231,7 @@ function Ladder({
   builds = true,
   owners,
   onGoTo,
+  suggest = null,
 }: {
   rows: LadderRow[];
   repo: string;
@@ -240,6 +242,13 @@ function Ladder({
   prs?: boolean;
   /** False on the per-repository passes, where builds would be duplicated. */
   builds?: boolean;
+  /**
+   * Môi trường kế tiếp đáng mở PR vào — xem {@link nextEnvToRequest}.
+   *
+   * Chỉ một, và chỉ khi hàng ấy còn trống: hai lời mời cùng lúc thì không lời
+   * nào còn là lời mời.
+   */
+  suggest?: { base: string; head: string; url: string; why: string } | null;
 }) {
   return (
     <>
@@ -306,6 +315,28 @@ function Ladder({
                     }
                   >
                     {b.label}
+                  </a>
+                ) : suggest && suggest.base === r.branch ? (
+                  /* Ô trống của **đúng** môi trường kế tiếp: đứng yên trông y
+                     như mọi ô trống khác, rê chuột vào mới hiện ra là bấm
+                     được. Không hét lên ở trạng thái nghỉ — phần lớn ô trống
+                     trên bảng là chuyện bình thường, và một ô tự sáng lên sẽ
+                     đọc thành cảnh báo chứ không phải lời mời.
+
+                     Là link sang GitHub chứ không phải nút gọi API: app này
+                     chưa bao giờ ghi vào repo của ai, và mở PR là một cú ghi. */
+                  <a
+                    href={suggest.url}
+                    target="_blank"
+                    rel="noreferrer"
+                    onClick={(e) => e.stopPropagation()}
+                    title={`${suggest.why}\n\nMở trang tạo PR trên GitHub: ${r.branch} ← ${suggest.head}\nApp không tự tạo PR — bạn vẫn xem lại rồi bấm Create.`}
+                    className="group/pr flex min-w-0 flex-auto justify-center truncate rounded-[3px] border border-dashed border-line-strong px-1 py-px font-mono text-[9.5px] text-ink-3 hover:border-solid hover:border-accent hover:bg-accent-soft hover:text-accent-ink"
+                  >
+                    <span className="group-hover/pr:hidden">chưa tạo PR</span>
+                    <span className="hidden group-hover/pr:inline">
+                      + tạo PR ↗
+                    </span>
                   </a>
                 ) : (
                   <span
@@ -1395,6 +1426,36 @@ function NoteCard({
    * moves that one and the card keeps warning, or worse, stops warning while
    * the other is still behind.
    */
+  /**
+   * Lời mời mở PR lên môi trường kế tiếp.
+   *
+   * Tính một lần cho cả card: luật đọc ticket kém tiến nhất, nên nó là chuyện
+   * của card chứ không của từng nửa. Nhưng chỉ mời khi hàng ấy **còn trống** —
+   * đã có PR rồi thì lời mời là nhiễu, và khi code đã tới nơi thì càng vô
+   * nghĩa.
+   *
+   * Link sang GitHub, không phải nút gọi API: app này chưa bao giờ ghi vào
+   * repo của ai, và mở PR là một cú ghi. Người dùng vẫn xem lại rồi tự bấm
+   * Create.
+   */
+  const nextEnv = nextEnvToRequest(
+    card.statuses.map((st) => st.name),
+    envSteps(stages),
+  );
+  const suggestFor = (
+    side: { repo: string; branch: string; prs: CardPr[] } | undefined,
+  ) => {
+    if (!nextEnv?.branch || !side?.repo || !side.branch.trim()) return null;
+    if (side.prs.some((p) => p.base === nextEnv.branch)) return null;
+    const head = side.branch.trim();
+    return {
+      base: nextEnv.branch,
+      head,
+      url: `https://github.com/${side.repo}/compare/${nextEnv.branch}...${head}?expand=1`,
+      why: `Ticket đã verified ở môi trường trước, ${nextEnv.name} là bậc kế tiếp.`,
+    };
+  };
+
   const drifts = card.statuses.flatMap((st) =>
     st.name
       ? (stageDrift(
@@ -1667,6 +1728,7 @@ function NoteCard({
             rows={cardLadder(sides[0]?.prs ?? [], card.builds, stages)}
             repo={card.repo}
             builds={buildsOn}
+            suggest={suggestFor(sides[0])}
             owners={owners}
             onGoTo={onGoTo}
           />
@@ -2788,6 +2850,14 @@ function StagesManager({ stages }: { stages: StageConfig[] }) {
         sự thật trong repo, còn PR chỉ là ý định.
       </p>
 
+      {/* Thứ tự môi trường, nói thẳng ra.
+          Nó vốn đã được suy từ danh sách dưới đây — các cột `đã merge` theo
+          đúng thứ tự bạn xếp — nhưng không màn hình nào nói điều đó, nên
+          người dùng không có cách nào biết app đang hiểu đường ống thế nào
+          cho tới lúc nhìn một card và thấy nó sai. Và đây cũng chính là thứ
+          tự quyết định lời mời "tạo PR lên bậc kế tiếp". */}
+      <EnvPipeline list={list} />
+
       <div className="mt-3 flex flex-col gap-2">
         <div className="flex items-center gap-2 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-3">
           <span className="w-[52px] shrink-0" />
@@ -2974,5 +3044,50 @@ function StagesManager({ stages }: { stages: StageConfig[] }) {
         </span>
       </div>
     </section>
+  );
+}
+
+/**
+ * Đường ống môi trường mà cấu hình cột đang nói ra.
+ *
+ * Đọc bằng đúng `envSteps` của phần còn lại, không dựng lại luật ở đây — nếu
+ * hai chỗ hiểu khác nhau thì màn hình này thành lời trấn an sai.
+ */
+function EnvPipeline({ list }: { list: StageConfig[] }) {
+  const envs = envSteps(list);
+
+  return (
+    <div className="mt-3 rounded-md border border-line bg-ground px-3 py-2">
+      <div className="font-mono text-[9.5px] uppercase tracking-[0.08em] text-ink-3">
+        Thứ tự môi trường app đang hiểu
+      </div>
+      {envs.length ? (
+        <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
+          {envs.map((e, i) => (
+            <span key={e.branch} className="flex items-center gap-1.5">
+              {i > 0 && <span className="font-mono text-[11px] text-ink-3">→</span>}
+              <span
+                title={`Nhánh: ${e.branch}`}
+                className="rounded-[3px] border border-line-strong bg-surface px-1.5 py-px font-mono text-[11px] text-ink-2"
+              >
+                {e.name}
+                <span className="ml-1 text-ink-3">{e.branch}</span>
+              </span>
+            </span>
+          ))}
+        </div>
+      ) : (
+        <p className="mt-1 text-[12px] text-warn">
+          Chưa có môi trường nào. Một môi trường là một cột có điền{" "}
+          <b>nhánh</b> và điều kiện <b>đã merge</b> — thêm cột như vậy thì nó
+          hiện ở đây.
+        </p>
+      )}
+      <p className="mt-1.5 text-[11.5px] leading-relaxed text-ink-3">
+        Suy từ các cột <b>đã merge</b> bên dưới, theo đúng thứ tự bạn xếp. Đổi
+        chỗ cột là đổi thứ tự đường ống — và đó cũng là thứ tự quyết định lời
+        mời “tạo PR lên bậc kế tiếp” khi ticket đã verified.
+      </p>
+    </div>
   );
 }
