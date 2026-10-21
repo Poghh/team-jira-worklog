@@ -108,6 +108,7 @@ export function BranchBoard({
   jiraError,
   offSite,
   ghView,
+  statusNames = [],
 }: {
   initial: TaskNoteRow[];
   stages: StageConfig[];
@@ -120,6 +121,8 @@ export function BranchBoard({
   /** Ticket key → the other Jira host its pinned link points at. */
   offSite: Record<string, string>;
   ghView: GitHubConfigView;
+  /** Tên trạng thái thật của project — rỗng khi Jira không trả lời được. */
+  statusNames?: string[];
 }) {
   const [tab, setTab] = useState<"board" | "config" | "github">(
     stages.length ? "board" : "config",
@@ -171,7 +174,9 @@ export function BranchBoard({
           buildsOn={ghView.buildEnabled}
         />
       )}
-      {tab === "config" && <StagesManager stages={stages} />}
+      {tab === "config" && (
+        <StagesManager stages={stages} statusNames={statusNames} />
+      )}
       {tab === "github" && (
         <GitHubPanel view={ghView} stages={stages} baseUrl={baseUrl} />
       )}
@@ -2793,32 +2798,60 @@ function NoteModal({
 // ── stage config ─────────────────────────────────────────────────────────────
 
 /**
- * Nhãn của ô cảnh báo, gọi tên **đúng môi trường của dòng ấy**.
+ * Nhãn của ô cảnh báo, gọi **đúng tên trạng thái Jira** của môi trường dòng ấy.
  *
- * "phải chờ test" nói thiếu một nửa: `stageDrift` không hỏi "ticket đã chờ
- * test chưa" mà hỏi "đã chờ test **trên môi trường của cột này** chưa" —
- * `VERIFIED ON DEVELOP` vẫn là lệch ở một cột staging. Nhãn chung chung khiến
- * người dùng tưởng mình đang chọn một trạng thái, trong khi đang chọn một cặp
- * trạng thái-và-môi-trường.
+ * Trước đây ô này nói "phải chờ test" — diễn đạt lại thay vì gọi tên, và thiếu
+ * một nửa: `stageDrift` không hỏi "ticket đã chờ test chưa" mà hỏi "đã chờ
+ * test **trên môi trường của cột này** chưa", nên `VERIFIED ON DEVELOP` vẫn là
+ * lệch ở một cột staging.
  *
- * Cột không gắn môi trường thì `test` không đo được gì — `stageDrift` tụt
- * ngưỡng về "đang làm" — nên nhãn nói thẳng là nó cần một nhánh.
+ * Tên lấy từ Jira chứ không ghép tay: hai cách viết rất gần nhau cùng tồn tại
+ * ngoài đời — `READY TO TEST ON X` và `READY FOR TEST ON X` — và project này
+ * dùng cách thứ nhất. Đoán sai một chữ thì nhãn nói dối về chính thứ người
+ * dùng sắp chọn.
+ *
+ * "trở đi" cũng không phải cho đẹp: ngưỡng là *ít nhất*, nên một ticket đã
+ * `VERIFIED ON DEVELOP` vẫn thoả ô `READY TO TEST ON DEVELOP`.
  */
 function expectLabels(
   env: string,
+  statusNames: string[],
 ): Array<{ value: StageConfig["expects"]; label: string }> {
+  const up = env.trim().toUpperCase();
+  const find = (re: RegExp) =>
+    statusNames.find((n) => re.test(n.toUpperCase()) && n.toUpperCase().includes(up));
+
+  const ready = up ? find(/^READY\b.*\bTEST\b/) : "";
+  const verified = up ? find(/^VERIFIED\b/) : "";
+  const done = statusNames.find((n) => n.trim().toUpperCase() === "DONE");
+
   return [
     { value: "", label: "không kiểm tra" },
-    { value: "prog", label: "phải đang làm" },
+    { value: "prog", label: "đã rời To Do" },
     {
       value: "test",
-      label: env ? `phải chờ test trên ${env}` : "phải chờ test — cần điền nhánh",
+      label: ready
+        ? `${ready} trở đi`
+        : up
+          ? `chờ test trên ${env} — Jira chưa có trạng thái này`
+          : "chờ test — cần điền nhánh",
     },
-    { value: "done", label: "phải xong" },
+    {
+      value: "done",
+      // Cột gắn môi trường thì `VERIFIED` trên chính môi trường ấy đã thoả;
+      // cột cuối không gắn môi trường nào nên nó đòi đúng `Done`.
+      label: verified ? `${verified} trở đi` : done || "Done",
+    },
   ];
 }
 
-function StagesManager({ stages }: { stages: StageConfig[] }) {
+function StagesManager({
+  stages,
+  statusNames,
+}: {
+  stages: StageConfig[];
+  statusNames: string[];
+}) {
   const [list, setList] = useState<StageConfig[]>(
     stages.length
       ? stages
@@ -2887,7 +2920,7 @@ function StagesManager({ stages }: { stages: StageConfig[] }) {
           <span className="w-[212px] shrink-0">Card vào cột này khi</span>
           {/* Không cùng loại với ba ô bên trái, nên không được đọc như nhau:
               ba ô kia quyết định card vào cột nào, ô này chỉ bật cảnh báo. */}
-          <span className="w-[190px] shrink-0 text-ink-3/70">⚠ Cảnh báo Jira</span>
+          <span className="w-[232px] shrink-0 text-ink-3/70">⚠ Yêu cầu ticket đang ở trạng thái</span>
           <span className="w-7 shrink-0" />
         </div>
 
@@ -3004,10 +3037,11 @@ function StagesManager({ stages }: { stages: StageConfig[] }) {
                 patch(i, { expects: e.target.value as StageConfig["expects"] })
               }
               title={"Chỉ bật cảnh báo, không quyết định card vào cột nào.\nTới cột này mà Jira chưa tới trạng thái đã chọn thì card hiện cảnh báo lệch.\n\n\"Chờ test\" được tính theo đúng môi trường của cột này: một ticket mới verified ở môi trường trước đó vẫn là lệch."}
-              className="w-[190px] shrink-0 rounded-md border border-line bg-ground px-2 py-1 text-[12px]"
+              className="w-[232px] shrink-0 rounded-md border border-line bg-ground px-2 py-1 text-[12px]"
             >
               {expectLabels(
                 envSteps(list).find((e) => e.branch === s.branch)?.name ?? "",
+                statusNames,
               ).map((o) => (
                 <option key={o.value} value={o.value}>
                   {o.label}

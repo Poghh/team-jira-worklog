@@ -12,6 +12,7 @@ import {
   listTaskNotes,
 } from "@/lib/modules/branches/store";
 
+import { getProjectStatusNames } from "@/lib/jira/issues";
 import { BranchBoard } from "./board";
 
 export default async function BranchesPage() {
@@ -116,6 +117,14 @@ export default async function BranchesPage() {
   // know where the token comes from, never what it is.
   const ghView = toConfigView(gh);
 
+  /**
+   * Tên trạng thái thật của project, cho màn hình cấu hình gọi đúng tên.
+   *
+   * Best-effort: Jira hỏng thì ô chọn lùi về cách diễn đạt chung, chứ không
+   * làm hỏng cả trang — cấu hình cột vẫn phải sửa được khi Jira đang chết.
+   */
+  const statusNames = await getProjectStatusNames().catch(() => [] as string[]);
+
   return (
     <ModuleGate id="branches">
       {/* Five pipeline columns do not fit in 1340px; see `.wide-page`. */}
@@ -129,6 +138,7 @@ export default async function BranchesPage() {
           jiraError={jiraError}
           offSite={offSite}
           ghView={ghView}
+          statusNames={statusNames}
         />
       </div>
     </ModuleGate>
