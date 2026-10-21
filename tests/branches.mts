@@ -81,6 +81,7 @@ import {
   serializeCardPrs,
   prStateTag,
   shortRepo,
+  advanceStage,
   stageFor,
 } from '@/lib/modules/branches/github-model'
 
@@ -129,10 +130,29 @@ eq(stageRule({ name: 'x', expects: '', branch: 'staging', phase: 'open', reach: 
 // rồi `release`/`hotfix`/`chore` và 6 nhánh không có `/` nào.
 eq(ruleOf('feature'), 'nhánh feature chưa mở PR — hoặc PR còn draft, hoặc đã đóng',
    'cột kén loại nói ra loại nó kén')
-// Thứ tự cột là thứ tự tiến triển, nên nó là một khẳng định chứ không phải
-// trang trí: `feature` đứng sau `review` là lựa chọn của người dùng.
-eq(S.slice(0, 5).map((x) => x.name), ['resolve', 'task', 'bugfix', 'review', 'feature'],
-   'resolve đứng đầu, rồi bốn cột người dùng đặt')
+// Thứ tự cột là thứ tự **tiến triển**, nên nó là một khẳng định chứ không phải
+// trang trí — và `review` phải đứng sau cả bốn cột theo loại nhánh.
+//
+// Bản cũ xếp `… bugfix, review, feature`, và hậu quả đo được: một nhánh
+// feature mở PR tính ra đích `review` mà `advanceStage` coi là lùi nên chặn
+// lại — card đứng yên ở `feature` mãi mãi. `bugfix` và `task` thì vào được,
+// nên lỗi chỉ rơi vào một loại nhánh và không ai thấy.
+eq(S.slice(0, 5).map((x) => x.name), ['resolve', 'task', 'bugfix', 'feature', 'review'],
+   'resolve đứng đầu, các cột theo loại nhánh, rồi review sau cùng')
+{
+  const names = S.map((x) => x.name)
+  const openPr = { number: 1, url: '', state: 'OPEN', isDraft: false, baseRefName: 'ctalk/feature/khác' }
+  for (const [branch, from] of [
+    ['ctalk/bugfix/VT-1', 'bugfix'],
+    ['ctalk/feature/VT-2', 'feature'],
+    ['ctalk/task/VT-3', 'task'],
+  ] as const) {
+    const target = stageFor({}, openPr, S, [openPr], [], branch)
+    eq(target, 'review', `${branch} mở PR thì đích là review`)
+    eq(advanceStage(from, target, names, S), 'review',
+       `và card ở "${from}" đi tới được — không bị luật chỉ-tiến chặn`)
+  }
+}
 eq(S.filter((x) => x.kind).map((x) => x.kind), ['resolve', 'task', 'bugfix', 'feature'],
    'bốn cột kén loại, resolve trước')
 // Cột resolve không kén PR — nhánh ở lại đó suốt đời.
