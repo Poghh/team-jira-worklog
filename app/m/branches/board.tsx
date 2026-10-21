@@ -2866,6 +2866,7 @@ function StagesManager({
             phase: "nopr",
             reach: "queued",
             kind: "",
+            intoKind: "",
           },
         ],
   );
@@ -2921,6 +2922,7 @@ function StagesManager({
           {/* Ô này chưa bao giờ có tiêu đề, nên nó đọc như một cái hộp không rõ
               hỏi gì — trong khi nó mới là ô quyết định chính. */}
           <span className="w-[212px] shrink-0">Card vào cột này khi</span>
+          <span className="w-[0px] shrink-0" />
           {/* Không cùng loại với ba ô bên trái, nên không được đọc như nhau:
               ba ô kia quyết định card vào cột nào, ô này chỉ bật cảnh báo. */}
           <span className="w-[232px] shrink-0 text-ink-3/70">⚠ Yêu cầu ticket ít nhất ở trạng thái</span>
@@ -3034,6 +3036,47 @@ function StagesManager({
               />
             )}
 
+            {/*
+             * Cột "PR đang mở" là một **cặp**: nhánh loại X gửi PR vào nhánh
+             * loại Y. Hai ô cạnh nhau, đọc liền thành câu.
+             *
+             * Vế đích để trống thì cột **không nhận nhánh nào** — nói thẳng
+             * bằng placeholder và viền cảnh báo, vì một cột im lặng không nhận
+             * gì sẽ đọc thành "chưa có card nào" chứ không phải "chưa khai".
+             */}
+            {!s.branch.trim() && s.reach !== "gone" && s.phase === "open" && (
+              <>
+                <input
+                  value={s.kind}
+                  onChange={(e) => patch(i, { kind: e.target.value })}
+                  placeholder="— mọi loại —"
+                  title={
+                    "Vế nguồn: nhánh loại nào gửi PR.\n" +
+                    "Để trống thì mọi loại nhánh đều tính."
+                  }
+                  className="w-[104px] shrink-0 rounded-md border border-line bg-ground px-2 py-1 font-mono text-[12px]"
+                />
+                <span className="shrink-0 text-[11px] text-ink-3">gửi PR vào</span>
+                <input
+                  value={s.intoKind}
+                  onChange={(e) => patch(i, { intoKind: e.target.value })}
+                  placeholder="— chưa khai —"
+                  title={
+                    "Vế đích: PR nhắm vào nhánh loại nào.\n" +
+                    "Ví dụ `feature` — nhánh bugfix gửi PR vào nhánh tính năng.\n\n" +
+                    "Để trống thì cột này KHÔNG nhận nhánh nào: luật là một cặp, " +
+                    "thiếu một vế thì nó im thay vì đoán."
+                  }
+                  className={
+                    "w-[118px] shrink-0 rounded-md border bg-ground px-2 py-1 font-mono text-[12px] " +
+                    (s.intoKind.trim()
+                      ? "border-line"
+                      : "border-warn bg-warn-soft text-warn placeholder:text-warn/70")
+                  }
+                />
+              </>
+            )}
+
             <select
               value={s.expects}
               onChange={(e) =>
@@ -3081,6 +3124,7 @@ function StagesManager({
                 phase: "",
                 reach: "queued",
                 kind: "",
+                intoKind: "",
               },
             ])
           }
