@@ -2810,8 +2810,11 @@ function NoteModal({
  * dùng cách thứ nhất. Đoán sai một chữ thì nhãn nói dối về chính thứ người
  * dùng sắp chọn.
  *
- * "trở đi" cũng không phải cho đẹp: ngưỡng là *ít nhất*, nên một ticket đã
- * `VERIFIED ON DEVELOP` vẫn thoả ô `READY TO TEST ON DEVELOP`.
+ * Ngưỡng là *ít nhất*, không phải so bằng: `stageDrift` so `have >= need`, nên
+ * ticket đã `VERIFIED ON DEVELOP` vẫn thoả ô `READY TO TEST ON DEVELOP`. Chữ
+ * "ít nhất" ấy nằm ở **tiêu đề cột**, nói một lần, để từng lựa chọn giữ đúng
+ * tên Jira và không có chữ nào của app lẫn vào. Nhét nó vào từng dòng thì nhãn
+ * vừa dài vừa lặp; bỏ hẳn thì nhãn hứa một sự so bằng mà luật không làm.
  */
 function expectLabels(
   env: string,
@@ -2825,22 +2828,22 @@ function expectLabels(
   const verified = up ? find(/^VERIFIED\b/) : "";
   const done = statusNames.find((n) => n.trim().toUpperCase() === "DONE");
 
+  const prog = statusNames.find((n) => n.trim().toUpperCase() === "IN PROGRESS");
+
+  // Từng lựa chọn là **tên Jira nguyên văn**, không kèm chữ nào của mình.
+  // Nghĩa "ít nhất" nằm ở tiêu đề cột, nói một lần — xem ghi chú trên hàm.
   return [
     { value: "", label: "không kiểm tra" },
-    { value: "prog", label: "đã rời To Do" },
+    { value: "prog", label: prog || "In Progress" },
     {
       value: "test",
-      label: ready
-        ? `${ready} trở đi`
-        : up
-          ? `chờ test trên ${env} — Jira chưa có trạng thái này`
-          : "chờ test — cần điền nhánh",
+      label: ready || (up ? `(Jira chưa có READY TO TEST ON ${up})` : "(cần điền nhánh)"),
     },
     {
       value: "done",
       // Cột gắn môi trường thì `VERIFIED` trên chính môi trường ấy đã thoả;
       // cột cuối không gắn môi trường nào nên nó đòi đúng `Done`.
-      label: verified ? `${verified} trở đi` : done || "Done",
+      label: verified || done || "Done",
     },
   ];
 }
@@ -2920,7 +2923,7 @@ function StagesManager({
           <span className="w-[212px] shrink-0">Card vào cột này khi</span>
           {/* Không cùng loại với ba ô bên trái, nên không được đọc như nhau:
               ba ô kia quyết định card vào cột nào, ô này chỉ bật cảnh báo. */}
-          <span className="w-[232px] shrink-0 text-ink-3/70">⚠ Yêu cầu ticket đang ở trạng thái</span>
+          <span className="w-[232px] shrink-0 text-ink-3/70">⚠ Yêu cầu ticket ít nhất ở trạng thái</span>
           <span className="w-7 shrink-0" />
         </div>
 
@@ -3036,7 +3039,7 @@ function StagesManager({
               onChange={(e) =>
                 patch(i, { expects: e.target.value as StageConfig["expects"] })
               }
-              title={"Chỉ bật cảnh báo, không quyết định card vào cột nào.\nTới cột này mà Jira chưa tới trạng thái đã chọn thì card hiện cảnh báo lệch.\n\n\"Chờ test\" được tính theo đúng môi trường của cột này: một ticket mới verified ở môi trường trước đó vẫn là lệch."}
+              title={"Chỉ bật cảnh báo, không quyết định card vào cột nào.\nTới cột này mà Jira chưa tới trạng thái đã chọn thì card hiện cảnh báo lệch.\n\nNgưỡng là **ít nhất**: chọn READY TO TEST ON DEVELOP thì ticket đã VERIFIED ON DEVELOP cũng thoả. Nhưng tính theo đúng môi trường của cột này — verified ở môi trường trước đó vẫn là lệch."}
               className="w-[232px] shrink-0 rounded-md border border-line bg-ground px-2 py-1 text-[12px]"
             >
               {expectLabels(
