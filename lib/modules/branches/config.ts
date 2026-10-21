@@ -77,6 +77,7 @@ function parseStages(raw: string): StageConfig[] {
       .filter((s) => s && typeof s === "object")
       .map((s) => ({
         name: String(s.name ?? "").trim(),
+        intoKind: String(s.intoKind ?? "").trim(),
         // An unknown value means "no expectation" rather than a crash: this is
         // hand-editable JSON in a settings row.
         expects: (EXPECTS.has(String(s.expects))
@@ -198,6 +199,7 @@ function addBuildColumns(stages: StageConfig[]): StageConfig[] {
       phase: "",
       reach: "built",
       kind: "",
+      intoKind: "",
     });
   }
   return out;

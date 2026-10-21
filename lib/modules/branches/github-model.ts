@@ -1054,6 +1054,39 @@ export function stageFor(
    * kén đi thì dòng thứ hai là đúng hành vi cũ — nên bảng của ai chưa khai
    * loại nào vẫn chạy y hệt.
    */
+  /**
+   * Cột "PR đang mở" là một **cặp**: nhánh loại X mở PR vào nhánh loại Y.
+   *
+   * Vế đích (`intoKind`) phải được khai, nếu không cột im. Trước đây cột
+   * `review` chỉ hỏi "có PR đang mở" và chạy đúng do may — PR nhắm vào môi
+   * trường đã bị cột môi trường giành ở vòng trên, nên phần còn lại tình cờ
+   * đúng là PR vào nhánh feature. Khi luật là một cặp thì vế thiếu phải im:
+   * một cột chưa khai đủ cặp mà vẫn vơ hết là cách cũ quay lại qua cửa sau.
+   *
+   * Vế nguồn (`kind`) để trống thì nhận mọi loại — cặp vẫn đủ nghĩa với một
+   * vế, và đó là cách khai gọn nhất cho "bất kỳ nhánh nào gửi vào feature".
+   */
+  const base = pr?.baseRefName ?? "";
+  const pairs = pre.filter(
+    (s) =>
+      s.phase === "open" &&
+      s.intoKind.trim() &&
+      kindMatches(base, s.intoKind) &&
+      (!s.kind.trim() || kindMatches(branchName, s.kind)),
+  );
+  if (want === "open") {
+    // Cột kén cả hai vế thắng cột chỉ kén đích: khai càng cụ thể càng ưu tiên.
+    return (
+      (pairs.find((s) => s.kind.trim()) ?? pairs[0])?.name ??
+      pre.find((s) => s.phase === "nopr" && s.kind.trim() && kindMatches(branchName, s.kind))
+        ?.name ??
+      pre.find((s) => s.phase === "nopr" && !s.kind.trim())?.name ??
+      pre[0]?.name ??
+      stages[0]?.name ??
+      ""
+    );
+  }
+
   const fitting = pre.find(
     (s) => s.phase === want && s.kind.trim() && kindMatches(branchName, s.kind),
   );

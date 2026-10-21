@@ -50,6 +50,21 @@ export interface StageConfig {
    */
   kind: string;
   /**
+   * Loại nhánh mà **PR của cột này nhắm vào** — vế thứ hai của một cặp.
+   *
+   * Chỉ có nghĩa trên cột `phase: "open"`. Một cột như vậy nói "nhánh loại X
+   * đang mở PR vào nhánh loại Y", ví dụ `bugfix → feature`: task sửa lỗi gửi
+   * vào nhánh tính năng, còn xa mới tới chỗ chạy được.
+   *
+   * '' = cột **không nhận nhánh nào**, không phải "nhận tất cả". Trước đây cột
+   * `review` chỉ hỏi "có PR đang mở" và chạy đúng do may: PR nhắm vào môi
+   * trường đã bị cột môi trường giành trước, nên phần còn lại tình cờ đúng là
+   * PR vào nhánh feature. Khi luật là một cặp thì vế thiếu phải im, không được
+   * đoán — một cột chưa khai đủ cặp mà vẫn vơ hết là cách cũ quay lại qua cửa
+   * sau.
+   */
+  intoKind: string;
+  /**
    * For a step that names a branch, how far into that environment the work is.
    *
    * `queued` — a pull request is open against that branch. Not in it yet.
@@ -81,7 +96,7 @@ const env = (
   branch: string,
   reach: StageConfig["reach"],
   expects: StageConfig["expects"],
-): StageConfig => ({ name, expects, branch, phase: "", reach, kind: "" });
+): StageConfig => ({ name, expects, branch, phase: "", reach, kind: "", intoKind: "" });
 
 export const DEFAULT_STAGES: StageConfig[] = [
   // Bốn cột trước khi code đi đâu, xếp theo mức việc chứ không theo thời gian:
@@ -114,6 +129,7 @@ export const DEFAULT_STAGES: StageConfig[] = [
     // là nhánh feature nó chở.
     phase: "",
     reach: "queued",
+    intoKind: "",
     kind: "resolve",
   },
   {
@@ -122,6 +138,7 @@ export const DEFAULT_STAGES: StageConfig[] = [
     branch: "",
     phase: "nopr",
     reach: "queued",
+    intoKind: "",
     kind: "task",
   },
   {
@@ -130,6 +147,7 @@ export const DEFAULT_STAGES: StageConfig[] = [
     branch: "",
     phase: "nopr",
     reach: "queued",
+    intoKind: "",
     kind: "bugfix",
   },
   {
@@ -138,6 +156,7 @@ export const DEFAULT_STAGES: StageConfig[] = [
     branch: "",
     phase: "nopr",
     reach: "queued",
+    intoKind: "",
     kind: "feature",
   },
   /**
@@ -160,6 +179,7 @@ export const DEFAULT_STAGES: StageConfig[] = [
     branch: "",
     phase: "open",
     reach: "queued",
+    intoKind: "",
     kind: "",
   },
 
@@ -206,6 +226,7 @@ export const DEFAULT_STAGES: StageConfig[] = [
     branch: "master",
     phase: "",
     reach: "gone",
+    intoKind: "",
     kind: "",
   },
 ];

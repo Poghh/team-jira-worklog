@@ -121,7 +121,7 @@ eq(ruleOf('đã merge develop'), 'code đã nằm trong ctalk/develop', 'đã me
 eq(ruleOf('đã build develop'), 'đã có bản build của ctalk/develop mang code này', 'đã build hỏi bản build')
 eq(ruleOf('done'), 'code của mọi nhánh đã có trong master', 'cột cuối')
 // Điều kiện PR chồng thêm thì câu phải nói ra cả hai vế.
-eq(stageRule({ name: 'x', expects: '', branch: 'staging', phase: 'open', reach: 'merged', kind: '' }),
+eq(stageRule({ name: 'x', expects: '', branch: 'staging', phase: 'open', reach: 'merged', kind: '', intoKind: '' }),
    'code đã nằm trong staging, và PR đang mở', 'hai điều kiện thì nói cả hai')
 
 /* ── cột điểm bắt đầu, tách theo loại nhánh ─────────────────────────────── */
@@ -142,16 +142,39 @@ eq(S.slice(0, 5).map((x) => x.name), ['resolve', 'task', 'bugfix', 'feature', 'r
 {
   const names = S.map((x) => x.name)
   const openPr = { number: 1, url: '', state: 'OPEN', isDraft: false, baseRefName: 'ctalk/feature/khác' }
+
+  /* Cột "PR đang mở" là một **cặp**. Chưa khai vế đích thì nó im — không vơ
+     hết như bản cũ, vốn chỉ hỏi "có PR đang mở" và chạy đúng do may. */
+  eq(S.find((x) => x.phase === 'open')?.intoKind, '', 'mặc định chưa khai cặp nào')
+  eq(stageFor({}, openPr, S, [openPr], [], 'ctalk/bugfix/VT-1') === 'review', false,
+     'cột review chưa khai đích thì không nhận nhánh nào')
+
+  /* Khai cặp rồi thì nhận, và cả ba loại nhánh đều đi tới được — `review` phải
+     đứng sau các cột theo loại, nếu không luật chỉ-tiến chặn nhánh feature. */
+  const P = S.map((x) => (x.phase === 'open' ? { ...x, intoKind: 'feature' } : x))
   for (const [branch, from] of [
     ['ctalk/bugfix/VT-1', 'bugfix'],
     ['ctalk/feature/VT-2', 'feature'],
     ['ctalk/task/VT-3', 'task'],
   ] as const) {
-    const target = stageFor({}, openPr, S, [openPr], [], branch)
-    eq(target, 'review', `${branch} mở PR thì đích là review`)
-    eq(advanceStage(from, target, names, S), 'review',
+    eq(stageFor({}, openPr, P, [openPr], [], branch), 'review',
+       `${branch} mở PR vào nhánh feature thì đích là review`)
+    eq(advanceStage(from, 'review', names, P), 'review',
        `và card ở "${from}" đi tới được — không bị luật chỉ-tiến chặn`)
   }
+
+  /* Vế nguồn khai thì siết thêm: chỉ nhánh đúng loại ấy mới vào. */
+  const Q = S.map((x) => (x.phase === 'open' ? { ...x, kind: 'bugfix', intoKind: 'feature' } : x))
+  eq(stageFor({}, openPr, Q, [openPr], [], 'ctalk/bugfix/VT-1'), 'review',
+     'khai cả hai vế thì nhánh bugfix vào feature vẫn đúng cặp')
+  eq(stageFor({}, openPr, Q, [openPr], [], 'ctalk/task/VT-3') === 'review', false,
+     'nhưng nhánh task thì không, vì cặp đã khai nguồn là bugfix')
+
+  /* PR nhắm vào môi trường không phải chuyện của cột này — vòng môi trường
+     ở trên đã giành trước. */
+  const toEnv = { ...openPr, baseRefName: 'ctalk/develop' }
+  eq(stageFor({}, toEnv, P, [toEnv], [], 'ctalk/bugfix/VT-1'), 'develop',
+     'PR nhắm thẳng vào môi trường thuộc về cột môi trường, không phải review')
 }
 eq(S.filter((x) => x.kind).map((x) => x.kind), ['resolve', 'task', 'bugfix', 'feature'],
    'bốn cột kén loại, resolve trước')
@@ -194,9 +217,11 @@ eq(stageFor(none, null, S, [], [], 'ctalk/release/2026.09'), 'task',
 eq(stageFor(none, null, S, [], [], 'linh-tinh'), 'task', 'nhánh không theo quy ước cũng vậy')
 eq(stageFor(none, null, S, []), 'task', 'không biết tên nhánh thì về cột đầu')
 // Mở PR rồi thì PR quyết định, không phải cái tên — nếu không thì nhánh feature
-// sẽ kẹt ở cột feature suốt đời.
-eq(stageFor(none, open(''), S, [open('')], [], 'ctalk/feature/VT-2583'), 'review',
-   'mở PR rồi thì cái tên hết quyền')
+// sẽ kẹt ở cột feature suốt đời. Cần một cấu hình **đã khai cặp**: cột "PR
+// đang mở" chưa khai đích thì im, theo luật cặp.
+const SP = S.map((x) => (x.phase === 'open' ? { ...x, intoKind: 'feature' } : x))
+eq(stageFor(none, open('ctalk/feature/x'), SP, [open('ctalk/feature/x')], [], 'ctalk/feature/VT-2583'),
+   'review', 'mở PR rồi thì cái tên hết quyền')
 eq(stageFor(none, open('ctalk/develop'), S, [open('ctalk/develop')], [], 'ctalk/feature/VT-1'), 'develop',
    'PR nhắm môi trường thì vào môi trường')
 // Bảng chưa khai loại nào phải chạy y như trước.
@@ -213,17 +238,19 @@ eq(stageFor(none, merged, S, [merged]), 'đã merge develop',
    'merged vào môi trường thì vào môi trường')
 {
   const nowhere = { number: 9, url: '', state: 'MERGED', isDraft: false, baseRefName: 'ctalk/feature/x' }
-  eq(stageFor(none, nowhere, S, [nowhere]), 'review',
+  eq(stageFor(none, nowhere, SP, [nowhere]), 'review',
      'merged vào một nhánh không phải môi trường -> review, không phải feature')
 }
 
-eq(stageFor(none, open(''), S, [open('')]), 'review', 'PR with no base -> review')
+// Không có base thì không biết nhắm vào loại nào, nên cặp không khớp — cột im.
+eq(stageFor(none, open(''), SP, [open('')]) === 'review', false,
+   'PR không có base thì không khớp cặp nào')
 // A bugfix is reviewed and merged straight into ctalk/develop, so a request
 // aimed at an environment belongs to that environment, reviewed or not.
 eq(stageFor(none, open('ctalk/develop'), S, [open('ctalk/develop')]), 'develop',
    'PR mở thẳng vào ctalk/develop -> develop')
 // A task branch goes into a feature branch first; that is what review is for.
-eq(stageFor(none, open('ctalk/feature/big'), S, [open('ctalk/feature/big')]), 'review',
+eq(stageFor(none, open('ctalk/feature/big'), SP, [open('ctalk/feature/big')]), 'review',
    'PR mở vào nhánh feature -> review')
 eq(stageFor({ 'ctalk/develop': { ahead: 0 } }, merged, S, [merged]), 'đã merge develop', 'contained -> đã merge develop')
 eq(stageFor({ 'ctalk/develop': { ahead: 3, landed: true } }, merged, S, [merged]), 'đã merge develop',
