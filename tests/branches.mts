@@ -10,6 +10,7 @@
  */
 import { logDatePastDue, statusRank, statusTone } from '@/lib/jira/types'
 import {
+  nextEnvToRequest,
   DEFAULT_STAGES,
   envSteps,
   hostOf,
@@ -54,6 +55,7 @@ import {
   serializeSeenBuilds,
 } from '@/lib/modules/branches/build-model'
 import {
+  prBaseBranches,
   cardSide,
   extractIssueKey,
   extractIssueKeys,
@@ -79,6 +81,7 @@ import {
   serializeCardPrs,
   prStateTag,
   shortRepo,
+  advanceStage,
   stageFor,
 } from '@/lib/modules/branches/github-model'
 
@@ -118,19 +121,70 @@ eq(ruleOf('đã merge develop'), 'code đã nằm trong ctalk/develop', 'đã me
 eq(ruleOf('đã build develop'), 'đã có bản build của ctalk/develop mang code này', 'đã build hỏi bản build')
 eq(ruleOf('done'), 'code của mọi nhánh đã có trong master', 'cột cuối')
 // Điều kiện PR chồng thêm thì câu phải nói ra cả hai vế.
-eq(stageRule({ name: 'x', expects: '', branch: 'staging', phase: 'open', reach: 'merged', kind: '' }),
+eq(stageRule({ name: 'x', expects: '', branch: 'staging', phase: 'open', reach: 'merged', kind: '', intoKind: '' }),
    'code đã nằm trong staging, và PR đang mở', 'hai điều kiện thì nói cả hai')
 
 /* ── cột điểm bắt đầu, tách theo loại nhánh ─────────────────────────────── */
+/* Ô loại nhánh nhận danh sách: một cột `review` phục vụ nhiều cặp cùng đích —
+   `task → feature` và `bugfix → feature` là cùng một bước việc, nên chúng phải
+   là MỘT cột chứ không phải hai cột trùng tên. */
+eq(kindMatches('ctalk/task/VT-1', 'task, bugfix'), true, 'danh sách: khớp phần tử đầu')
+eq(kindMatches('ctalk/bugfix/VT-2', 'task, bugfix'), true, 'danh sách: khớp phần tử sau')
+eq(kindMatches('ctalk/feature/VT-3', 'task, bugfix'), false, 'danh sách: không khớp thì vẫn không khớp')
+eq(kindMatches('ctalk/task/VT-1', 'task'), true, 'một loại vẫn viết như cũ')
+eq(kindMatches('ctalk/task/VT-1', ' , , '), true, 'danh sách rỗng = không kén')
+
 //
 // Đếm trên 220 nhánh thật của hai repo: 123 `feature`, 44 `bugfix`, 31 `task`,
 // rồi `release`/`hotfix`/`chore` và 6 nhánh không có `/` nào.
 eq(ruleOf('feature'), 'nhánh feature chưa mở PR — hoặc PR còn draft, hoặc đã đóng',
    'cột kén loại nói ra loại nó kén')
-// Thứ tự cột là thứ tự tiến triển, nên nó là một khẳng định chứ không phải
-// trang trí: `feature` đứng sau `review` là lựa chọn của người dùng.
-eq(S.slice(0, 5).map((x) => x.name), ['resolve', 'task', 'bugfix', 'review', 'feature'],
-   'resolve đứng đầu, rồi bốn cột người dùng đặt')
+// Thứ tự cột là thứ tự **tiến triển**, nên nó là một khẳng định chứ không phải
+// trang trí — và `review` phải đứng sau cả bốn cột theo loại nhánh.
+//
+// Bản cũ xếp `… bugfix, review, feature`, và hậu quả đo được: một nhánh
+// feature mở PR tính ra đích `review` mà `advanceStage` coi là lùi nên chặn
+// lại — card đứng yên ở `feature` mãi mãi. `bugfix` và `task` thì vào được,
+// nên lỗi chỉ rơi vào một loại nhánh và không ai thấy.
+eq(S.slice(0, 5).map((x) => x.name), ['resolve', 'task', 'bugfix', 'feature', 'review'],
+   'resolve đứng đầu, các cột theo loại nhánh, rồi review sau cùng')
+{
+  const names = S.map((x) => x.name)
+  const openPr = { number: 1, url: '', state: 'OPEN', isDraft: false, baseRefName: 'ctalk/feature/khác' }
+
+  /* Cột "PR đang mở" là một **cặp**. Chưa khai vế đích thì nó im — không vơ
+     hết như bản cũ, vốn chỉ hỏi "có PR đang mở" và chạy đúng do may. */
+  eq(S.find((x) => x.phase === 'open')?.intoKind, '', 'mặc định chưa khai cặp nào')
+  eq(stageFor({}, openPr, S, [openPr], [], 'ctalk/bugfix/VT-1') === 'review', false,
+     'cột review chưa khai đích thì không nhận nhánh nào')
+
+  /* Khai cặp rồi thì nhận, và cả ba loại nhánh đều đi tới được — `review` phải
+     đứng sau các cột theo loại, nếu không luật chỉ-tiến chặn nhánh feature. */
+  const P = S.map((x) => (x.phase === 'open' ? { ...x, intoKind: 'feature' } : x))
+  for (const [branch, from] of [
+    ['ctalk/bugfix/VT-1', 'bugfix'],
+    ['ctalk/feature/VT-2', 'feature'],
+    ['ctalk/task/VT-3', 'task'],
+  ] as const) {
+    eq(stageFor({}, openPr, P, [openPr], [], branch), 'review',
+       `${branch} mở PR vào nhánh feature thì đích là review`)
+    eq(advanceStage(from, 'review', names, P), 'review',
+       `và card ở "${from}" đi tới được — không bị luật chỉ-tiến chặn`)
+  }
+
+  /* Vế nguồn khai thì siết thêm: chỉ nhánh đúng loại ấy mới vào. */
+  const Q = S.map((x) => (x.phase === 'open' ? { ...x, kind: 'bugfix', intoKind: 'feature' } : x))
+  eq(stageFor({}, openPr, Q, [openPr], [], 'ctalk/bugfix/VT-1'), 'review',
+     'khai cả hai vế thì nhánh bugfix vào feature vẫn đúng cặp')
+  eq(stageFor({}, openPr, Q, [openPr], [], 'ctalk/task/VT-3') === 'review', false,
+     'nhưng nhánh task thì không, vì cặp đã khai nguồn là bugfix')
+
+  /* PR nhắm vào môi trường không phải chuyện của cột này — vòng môi trường
+     ở trên đã giành trước. */
+  const toEnv = { ...openPr, baseRefName: 'ctalk/develop' }
+  eq(stageFor({}, toEnv, P, [toEnv], [], 'ctalk/bugfix/VT-1'), 'develop',
+     'PR nhắm thẳng vào môi trường thuộc về cột môi trường, không phải review')
+}
 eq(S.filter((x) => x.kind).map((x) => x.kind), ['resolve', 'task', 'bugfix', 'feature'],
    'bốn cột kén loại, resolve trước')
 // Cột resolve không kén PR — nhánh ở lại đó suốt đời.
@@ -172,9 +226,11 @@ eq(stageFor(none, null, S, [], [], 'ctalk/release/2026.09'), 'task',
 eq(stageFor(none, null, S, [], [], 'linh-tinh'), 'task', 'nhánh không theo quy ước cũng vậy')
 eq(stageFor(none, null, S, []), 'task', 'không biết tên nhánh thì về cột đầu')
 // Mở PR rồi thì PR quyết định, không phải cái tên — nếu không thì nhánh feature
-// sẽ kẹt ở cột feature suốt đời.
-eq(stageFor(none, open(''), S, [open('')], [], 'ctalk/feature/VT-2583'), 'review',
-   'mở PR rồi thì cái tên hết quyền')
+// sẽ kẹt ở cột feature suốt đời. Cần một cấu hình **đã khai cặp**: cột "PR
+// đang mở" chưa khai đích thì im, theo luật cặp.
+const SP = S.map((x) => (x.phase === 'open' ? { ...x, intoKind: 'feature' } : x))
+eq(stageFor(none, open('ctalk/feature/x'), SP, [open('ctalk/feature/x')], [], 'ctalk/feature/VT-2583'),
+   'review', 'mở PR rồi thì cái tên hết quyền')
 eq(stageFor(none, open('ctalk/develop'), S, [open('ctalk/develop')], [], 'ctalk/feature/VT-1'), 'develop',
    'PR nhắm môi trường thì vào môi trường')
 // Bảng chưa khai loại nào phải chạy y như trước.
@@ -191,17 +247,19 @@ eq(stageFor(none, merged, S, [merged]), 'đã merge develop',
    'merged vào môi trường thì vào môi trường')
 {
   const nowhere = { number: 9, url: '', state: 'MERGED', isDraft: false, baseRefName: 'ctalk/feature/x' }
-  eq(stageFor(none, nowhere, S, [nowhere]), 'review',
+  eq(stageFor(none, nowhere, SP, [nowhere]), 'review',
      'merged vào một nhánh không phải môi trường -> review, không phải feature')
 }
 
-eq(stageFor(none, open(''), S, [open('')]), 'review', 'PR with no base -> review')
+// Không có base thì không biết nhắm vào loại nào, nên cặp không khớp — cột im.
+eq(stageFor(none, open(''), SP, [open('')]) === 'review', false,
+   'PR không có base thì không khớp cặp nào')
 // A bugfix is reviewed and merged straight into ctalk/develop, so a request
 // aimed at an environment belongs to that environment, reviewed or not.
 eq(stageFor(none, open('ctalk/develop'), S, [open('ctalk/develop')]), 'develop',
    'PR mở thẳng vào ctalk/develop -> develop')
 // A task branch goes into a feature branch first; that is what review is for.
-eq(stageFor(none, open('ctalk/feature/big'), S, [open('ctalk/feature/big')]), 'review',
+eq(stageFor(none, open('ctalk/feature/big'), SP, [open('ctalk/feature/big')]), 'review',
    'PR mở vào nhánh feature -> review')
 eq(stageFor({ 'ctalk/develop': { ahead: 0 } }, merged, S, [merged]), 'đã merge develop', 'contained -> đã merge develop')
 eq(stageFor({ 'ctalk/develop': { ahead: 3, landed: true } }, merged, S, [merged]), 'đã merge develop',
@@ -435,6 +493,39 @@ eq(parseCardSides(JSON.stringify([{ repo: 'o/ios', branch: 'b', pinned: true }])
 eq(parseCardSides(JSON.stringify([{ repo: 'o/ios', branch: 'b' }]), { ...flat, repo: '', branch: '' })[0]!.pinned,
    undefined, 'an unpinned branch carries no flag at all')
 
+/* ── luật sở hữu thứ tư: nhánh đích của PR trên nhánh của mình ───────────── */
+const ENV = new Set(['ctalk/develop', 'develop', 'staging', 'master'])
+const pr = (base: string) => ({ number: 1, url: '', state: 'OPEN', isDraft: false, baseRefName: base })
+
+/* Ca thật: VT-2323 trượt cả ba luật kia — tác giả tip là đồng nghiệp, feed sự
+   kiện không với tới, và nhánh +0 commit so với master. Thứ duy nhất còn đúng
+   là có một PR của mình nhắm vào nó. */
+eq(prBaseBranches([{ repo: 'o/ios', name: 'ctalk/bugfix/x', prs: [pr('ctalk/feature/VT-2323_a')] }], ENV),
+   ['o/ios#ctalk/feature/VT-2323_a'], 'nhánh đích của PR trên nhánh của mình là của mình')
+
+/* Nhánh môi trường thì không: thiếu cổng này, mọi PR nhắm vào develop sẽ đẻ ra
+   một card cho chính nhánh môi trường ấy. */
+eq(prBaseBranches([{ repo: 'o/ios', name: 'ctalk/bugfix/x', prs: [pr('ctalk/develop')] }], ENV),
+   [], 'PR nhắm vào nhánh môi trường không sinh card cho môi trường')
+
+/* Nhánh đã được một luật khác nhận rồi thì không nhận lại. */
+eq(prBaseBranches([
+     { repo: 'o/ios', name: 'ctalk/feature/f', prs: [] },
+     { repo: 'o/ios', name: 'ctalk/bugfix/x', prs: [pr('ctalk/feature/f')] },
+   ], ENV), [], 'nhánh đã là của mình rồi thì không đếm hai lần')
+
+/* Cùng repo: `baseRefName` là tên nhánh trong chính repo chứa PR. */
+eq(prBaseBranches([
+     { repo: 'o/ios', name: 'a', prs: [pr('ctalk/feature/f')] },
+     { repo: 'o/sdk', name: 'b', prs: [pr('ctalk/feature/f')] },
+   ], ENV).sort(), ['o/ios#ctalk/feature/f', 'o/sdk#ctalk/feature/f'],
+   'mỗi repo một nhánh đích riêng, dù trùng tên')
+
+/* Hai PR cùng nhắm một nhánh thì nhánh ấy chỉ kể một lần. */
+eq(prBaseBranches([{ repo: 'o/ios', name: 'a', prs: [pr('ctalk/feature/f'), pr('ctalk/feature/f')] }], ENV),
+   ['o/ios#ctalk/feature/f'], 'không trùng lặp')
+eq(prBaseBranches([{ repo: 'o/ios', name: 'a', prs: [pr('  ')] }], ENV), [], 'base rỗng thì bỏ qua')
+
 /* Phép so "card này có gì đổi không" là so chuỗi `JSON.stringify`, mà nó giữ
    thứ tự chèn. Vòng quét và bộ đọc từng xếp `baseAt, baseBranch, behind` và
    `baseAt, behind, baseBranch` ⇒ hai chuỗi không bao giờ bằng nhau ⇒ không
@@ -510,7 +601,8 @@ eq(stageDrift('đã build integration', 'COMMITED CODE FEATURE BRANCH', 'prog', 
    'VT-467 vẫn: COMMITED CODE FEATURE BRANCH', 'the warning names the ticket that is behind')
 eq(stageDrift('đã build integration', 'X', 'prog', S)?.label, 'ticket vẫn: X', 'generic when no key is given')
 eq(S.filter((s) => s.expects === 'test').map((s) => s.name),
-   ['đã build develop', 'đã build integration'], 'only build columns ask for a test status')
+   ['đã build develop', 'đã build integration', 'đã build staging'],
+   'only build columns ask for a test status')
 // The environment, not just the colour. A ticket verified on develop is past
 // testing *there* and nowhere else — its card has since reached the
 // integration build, which is a different thing to be tested on.
@@ -532,9 +624,14 @@ eq(stageDrift('đã build integration', 'VERIFIED ON DEVELOP', 'ver', S)?.detail
    mọi task đã ship. Hai bảng `TONE_RANK`/`EXPECT_RANK` viết thẳng ý định
    ngược lại nhưng không ai gọi chúng. */
 eq(S.filter((s) => s.expects === 'done').map((s) => s.name),
-   ['đã build staging', 'done'], 'hai cột đòi "xong"')
+   ['done'], 'chỉ cột cuối đòi "xong" — ba cột build đều chỉ đòi "chờ test"')
+eq(S.filter((s) => s.expects === 'test').map((s) => s.name),
+   ['đã build develop', 'đã build integration', 'đã build staging'],
+   'ba cột build cùng khuôn, kể cả staging')
+eq(stageDrift('đã build staging', 'READY TO TEST ON STAGING', 'test', S, 'VT-900'), null,
+   'có bản build staging thì chờ test trên staging là đúng, không phải lệch')
 eq(stageDrift('đã build staging', 'VERIFIED ON STAGING', 'ver', S, 'VT-900'), null,
-   'verified trên đúng môi trường của cột là đã xong phần của cột đó')
+   'verified thì càng không lệch')
 eq(stageDrift('đã build staging', 'DONE', 'done', S, 'VT-900'), null, 'Done thì khỏi bàn')
 /* Nhưng Verified ở môi trường *trước đó* thì vẫn là tụt lại thật. */
 eq(stageDrift('đã build staging', 'VERIFIED ON DEVELOP', 'ver', S, 'VT-901')?.label,
@@ -544,6 +641,35 @@ eq(stageDrift('đã build staging', 'VERIFIED ON DEVELOP', 'ver', S, 'VT-901')?.
 eq(stageDrift('done', 'VERIFIED ON STAGING', 'ver', S, 'VT-902')?.label,
    'VT-902 vẫn: VERIFIED ON STAGING', 'cột cuối vẫn đòi Done')
 eq(stageDrift('done', 'DONE', 'done', S, 'VT-902'), null, 'và Done thoả nó')
+
+/* ── gợi ý mở PR lên môi trường kế tiếp ─────────────────────────────────── */
+const E = envSteps(S)
+eq(E.map((e) => e.name), ['develop', 'integration', 'staging'], 'ba bậc môi trường')
+
+/* Ca thật trên card VT-3724: verified ở integration, mời lên staging. */
+eq(nextEnvToRequest(['VERIFIED ON INTEGRATION'], E)?.name, 'staging',
+   'verified ở integration thì mời lên staging')
+eq(nextEnvToRequest(['VERIFIED ON DEVELOP'], E)?.name, 'integration',
+   'và verified ở develop thì mời lên integration')
+
+/* Chỉ một bậc, không nhảy cóc — bậc cuối thì hết đường. */
+eq(nextEnvToRequest(['VERIFIED ON STAGING'], E), null, 'verified ở bậc cuối thì không còn gì để mời')
+eq(nextEnvToRequest(['DONE'], E), null, 'Done là hết đường')
+
+/* Chưa verified thì chưa mời. */
+eq(nextEnvToRequest(['READY TO TEST ON INTEGRATION'], E), null, 'mới chờ test thì chưa mời')
+eq(nextEnvToRequest(['IN PROGRESS'], E), null, 'đang làm thì chưa mời')
+eq(nextEnvToRequest(['TO DO'], E), null, 'chưa làm thì chưa mời')
+
+/* Card nhiều ticket: lấy cái kém tiến nhất, không lấy cái đại diện. */
+eq(nextEnvToRequest(['VERIFIED ON INTEGRATION', 'IN PROGRESS'], E), null,
+   'một ticket còn đang làm thì cả card chưa có gì để đẩy lên')
+eq(nextEnvToRequest(['VERIFIED ON STAGING', 'VERIFIED ON DEVELOP'], E)?.name, 'integration',
+   'ticket kém tiến nhất quyết định bậc kế tiếp')
+
+/* Không có trạng thái nào đọc được thì im. */
+eq(nextEnvToRequest([null, '', undefined], E), null, 'không biết trạng thái thì không đoán')
+eq(nextEnvToRequest(['VERIFIED ON DEVELOP'], []), null, 'không cấu hình môi trường thì không mời')
 
 /* ── cột tính từ chính card, không cần mạng ─────────────────────────────── */
 const sideAt = (repo: string, prs: Array<{number:number;url:string;state:string;base:string}>, env = '') => ({

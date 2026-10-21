@@ -77,6 +77,7 @@ function parseStages(raw: string): StageConfig[] {
       .filter((s) => s && typeof s === "object")
       .map((s) => ({
         name: String(s.name ?? "").trim(),
+        intoKind: String(s.intoKind ?? "").trim(),
         // An unknown value means "no expectation" rather than a crash: this is
         // hand-editable JSON in a settings row.
         expects: (EXPECTS.has(String(s.expects))
@@ -136,6 +137,7 @@ const SHAPES = [
   "kind-columns",
   "task-column",
   "resolve-column",
+  "review-last",
 ] as const;
 
 function appliedShapes(): Set<string> {
@@ -162,6 +164,7 @@ function migrate(stages: StageConfig[]): StageConfig[] {
   if (!applied.has("kind-columns")) out = addKindColumns(out);
   if (!applied.has("task-column")) out = orderStartColumns(out);
   if (!applied.has("resolve-column")) out = addResolveColumn(out);
+  if (!applied.has("review-last")) out = moveReviewLast(out);
 
   setRaw(K.stagesShape, SHAPES.join(" "));
   if (JSON.stringify(out) !== JSON.stringify(stages))
@@ -196,6 +199,7 @@ function addBuildColumns(stages: StageConfig[]): StageConfig[] {
       phase: "",
       reach: "built",
       kind: "",
+      intoKind: "",
     });
   }
   return out;
@@ -277,6 +281,35 @@ function addKindColumns(stages: StageConfig[]): StageConfig[] {
  * kén đã có. Pipeline người dùng tự dựng khác hẳn thì để nguyên, vì xếp lại
  * cột của họ theo ý mình là đổi ý nghĩa bảng của họ.
  */
+/**
+ * Cột `review` xuống sau các cột theo loại nhánh.
+ *
+ * Cấu hình đã lưu từ trước mang thứ tự cũ — `review` chen giữa `bugfix` và
+ * `feature` — và token migration chỉ ghi một lần nên `orderStartColumns` sẽ
+ * không chạy lại. Cần một bước riêng, nếu không thì chỉ cài đặt mới được sửa
+ * còn người đang dùng vẫn mắc kẹt: nhánh `feature` mở PR không bao giờ vào
+ * được cột `review`, vì `advanceStage` coi đó là lùi.
+ *
+ * Chỉ dời, không tạo và không xoá. Không có cột `review` thì không làm gì.
+ */
+function moveReviewLast(stages: StageConfig[]): StageConfig[] {
+  const isStart = (s: StageConfig) => !s.branch.trim() && s.reach !== "gone";
+  const review = stages.find((s) => isStart(s) && s.phase === "open");
+  if (!review) return stages;
+
+  const kinds = stages.filter(
+    (s) => isStart(s) && s.phase === "nopr" && s.kind.trim(),
+  );
+  if (!kinds.length) return stages;
+
+  const last = stages.lastIndexOf(kinds[kinds.length - 1]!);
+  if (stages.indexOf(review) > last) return stages;
+
+  const rest = stages.filter((s) => s !== review);
+  const at = rest.lastIndexOf(kinds[kinds.length - 1]!);
+  return [...rest.slice(0, at + 1), review, ...rest.slice(at + 1)];
+}
+
 function orderStartColumns(stages: StageConfig[]): StageConfig[] {
   const start = (s: StageConfig) =>
     !s.branch.trim() && s.reach !== "gone" && s.phase === "nopr";
@@ -293,7 +326,7 @@ function orderStartColumns(stages: StageConfig[]): StageConfig[] {
   // Giữ **chính đối tượng** đã lấy ra, không phải tên của nó: cột không kén
   // được đổi tên thành `task`, nên lọc phần còn lại theo tên sẽ không nhận ra
   // nó nữa và để lại một bản `đang code` mồ côi ngay sau `feature`.
-  const picked = [plain, by("bugfix"), review, by("feature")].filter(
+  const picked = [plain, by("bugfix"), by("feature"), review].filter(
     (s): s is StageConfig => Boolean(s),
   );
   const wanted = picked.map((s) =>

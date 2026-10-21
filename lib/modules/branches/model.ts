@@ -50,6 +50,21 @@ export interface StageConfig {
    */
   kind: string;
   /**
+   * Loại nhánh mà **PR của cột này nhắm vào** — vế thứ hai của một cặp.
+   *
+   * Chỉ có nghĩa trên cột `phase: "open"`. Một cột như vậy nói "nhánh loại X
+   * đang mở PR vào nhánh loại Y", ví dụ `bugfix → feature`: task sửa lỗi gửi
+   * vào nhánh tính năng, còn xa mới tới chỗ chạy được.
+   *
+   * '' = cột **không nhận nhánh nào**, không phải "nhận tất cả". Trước đây cột
+   * `review` chỉ hỏi "có PR đang mở" và chạy đúng do may: PR nhắm vào môi
+   * trường đã bị cột môi trường giành trước, nên phần còn lại tình cờ đúng là
+   * PR vào nhánh feature. Khi luật là một cặp thì vế thiếu phải im, không được
+   * đoán — một cột chưa khai đủ cặp mà vẫn vơ hết là cách cũ quay lại qua cửa
+   * sau.
+   */
+  intoKind: string;
+  /**
    * For a step that names a branch, how far into that environment the work is.
    *
    * `queued` — a pull request is open against that branch. Not in it yet.
@@ -81,7 +96,7 @@ const env = (
   branch: string,
   reach: StageConfig["reach"],
   expects: StageConfig["expects"],
-): StageConfig => ({ name, expects, branch, phase: "", reach, kind: "" });
+): StageConfig => ({ name, expects, branch, phase: "", reach, kind: "", intoKind: "" });
 
 export const DEFAULT_STAGES: StageConfig[] = [
   // Bốn cột trước khi code đi đâu, xếp theo mức việc chứ không theo thời gian:
@@ -114,6 +129,7 @@ export const DEFAULT_STAGES: StageConfig[] = [
     // là nhánh feature nó chở.
     phase: "",
     reach: "queued",
+    intoKind: "",
     kind: "resolve",
   },
   {
@@ -122,6 +138,7 @@ export const DEFAULT_STAGES: StageConfig[] = [
     branch: "",
     phase: "nopr",
     reach: "queued",
+    intoKind: "",
     kind: "task",
   },
   {
@@ -130,15 +147,8 @@ export const DEFAULT_STAGES: StageConfig[] = [
     branch: "",
     phase: "nopr",
     reach: "queued",
+    intoKind: "",
     kind: "bugfix",
-  },
-  {
-    name: "review",
-    expects: "prog",
-    branch: "",
-    phase: "open",
-    reach: "queued",
-    kind: "",
   },
   {
     name: "feature",
@@ -146,7 +156,31 @@ export const DEFAULT_STAGES: StageConfig[] = [
     branch: "",
     phase: "nopr",
     reach: "queued",
+    intoKind: "",
     kind: "feature",
+  },
+  /**
+   * Sau **tất cả** các cột theo loại nhánh, không nằm chen giữa chúng.
+   *
+   * Thứ tự cột gánh hai việc: phân xử khi một tên nhánh khớp nhiều loại, và
+   * thứ tự **tiến** của card. Cột `review` không kén loại nên nó không dự việc
+   * thứ nhất, nhưng việc thứ hai thì nó phá: đặt nó trước `feature` thì một
+   * nhánh feature mở PR tính ra đích `review` mà `advanceStage` coi là **lùi**
+   * và chặn lại — đo được `advanceStage("feature", "review")` trả về chuỗi
+   * rỗng, card đứng yên mãi ở `feature`. Nhánh `bugfix` và `task` thì vào
+   * được, nên lỗi chỉ rơi vào một loại nhánh và không ai thấy.
+   *
+   * Xuống cuối khối thì cả bốn loại đều tiến vào được, và việc phân xử không
+   * đổi chút nào vì cột này vốn không mang `kind`.
+   */
+  {
+    name: "review",
+    expects: "prog",
+    branch: "",
+    phase: "open",
+    reach: "queued",
+    intoKind: "",
+    kind: "",
   },
 
   // Merging is not shipping: until a build carries it, nobody can test it —
@@ -164,7 +198,17 @@ export const DEFAULT_STAGES: StageConfig[] = [
 
   env("staging", "staging", "queued", "prog"),
   env("đã merge staging", "staging", "merged", "prog"),
-  env("đã build staging", "staging", "built", "done"),
+  // `test`, cùng khuôn với hai cột build kia — không phải `done`.
+  //
+  // Ba cột build nói cùng một điều: môi trường ấy đã có bản build, tức ticket
+  // **test được ở đó**. Đòi "xong" ngay sau bản build staging là kêu mọi ticket
+  // đang `READY TO TEST ON STAGING` — đúng cái ticket đang làm đúng.
+  //
+  // Và chính `addBuildColumns` — hàm sinh cột build khi nâng cấu hình cũ —
+  // luôn ghi `expects: "test"`. Nên cấu hình đã migrate thì đúng khuôn, chỉ
+  // riêng bản mặc định đóng gói sẵn là lạc. Hai nguồn cùng dựng một thứ mà
+  // nói khác nhau thì cái ít được chạy hơn là cái sai.
+  env("đã build staging", "staging", "built", "test"),
 
   // The end of the line. Without it the last build column holds two different
   // kinds of card — work QC is still testing, and work closed months ago — and
@@ -182,6 +226,7 @@ export const DEFAULT_STAGES: StageConfig[] = [
     branch: "master",
     phase: "",
     reach: "gone",
+    intoKind: "",
     kind: "",
   },
 ];
@@ -218,8 +263,20 @@ export function branchSegments(branch: string): string[] {
  * nào vẫn chạy y như trước.
  */
 export function kindMatches(branch: string, kind: string): boolean {
-  const want = kind.trim().toLowerCase();
-  if (!want) return true;
+  // Nhận **danh sách** ngăn bởi dấu phẩy, không chỉ một loại.
+  //
+  // Một cột `review` thường phục vụ nhiều cặp cùng đích: `task → feature` và
+  // `bugfix → feature` là cùng một bước việc, nên chúng phải là **một** cột
+  // chứ không phải hai cột trùng tên. Một loại vẫn viết như cũ, không có dấu
+  // phẩy thì danh sách chỉ có một phần tử.
+  const wants = kind
+    .split(",")
+    .map((k) => k.trim().toLowerCase())
+    .filter(Boolean);
+  if (!wants.length) return true;
+  if (wants.length > 1) return wants.some((w) => kindMatches(branch, w));
+
+  const want = wants[0]!;
   const segs = branchSegments(branch);
   if (segs.includes(want)) return true;
   // Khớp theo **từ** bên trong một đoạn, ngăn bởi `_` hoặc `-`.
@@ -892,6 +949,41 @@ export interface StageDrift {
   label: string;
   /** The full sentence, for the tooltip. */
   detail: string;
+}
+
+/**
+ * Môi trường kế tiếp đáng mở PR vào, khi ticket đã verified ở môi trường dưới.
+ *
+ * Chỉ **một** bậc. Verified trên `integration` thì mời mở PR vào `staging`,
+ * không mời nhảy cóc: đường ống có thứ tự, và hai lời mời cùng lúc thì không
+ * lời nào còn là lời mời.
+ *
+ * Lấy ticket **kém tiến nhất** của card, không lấy ticket đại diện. Card hai
+ * ticket mà một cái còn đang làm thì chưa có gì để đẩy lên, và mời đẩy lúc ấy
+ * là mời làm sai.
+ *
+ * `statusRank` xếp `READY TO TEST <env thứ i>` thành `2 + 2i` và
+ * `VERIFIED <env thứ i>` thành `2 + 2i + 1`, nên đọc ngược ra được cả "đang ở
+ * môi trường nào" lẫn "đã verified chưa" từ đúng một con số. Trạng thái không
+ * khớp môi trường nào rơi vào `env = envNames.length`, tức chỉ số ngoài dải —
+ * `envs[at + 1]` khi đó tự trả `undefined`, không cần chặn riêng.
+ */
+export function nextEnvToRequest(
+  statusNames: Array<string | null | undefined>,
+  envs: StageConfig[],
+): StageConfig | null {
+  const names = statusNames.filter((n): n is string => Boolean(n && n.trim()));
+  if (!names.length || !envs.length) return null;
+
+  const envNames = envs.map((e) => e.name);
+  const rank = Math.min(...names.map((n) => statusRank(n, envNames)));
+  // Done là hết đường, không còn môi trường nào để mời.
+  if (rank === 99 || rank < 2) return null;
+
+  const verified = (rank - 2) % 2 === 1;
+  if (!verified) return null;
+
+  return envs[Math.floor((rank - 2) / 2) + 1] ?? null;
 }
 
 /**

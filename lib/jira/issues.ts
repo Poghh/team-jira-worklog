@@ -983,6 +983,34 @@ const missing = new Map<string, number>();
 const MISSING_TTL = 30 * 60 * 1000;
 
 /**
+ * Mọi tên trạng thái project này có, đúng như Jira viết.
+ *
+ * Để màn hình cấu hình gọi tên thật thay vì diễn đạt lại. Hai cách viết rất
+ * gần nhau cùng tồn tại ngoài đời — `READY TO TEST ON X` và `READY FOR TEST
+ * ON X` — và đoán sai một chữ thì nhãn trở thành lời nói dối về chính cái
+ * người dùng sắp chọn. Đọc từ Jira thì không phải đoán.
+ *
+ * Cache cả vòng đời tiến trình: danh sách trạng thái của một project đổi vài
+ * lần một năm, còn màn hình cấu hình thì render lại liên tục.
+ */
+let statusNameCache: string[] | null = null;
+
+export async function getProjectStatusNames(): Promise<string[]> {
+  if (statusNameCache) return statusNameCache;
+  const key = requireProjectKey();
+  const res = (await jiraFetch(
+    `/rest/api/3/project/${encodeURIComponent(key)}/statuses`,
+  )) as Array<{ statuses?: Array<{ name?: string }> }>;
+
+  const names = new Set<string>();
+  for (const type of res ?? [])
+    for (const st of type.statuses ?? []) if (st.name) names.add(st.name);
+
+  statusNameCache = [...names];
+  return statusNameCache;
+}
+
+/**
  * Current status of a set of issues, keyed by issue key.
  *
  * One query for the whole set rather than one per key, and it deliberately does
