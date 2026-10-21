@@ -133,20 +133,34 @@ export const DEFAULT_STAGES: StageConfig[] = [
     kind: "bugfix",
   },
   {
-    name: "review",
-    expects: "prog",
-    branch: "",
-    phase: "open",
-    reach: "queued",
-    kind: "",
-  },
-  {
     name: "feature",
     expects: "prog",
     branch: "",
     phase: "nopr",
     reach: "queued",
     kind: "feature",
+  },
+  /**
+   * Sau **tất cả** các cột theo loại nhánh, không nằm chen giữa chúng.
+   *
+   * Thứ tự cột gánh hai việc: phân xử khi một tên nhánh khớp nhiều loại, và
+   * thứ tự **tiến** của card. Cột `review` không kén loại nên nó không dự việc
+   * thứ nhất, nhưng việc thứ hai thì nó phá: đặt nó trước `feature` thì một
+   * nhánh feature mở PR tính ra đích `review` mà `advanceStage` coi là **lùi**
+   * và chặn lại — đo được `advanceStage("feature", "review")` trả về chuỗi
+   * rỗng, card đứng yên mãi ở `feature`. Nhánh `bugfix` và `task` thì vào
+   * được, nên lỗi chỉ rơi vào một loại nhánh và không ai thấy.
+   *
+   * Xuống cuối khối thì cả bốn loại đều tiến vào được, và việc phân xử không
+   * đổi chút nào vì cột này vốn không mang `kind`.
+   */
+  {
+    name: "review",
+    expects: "prog",
+    branch: "",
+    phase: "open",
+    reach: "queued",
+    kind: "",
   },
 
   // Merging is not shipping: until a build carries it, nobody can test it —
