@@ -755,64 +755,225 @@ export function useDocUpload(opts: {
     }
   }
 
-  return { picker, submit, busy, msg, ready: !busy && opts.canRun && docs.length > 0 }
+  return { picker, submit, busy, msg, count: docs.length, ready: !busy && opts.canRun }
+}
+
+/** A repo + branch the documents are checked against. */
+export interface DocRepo {
+  repoId: string
+  ref: string
+}
+
+/**
+ * The repos a doc review compares against — as many as the change spans
+ * (SDK + iOS…). The first is where Claude runs; the others are read beside it.
+ */
+export function RepoRows({ repos, value, onChange }: { repos: RepoPreset[]; value: DocRepo[]; onChange: (v: DocRepo[]) => void }) {
+  const [branches, setBranches] = useState<Record<string, string[]>>({})
+  const ids = value.map((v) => v.repoId).filter(Boolean).join(',')
+  useEffect(() => {
+    for (const id of ids.split(',').filter(Boolean)) {
+      if (branches[id]) continue
+      void listBranchesAction(id).then((r) => setBranches((b) => ({ ...b, [id]: r.branches })))
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ids])
+  const set = (i: number, p: Partial<DocRepo>) => onChange(value.map((v, j) => (j === i ? { ...v, ...p } : v)))
+  const unused = repos.find((r) => !value.some((v) => v.repoId === r.id))
+  return (
+    <div className="flex flex-col gap-1.5">
+      <div className="text-[12px] text-ink-2">Đối chiếu với code của repo {value.length > 1 && <span className="text-ink-3">· repo đầu là repo chính (file / dòng trong finding)</span>}</div>
+      {value.length === 0 && <div className="text-[12px] text-ink-3">— Không đối chiếu code —</div>}
+      {value.map((v, i) => (
+        <div key={i} className="grid items-center gap-2 sm:grid-cols-[1fr_1fr_auto]">
+          <select value={v.repoId} onChange={(e) => set(i, { repoId: e.target.value, ref: '' })} className={INPUT}>
+            {repos.map((r) => (
+              <option key={r.id} value={r.id}>
+                {r.name}
+              </option>
+            ))}
+          </select>
+          <input
+            list={`doc-branches-${i}`}
+            value={v.ref}
+            onChange={(e) => set(i, { ref: e.target.value })}
+            className={INPUT}
+            placeholder="Nhánh — develop / feature/…"
+          />
+          <datalist id={`doc-branches-${i}`}>
+            {(branches[v.repoId] ?? []).map((b) => (
+              <option key={b} value={b} />
+            ))}
+          </datalist>
+          <button type="button" className="text-ink-3 hover:text-crit" title="Bỏ repo này" onClick={() => onChange(value.filter((_, j) => j !== i))}>
+            ✕
+          </button>
+        </div>
+      ))}
+      {repos.length > 0 && (
+        <button
+          type="button"
+          className={BTN + ' w-fit'}
+          onClick={() => onChange([...value, { repoId: (unused ?? repos[0]).id, ref: '' }])}
+        >
+          + Thêm repo đối chiếu
+        </button>
+      )}
+    </div>
+  )
+}
+
+/** A pasted Confluence link, before the server has read it. */
+export interface SourceRow {
+  url: string
+  children: boolean
+  role: DocRole
+  templateId: string
+  /** Template chosen by hand — not re-guessed. */
+  touched?: boolean
+}
+
+/** A readable name from the link itself (…/pages/123/TDD+iOS+Login) — for guessing role and template. */
+const titleFromUrl = (url: string) => {
+  try {
+    const seg = new URL(url).pathname.split('/').filter(Boolean)
+    return decodeURIComponent((seg.at(-1) ?? '').replace(/\+/g, ' '))
+  } catch {
+    return url
+  }
+}
+
+export function sourceRow(url: string, templates: DocTemplate[], fallback: string): SourceRow {
+  const name = titleFromUrl(url)
+  const role: DocRole = /tdd|design|thiet.?ke|thiết.?kế/i.test(name) ? 'tdd' : 'spec'
+  return { url, children: true, role, templateId: guessTemplate({ name, role }, templates, fallback) }
+}
+
+/**
+ * Confluence pages to review, pasted as links — many at once (one per line).
+ * A page with subpages is read with all of them unless "subpage" is unticked.
+ */
+export function SourceRows({
+  value,
+  onChange,
+  templates,
+  fallbackTemplate,
+}: {
+  value: SourceRow[]
+  onChange: (v: SourceRow[]) => void
+  templates: DocTemplate[]
+  fallbackTemplate: string
+}) {
+  const [draft, setDraft] = useState('')
+  const add = (text: string) => {
+    const urls = text
+      .split(/[\s,]+/)
+      .map((u) => u.trim())
+      .filter((u) => /^https?:\/\//.test(u) && !value.some((v) => v.url === u))
+    if (urls.length) onChange([...value, ...[...new Set(urls)].map((u) => sourceRow(u, templates, fallbackTemplate))])
+    setDraft('')
+  }
+  const set = (i: number, p: Partial<SourceRow>) => onChange(value.map((v, j) => (j === i ? { ...v, ...p } : v)))
+  return (
+    <div className="flex flex-col gap-1.5">
+      <div className="text-[12px] text-ink-2">
+        🌐 Trang Confluence — dán một hoặc nhiều link (mỗi dòng một link). Trang có subpage thì Claude tự đọc luôn cả cây bên dưới, không cần dán link subpage.
+      </div>
+      <textarea
+        value={draft}
+        onChange={(e) => setDraft(e.target.value)}
+        onPaste={(e) => {
+          const t = e.clipboardData.getData('text')
+          if (/https?:\/\//.test(t)) {
+            e.preventDefault()
+            add(draft + '\n' + t)
+          }
+        }}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter' && !e.shiftKey) {
+            e.preventDefault()
+            add(draft)
+          }
+        }}
+        onBlur={() => draft.trim() && add(draft)}
+        rows={2}
+        className={INPUT}
+        placeholder="https://….atlassian.net/wiki/spaces/…/pages/123456/TDD+…"
+      />
+      {value.length > 0 && (
+        <ul className="flex flex-col gap-1.5">
+          {value.map((v, i) => (
+            <li key={v.url} className="flex flex-wrap items-center gap-2 text-[12.5px]">
+              <select
+                value={v.role}
+                onChange={(e) => {
+                  const role = e.target.value as DocRole
+                  set(i, { role, templateId: v.touched ? v.templateId : guessTemplate({ name: titleFromUrl(v.url), role }, templates, fallbackTemplate) })
+                }}
+                className="rounded-md border border-line bg-ground px-1.5 py-0.5 text-[12px]"
+              >
+                {(Object.keys(DOC_ROLE_LABEL) as DocRole[]).map((r) => (
+                  <option key={r} value={r}>
+                    {DOC_ROLE_LABEL[r]}
+                  </option>
+                ))}
+              </select>
+              <select
+                value={v.templateId}
+                onChange={(e) => set(i, { templateId: e.target.value, touched: true })}
+                className="max-w-[180px] rounded-md border border-line bg-ground px-1.5 py-0.5 text-[12px]"
+                title="Mẫu tài liệu trang này (và subpage) phải theo"
+              >
+                <option value="">📐 Không mẫu</option>
+                {templates.map((t) => (
+                  <option key={t.id} value={t.id}>
+                    📐 {t.name}
+                  </option>
+                ))}
+              </select>
+              <label className="flex items-center gap-1 text-[12px] text-ink-2" title="Đọc cả các trang con bên dưới">
+                <input type="checkbox" checked={v.children} onChange={(e) => set(i, { children: e.target.checked })} />
+                cả subpage
+              </label>
+              <a href={v.url} target="_blank" rel="noreferrer" className="min-w-0 flex-1 truncate text-accent-ink hover:underline" title={v.url}>
+                {titleFromUrl(v.url) || v.url}
+              </a>
+              <button type="button" className="text-ink-3 hover:text-crit" onClick={() => onChange(value.filter((_, j) => j !== i))}>
+                ✕
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  )
 }
 
 function NewDoc({ repos, templates, canRun }: { repos: RepoPreset[]; templates: DocTemplate[]; canRun: boolean }) {
   const router = useRouter()
   const [title, setTitle] = useState('')
-  const [repoId, setRepoId] = useState(repos[0]?.id ?? '')
+  const [docRepos, setDocRepos] = useState<DocRepo[]>(repos[0] ? [{ repoId: repos[0].id, ref: '' }] : [])
+  const [sources, setSources] = useState<SourceRow[]>([])
   const defaultTemplate = (rid: string) => templates.find((t) => t.repoIds.includes(rid))?.id ?? ''
-  const [ref, setRef] = useState('')
+  const fallback = defaultTemplate(docRepos[0]?.repoId ?? '')
   const [note, setNote] = useState('')
-  const [branches, setBranches] = useState<string[]>([])
   const up = useDocUpload({
     canRun,
     onQueued: (id) => router.push(`/m/code-review/${id}`),
     templates,
-    fallbackTemplate: defaultTemplate(repoId),
+    fallbackTemplate: fallback,
   })
-
-  useEffect(() => {
-    if (!repoId) return setBranches([])
-    void listBranchesAction(repoId).then((r) => setBranches(r.branches))
-  }, [repoId])
+  const missingRef = docRepos.some((r) => !r.ref.trim())
 
   return (
     <div className={CARD}>
-      <div className={CTITLE + ' mb-2'}>Review tài liệu PDF (mô tả chức năng + TDD iOS / SDK)</div>
-      <div className="flex flex-col gap-2.5">
+      <div className={CTITLE + ' mb-2'}>Review tài liệu — trang Confluence và / hoặc PDF (mô tả chức năng + TDD iOS / SDK)</div>
+      <div className="flex flex-col gap-3">
         <input value={title} onChange={(e) => setTitle(e.target.value)} className={INPUT} placeholder="Tên hồ sơ — vd: TDD Payment v2" />
-        <div className="grid gap-2 sm:grid-cols-2">
-          <label className="text-[12px] text-ink-2">
-            Đối chiếu với code của repo
-            <select
-              value={repoId}
-              onChange={(e) => setRepoId(e.target.value)}
-              className={INPUT}
-            >
-              <option value="">— Không đối chiếu code —</option>
-              {repos.map((r) => (
-                <option key={r.id} value={r.id}>
-                  {r.name}
-                </option>
-              ))}
-            </select>
-          </label>
-          {repoId && (
-            <label className="text-[12px] text-ink-2">
-              Ở nhánh
-              <input list="doc-branches" value={ref} onChange={(e) => setRef(e.target.value)} className={INPUT} placeholder="develop / feature/…" />
-              <datalist id="doc-branches">
-                {branches.map((b) => (
-                  <option key={b} value={b} />
-                ))}
-              </datalist>
-            </label>
-          )}
-        </div>
+        <RepoRows repos={repos} value={docRepos} onChange={setDocRepos} />
+        <SourceRows value={sources} onChange={setSources} templates={templates} fallbackTemplate={fallback} />
         <div className="text-[12px] text-ink-2">
-          Tài liệu — mỗi file chọn loại và <span className="font-medium">📐 mẫu</span> nó phải theo (vd Mô tả chức năng: không mẫu · TDD iOS: mẫu iOS · TDD SDK: mẫu SDK). Mẫu được đoán sẵn theo tên file.
+          📄 PDF (không bắt buộc nếu đã có link Confluence) — mỗi file chọn loại và <span className="font-medium">📐 mẫu</span> nó phải theo (vd Mô tả chức năng: không mẫu · TDD iOS: mẫu iOS · TDD SDK: mẫu SDK). Mẫu được đoán sẵn theo tên.
           {templates.length === 0 && <span className="text-ink-3"> Chưa có mẫu nào — thêm ở tab Cấu hình → Mẫu tài liệu.</span>}
         </div>
         {up.picker}
@@ -821,12 +982,21 @@ function NewDoc({ repos, templates, canRun }: { repos: RepoPreset[]; templates: 
           <button
             type="button"
             className={BTN_PRI}
-            disabled={!up.ready || !title.trim() || (Boolean(repoId) && !ref.trim())}
-            onClick={() => void up.submit({ title, repoId, ref, note, templateId: defaultTemplate(repoId) })}
+            disabled={!up.ready || !title.trim() || missingRef || (up.count === 0 && sources.length === 0)}
+            onClick={() =>
+              void up.submit({
+                title,
+                note,
+                templateId: fallback,
+                repos: JSON.stringify(docRepos),
+                ...(sources.length ? { sources: JSON.stringify(sources.map(({ touched: _, ...s }) => s)) } : {}),
+              })
+            }
           >
-            {up.busy ? 'Đang tải lên…' : 'Review tài liệu'}
+            {up.busy ? (sources.length ? 'Đang kiểm tra link…' : 'Đang tải lên…') : 'Review tài liệu'}
           </button>
           {up.msg && <span className="text-[12px] text-ink-2">{up.msg}</span>}
+          {missingRef && <span className="text-[12px] text-ink-3">Chọn nhánh cho từng repo.</span>}
           {!canRun && <span className="text-[12px] text-crit">Claude CLI chưa sẵn sàng.</span>}
         </div>
       </div>
