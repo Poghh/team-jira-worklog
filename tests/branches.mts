@@ -98,6 +98,8 @@ import {
   shortRepo,
   advanceStage,
   stageFor,
+  envLadder,
+  envFurthest,
 } from '@/lib/modules/branches/github-model'
 
 let n = 0
@@ -228,6 +230,33 @@ eq(S.slice(0, 5).map((x) => x.name), ['resolve', 'task', 'bugfix', 'feature', 'r
      'khai càng cụ thể càng ưu tiên, kể cả khi cột chung đứng trước')
   eq(stageFor({}, openPr, T, [openPr], [], 'ctalk/task/VT-3'), 'review',
      'loại không ai kén riêng thì về cột chung')
+}
+
+/* ── môi trường xa nhất, cho dãy rút gọn trên task board ────────────────── */
+{
+  /* Truyền cả danh sách cột: `envLadder` tự gọi `envSteps`, và chính nó lấy
+     tên môi trường từ cột "chờ PR" — lọc sẵn thì mất tên, ra "đã merge X". */
+  const at = (o: Record<string, unknown>) => envFurthest(envLadder(o as never, DEFAULT_STAGES))
+
+  eq(at({})?.env.name, undefined, 'chưa đo gì thì không có môi trường nào')
+  eq(at({ 'ctalk/develop': { ahead: 3 }, develop: { ahead: 9 }, staging: { ahead: 9 } })?.env.name,
+     undefined, 'còn behind cả ba thì chưa lên môi trường nào — dãy phải im')
+  eq(at({ 'ctalk/develop': { ahead: 0 }, develop: { ahead: 4 }, staging: { ahead: 4 } })?.env.name,
+     'develop', 'mới tới bậc đầu')
+  eq(at({ 'ctalk/develop': { ahead: 0 }, develop: { ahead: 0 }, staging: { ahead: 7 } })?.env.name,
+     'integration', 'lấy bậc CAO nhất đã tới, không phải bậc đầu')
+  eq(at({ 'ctalk/develop': { ahead: 0 }, develop: { ahead: 0 }, staging: { ahead: 0 } })?.env.name,
+     'staging', 'tới hết thì là bậc cuối')
+
+  /* Vào bằng đường khác vẫn là đã tới — nội dung nằm ở đó rồi. */
+  eq(at({ 'ctalk/develop': { ahead: 0 }, develop: { ahead: 5, landed: true }, staging: { ahead: 5 } })
+       ?.env.name, 'integration', 'landed cũng tính là đã tới')
+  eq(at({ 'ctalk/develop': { ahead: 0 }, develop: { ahead: 5, landed: true }, staging: { ahead: 5 } })
+       ?.kind, 'landed', 'và giữ nguyên kiểu để vẽ đúng dấu ✓~')
+
+  /* Repo không có nhánh môi trường ấy thì là chưa đo, không phải đã tới. */
+  eq(at({ 'ctalk/develop': { ahead: null }, develop: { ahead: null }, staging: { ahead: null } })?.env.name,
+     undefined, 'absent không phải là đã tới')
 }
 
 /* ── cột gom thành nhóm người dùng thật sự khai ─────────────────────────── */

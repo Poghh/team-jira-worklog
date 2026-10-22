@@ -1322,6 +1322,24 @@ export function envLadder(state: EnvState, envs: StageConfig[]): EnvCell[] {
 }
 
 /**
+ * Môi trường xa nhất code đã tới, hoặc null nếu chưa tới đâu.
+ *
+ * Lấy ô **cuối cùng** đã tới chứ không phải ô đầu: thứ tự `envSteps` là đường
+ * đi của code, nên tới được `staging` nghĩa là đã qua cả hai bậc dưới — và
+ * bậc đáng nói là bậc cao nhất.
+ *
+ * `landed` cũng tính là đã tới: nội dung nằm ở đó rồi, chỉ là vào bằng đường
+ * khác. Một dãy toàn `behind` trả về null, và đó đúng là "chưa lên môi trường
+ * nào" — khác hẳn với chưa đo được, vốn là `absent` và người gọi phải tự phân
+ * biệt.
+ */
+export function envFurthest(cells: EnvCell[]): EnvCell | null {
+  let out: EnvCell | null = null;
+  for (const c of cells) if (c.kind === "arrived" || c.kind === "landed") out = c;
+  return out;
+}
+
+/**
  * Reads the stored blob, accepting the shape that predates `landed`.
  *
  * Cards written before the patch-vs-SHA fix hold a bare number per environment.
