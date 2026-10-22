@@ -236,16 +236,22 @@ export async function queueBranchesAction(input: {
  * File chưa từng `git add` không vào được ảnh chụp — `stash create` không có
  * `--include-untracked`. Màn hình phải nói ra, không được im.
  */
-async function snapshotLocal(dir: string): Promise<{ sha: string; label: string; why: string }> {
+async function snapshotLocal(
+  dir: string,
+): Promise<{ sha: string; base: string; label: string; why: string }> {
   const on = await currentBranch(dir).catch(() => '')
+  const head = await revParse(dir, 'HEAD').catch(() => '')
+  if (!head)
+    return { sha: '', base: '', label: '', why: 'Không đọc được HEAD của clone làm việc.' }
   const dirty = await countDirty(dir).catch(() => 0)
   if (dirty > 0) {
     const sha = await snapshotUncommitted(dir).catch(() => '')
-    if (sha) return { sha, label: `${dirty} file chưa commit${on ? ` trên ${on}` : ''}`, why: '' }
+    // `stash create` dựng commit lơ lửng có cha là HEAD, nên hai đầu mút của
+    // lượt soi là HEAD → ảnh chụp: đúng phần đang gõ dở, không gì khác.
+    if (sha)
+      return { sha, base: head, label: `${dirty} file chưa commit${on ? ` trên ${on}` : ''}`, why: '' }
   }
-  const head = await revParse(dir, 'HEAD').catch(() => '')
-  if (!head) return { sha: '', label: '', why: 'Không đọc được HEAD của clone làm việc.' }
-  return { sha: head, label: on || 'HEAD', why: '' }
+  return { sha: head, base: head, label: on || 'HEAD', why: '' }
 }
 
 /** Nhánh trong clone làm việc, kèm có việc chưa commit hay không. */
@@ -279,9 +285,13 @@ export async function listWorkAction(
 /**
  * Xếp hàng một lượt tự review.
  *
- * `headRef` chốt **ở đây**, không phải lúc chạy: giữa lúc bấm và lúc tới lượt
- * có hàng đợi, và bạn có thể đã gõ tiếp. Review phải soi đúng thứ bạn nhìn
- * thấy lúc bấm, nếu không thì finding trỏ vào những dòng đã đổi.
+ * Soi **thay đổi trước → sau**, không so với nhánh nền: vòng 1 là HEAD → phần
+ * đang gõ dở, vòng sau là lần sửa trước → lần sửa này. Nhánh nền kéo cả lịch
+ * sử nhánh vào mỗi lượt, và phần bạn vừa sửa chìm trong đó.
+ *
+ * Cả hai đầu mút chốt **ở đây**, không phải lúc chạy: giữa lúc bấm và lúc tới
+ * lượt có hàng đợi, và bạn có thể đã gõ tiếp. Review phải soi đúng thứ bạn
+ * nhìn thấy lúc bấm, nếu không thì finding trỏ vào những dòng đã đổi.
  *
  * Với việc chưa commit, cái chốt được là một commit lơ lửng do `git stash
  * create` dựng — xem {@link snapshotUncommitted}. Nó không đụng cây làm việc,
@@ -291,7 +301,6 @@ export async function queueSelfAction(input: {
   repoId: string
   /** Clone làm việc đã chọn. Phải là một trong những cái repo đã khai. */
   workPath: string
-  baseRef: string
   title: string
   note: string
   docs?: DocFile[]
@@ -304,10 +313,18 @@ export async function queueSelfAction(input: {
   if (!repo) return { ok: false, message: 'Không thấy repo.' }
   const dir = repo.workPaths.includes(input.workPath) ? input.workPath : repo.workPaths[0]
   if (!dir) return { ok: false, message: 'Repo này chưa khai clone làm việc.' }
-  if (!input.baseRef.trim()) return { ok: false, message: 'Chọn nhánh nền để so.' }
 
   const snap = await snapshotLocal(dir)
   if (!snap.sha) return { ok: false, message: snap.why }
+  // Cây sạch thì hai đầu mút trùng nhau và lượt soi rỗng. Nói thẳng ở đây,
+  // chứ chạy một lượt rỗng rồi trả về "không thấy gì" thì đọc thành "code
+  // sạch" — một câu trả lời sai về đúng thứ người dùng muốn biết.
+  if (snap.sha === snap.base)
+    return {
+      ok: false,
+      message:
+        'Chưa có thay đổi nào để soi — cây làm việc đang sạch. Sửa code rồi bấm lại, hoặc dùng “Nhánh” nếu muốn soi cả nhánh.',
+    }
   const head = snap.sha
   const label = snap.label
 
@@ -315,9 +332,11 @@ export async function queueSelfAction(input: {
     kind: 'self',
     repoId: input.repoId,
     workPath: dir,
-    title: input.title.trim() || `${label} → ${input.baseRef.trim()}`,
+    title: input.title.trim() || label,
     prNumber: null,
-    baseRef: input.baseRef.trim(),
+    // Một sha, không phải tên nhánh: đây là mốc "trước" đã chốt, và tên nhánh
+    // thì lúc chạy có thể đã trỏ chỗ khác.
+    baseRef: snap.base,
     headRef: head,
     author: '',
     url: '',

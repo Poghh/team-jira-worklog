@@ -202,12 +202,30 @@ async function prepareAndSpawn(roundId: number) {
       // `headRef` của self review là ref hay sha đã chốt lúc xếp hàng. Chốt ở
       // đó chứ không ở đây: giữa lúc bấm và lúc chạy có hàng đợi, và bạn có thể
       // đã gõ tiếp — review phải soi đúng thứ bạn nhìn thấy lúc bấm.
+      const prevHead = prev?.headSha ?? ''
       await withRepoLock(r.localPath, async () => {
         headSha = await fetchFromWork(r.localPath, work, item.headRef, `self-${roundId}-head`)
-        // Base lấy từ chính clone làm việc luôn: nhánh nền có thể cũng chỉ tồn
-        // tại dưới máy, và hỏi origin sẽ không thấy.
-        const baseTip = await fetchFromWork(r.localPath, work, item.baseRef, `self-${roundId}-base`)
-        baseSha = await mergeBase(r.localPath, baseTip, headSha)
+        /**
+         * Mốc "trước" là lần sửa trước, không phải nhánh nền.
+         *
+         * Vòng 1 so với HEAD lúc bấm — tức đúng phần bạn đang gõ dở. Vòng sau
+         * so với ảnh chụp của vòng trước, nên mỗi lượt chỉ soi phần vừa thêm.
+         * So với nhánh nền thì một nhánh ba mươi commit nào cũng kéo cả ba
+         * mươi commit vào mỗi lượt, và phần bạn vừa sửa chìm trong đó.
+         *
+         * `item.baseRef` là một sha chốt lúc xếp hàng, không phải tên nhánh:
+         * giữa lúc bấm và lúc tới lượt có hàng đợi, và HEAD dưới máy có thể đã
+         * đi tiếp. Đường truyền local cho fetch thẳng một sha.
+         *
+         * Ảnh chụp vòng trước còn tồn tại vì mỗi vòng kéo nó vào một ref riêng
+         * `refs/review/self-<vòng>-head`, nên `git gc` không dọn mất. Vẫn hỏi
+         * `commitExists`: một clone review bị xoá đi dựng lại thì không còn
+         * ref nào, và lúc đó lùi về mốc gốc là đúng hơn là hỏng cả lượt.
+         */
+        baseSha =
+          prevHead && (await commitExists(r.localPath, prevHead))
+            ? prevHead
+            : await fetchFromWork(r.localPath, work, item.baseRef, `self-${roundId}-base`)
         workdir = await addWorktree(r.localPath, `r${roundId}`, headSha)
       })
 
@@ -217,21 +235,15 @@ async function prepareAndSpawn(roundId: number) {
         if (!addDirs.includes(dir)) addDirs.push(dir)
       }
 
-      const prevHeadSha = prev?.headSha ?? ''
+      const prevHeadSha = prevHead
       /**
        * Vòng sau soi **đúng phần bạn vừa sửa**, không soi lại từ đầu.
        *
-       * Không hỏi `isAncestor` như đường PR. Ảnh chụp của hai vòng là hai commit
-       * lơ lửng cùng mọc từ HEAD — không cái nào là tổ tiên của cái nào, nên
-       * hỏi câu đó thì câu trả lời luôn là "không", và mọi vòng 2 đều thành
-       * review lại toàn bộ. Thứ cần ở đây chỉ là `git diff vòng-trước vòng-này`
-       * chạy được, và điều đó chỉ đòi commit cũ còn tồn tại.
-       *
-       * Nó còn tồn tại vì mỗi vòng kéo ảnh chụp vào một ref riêng
-       * `refs/review/self-<vòng>-head`, nên `git gc` không dọn mất.
+       * Giờ đây `baseSha` đã chính là ảnh chụp vòng trước, nên cờ này chỉ còn
+       * để lời nhắc nói đúng tên hai đầu mút cho Claude. Nó vẫn hỏi lại
+       * `commitExists` theo đúng điều kiện ở trên, không đoán lại.
        */
-      const incremental =
-        Boolean(prevHeadSha) && (await commitExists(r.localPath, prevHeadSha))
+      const incremental = Boolean(prevHeadSha) && baseSha === prevHeadSha
 
       prompt = codePrompt({
         repoName: r.name,
