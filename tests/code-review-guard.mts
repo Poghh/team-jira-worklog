@@ -11,6 +11,7 @@
 import {
   DISALLOWED_TOOLS,
   ISOLATION_FLAGS,
+  assertConfluenceRequest,
   assertGitArgs,
   assertGithubRequest,
   assertGraphql,
@@ -105,6 +106,21 @@ if (cfg['protocol.allow'] !== 'never' || cfg['credential.helper'] !== '' || cfg.
   bad++
   console.log('FAIL git config in review env', cfg)
 }
+
+// Confluence: read pages, add comments — never edit, move or delete anything.
+ok(() => assertConfluenceRequest('GET', '/wiki/api/v2/pages/123?body-format=storage'), 'read a page')
+ok(() => assertConfluenceRequest('GET', '/wiki/download/attachments/123/a.png'), 'download an image')
+ok(() => assertConfluenceRequest('POST', '/wiki/api/v2/footer-comments'), 'footer comment / reply')
+ok(() => assertConfluenceRequest('POST', '/wiki/api/v2/inline-comments'), 'inline comment / reply')
+no(() => assertConfluenceRequest('PUT', '/wiki/api/v2/pages/123'), 'edit a page')
+no(() => assertConfluenceRequest('DELETE', '/wiki/api/v2/pages/123'), 'delete a page')
+no(() => assertConfluenceRequest('POST', '/wiki/api/v2/pages'), 'create a page')
+no(() => assertConfluenceRequest('POST', '/wiki/api/v2/pages/123/labels'), 'label a page')
+no(() => assertConfluenceRequest('PUT', '/wiki/api/v2/footer-comments/9'), 'edit a comment')
+no(() => assertConfluenceRequest('DELETE', '/wiki/api/v2/inline-comments/9'), 'delete a comment')
+no(() => assertConfluenceRequest('POST', '/wiki/rest/api/content/123/child/attachment'), 'upload an attachment')
+no(() => assertConfluenceRequest('POST', '/wiki/api/v2/footer-comments/../pages'), 'path trick')
+no(() => assertConfluenceRequest('GET', '/rest/api/3/issue/X-1'), 'not Confluence')
 
 console.log(bad ? `${bad}/${n} failed` : `code-review guard: ${n} ok`)
 process.exit(bad ? 1 : 0)

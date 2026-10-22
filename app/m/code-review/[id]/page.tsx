@@ -4,6 +4,7 @@ import { connection } from 'next/server'
 import { ModuleGate } from '@/lib/modules/gate'
 import { checkClaude } from '@/lib/modules/code-review/claude'
 import { getRepo, getReviewConfig, getTemplates, resolveAddressee } from '@/lib/modules/code-review/config'
+import { type ConfluenceAccess, checkConfluenceAccess } from '@/lib/modules/code-review/confluence'
 import { type GithubAccess, checkAccess } from '@/lib/modules/code-review/github'
 import { ensureTicker, tick } from '@/lib/modules/code-review/runner'
 import { findPrItem, getItem } from '@/lib/modules/code-review/store'
@@ -36,6 +37,11 @@ export default async function ReviewItemPage({
     item.kind === 'pr' && item.prNumber && repo?.githubRepo
       ? await checkAccess(repo.githubRepo, item.prNumber)
       : { read: false, write: false, reason: '' }
+  // Same for Confluence pages of a doc review: send buttons only when the account may comment.
+  const cfAccess: ConfluenceAccess =
+    item.kind === 'doc' && item.sources[0]
+      ? await checkConfluenceAccess(item.sources[0].pageId)
+      : { read: false, write: false, reason: '' }
   return (
     <ModuleGate id="code-review">
       <ReviewDetail
@@ -45,6 +51,7 @@ export default async function ReviewItemPage({
         claude={await checkClaude()}
         initialTab={tab === 'discussion' ? 'discussion' : 'review'}
         access={access}
+        cfAccess={cfAccess}
         addressee={resolveAddressee(item)}
         templates={getTemplates()}
         repos={getReviewConfig().repos}

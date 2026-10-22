@@ -13,26 +13,29 @@ import { type Addressee, type DocFile, type FindingView, type RoundLink, address
  * string field written in Vietnamese, ready as-is.
  */
 
-const PREVIOUS = {
-  type: 'array',
-  description: 'Đánh giá lại từng vấn đề của vòng trước (theo id đã cho).',
-  items: {
-    type: 'object',
-    properties: {
-      id: { type: 'integer' },
-      status: { type: 'string', enum: ['fixed', 'partial', 'not_fixed'] },
-      note: { type: 'string', description: 'Một câu: đã sửa thế nào / còn thiếu gì.' },
-      line: { type: 'integer', description: 'Code: dòng hiện tại của vấn đề ở commit head mới (nếu còn).' },
-      end_line: { type: 'integer' },
-      reply: {
-        type: 'string',
-        description:
-          'Chỉ với vấn đề đã được gửi lên PR (có ghi "đã gửi lên PR"): câu trả lời tiếp gửi member NGAY TRONG THREAD CŨ — phản hồi lại điều member đã trả lời (nếu có), nói rõ còn thiếu gì; đã sửa ổn thì một câu xác nhận ngắn. Không nhắc lại nguyên văn comment cũ.',
+/** Re-assessing last round's findings; `where` is where posted comments live (PR / Confluence). */
+const previousSchema = (where: string) =>
+  ({
+    type: 'array',
+    description: 'Đánh giá lại từng vấn đề của vòng trước (theo id đã cho).',
+    items: {
+      type: 'object',
+      properties: {
+        id: { type: 'integer' },
+        status: { type: 'string', enum: ['fixed', 'partial', 'not_fixed'] },
+        note: { type: 'string', description: 'Một câu: đã sửa thế nào / còn thiếu gì.' },
+        line: { type: 'integer', description: 'Code: dòng hiện tại của vấn đề ở commit head mới (nếu còn).' },
+        end_line: { type: 'integer' },
+        reply: {
+          type: 'string',
+          description: `Chỉ với vấn đề đã được gửi lên ${where} (có ghi "đã gửi lên ${where}"): câu trả lời tiếp gửi member NGAY TRONG THREAD CŨ — phản hồi lại điều member đã trả lời (nếu có), nói rõ còn thiếu gì; đã sửa ổn thì một câu xác nhận ngắn. Không nhắc lại nguyên văn comment cũ.`,
+        },
       },
+      required: ['id', 'status', 'note'],
     },
-    required: ['id', 'status', 'note'],
-  },
-} as const
+  }) as const
+
+const PREVIOUS = previousSchema('PR')
 
 /**
  * No summary comment for a PR: the reviewer does not post one. Anything that
@@ -105,13 +108,19 @@ export const DOC_SCHEMA = {
           severity: { type: 'string', enum: ['blocker', 'major', 'minor', 'nit'] },
           title: { type: 'string' },
           comment: { type: 'string' },
-          file: { type: 'string', description: 'File code liên quan, nếu có.' },
+          file: { type: 'string', description: 'File code liên quan, nếu có (đường dẫn tương đối từ gốc repo chính).' },
           line: { type: 'integer' },
+          doc: { type: 'string', description: 'Đường dẫn tuyệt đối của tài liệu (đúng như trong danh sách) mà vấn đề nằm trong đó.' },
+          quote: {
+            type: 'string',
+            description:
+              'Chỉ với trang Confluence: chép NGUYÊN VĂN 3–15 từ liên tiếp trong trang, nằm trong MỘT đoạn / ô bảng / tiêu đề, đúng chỗ vấn đề (thiếu thì lấy tiêu đề mục nên bổ sung). Không thêm ký tự markdown (*, `, #, |). Để trống nếu không chọn được.',
+          },
         },
         required: ['category', 'location', 'severity', 'title', 'comment'],
       },
     },
-    previous: PREVIOUS,
+    previous: previousSchema('Confluence'),
   },
   required: ['verdict', 'reviewer_note', 'findings'],
 } as const
@@ -190,17 +199,18 @@ export type ThreadTalk = Map<number, Array<{ author: string; body: string }>>
 
 function previousBlock(prev: FindingView[], kind: 'code' | 'doc', talk?: ThreadTalk): string {
   if (!prev.length) return ''
+  const target = kind === 'doc' ? 'Confluence' : 'PR'
   const list = prev
     .map((f) => {
       const loc = kind === 'doc' ? f.location : `${f.file}${f.line ? `:${f.line}` : ''}` || 'comment rời'
-      const posted = f.ghUrl ? ' (đã gửi lên PR)' : ''
+      const posted = f.ghUrl ? ` (đã gửi lên ${target})` : ''
       const replies = (talk?.get(f.id) ?? [])
         .map((c) => `    ↳ ${c.author}: ${c.body.replace(/\s+/g, ' ').slice(0, 400)}`)
         .join('\n')
       return `- id ${f.id} [${f.severity}] ${loc}${posted} — ${f.title}\n  ${f.body.replace(/\n+/g, ' ').slice(0, 600)}${replies ? `\n  Trao đổi sau đó trong thread:\n${replies}` : ''}`
     })
     .join('\n')
-  return `\n## Các vấn đề đã nêu ở vòng trước (còn mở)\n${list}\nVới vấn đề "đã gửi lên PR", điền \`reply\` trong \`previous\`: câu trả lời tiếp trong thread cũ, theo đúng xưng hô và giọng văn ở trên.\n`
+  return `\n## Các vấn đề đã nêu ở vòng trước (còn mở)\n${list}\nVới vấn đề "đã gửi lên ${target}", điền \`reply\` trong \`previous\`: câu trả lời tiếp trong thread cũ, theo đúng xưng hô và giọng văn ở trên.\n`
 }
 
 function commentsBlock(comments: PullComment[]): string {
@@ -332,6 +342,8 @@ export function docPrompt(input: {
   repoName: string
   ref: string
   headSha: string
+  /** More repos to check the documents against, each at its own branch. */
+  links: RoundLink[]
   docs: DocFile[]
   prevDocs: DocFile[]
   note: string
@@ -342,23 +354,67 @@ export function docPrompt(input: {
   addressee: Addressee | null
   /** Which template each document must follow (TDD iOS / TDD SDK…). */
   templates: TemplateUse[]
+  /** Replies under findings already posted on Confluence. */
+  talk?: ThreadTalk
 }): string {
+  const label = (d: DocFile) => (d.role === 'spec' ? 'Mô tả chức năng' : d.role === 'tdd' ? 'TDD' : 'Tài liệu')
   const list = (ds: DocFile[]) =>
-    ds.map((d) => `- [${d.role === 'spec' ? 'Mô tả chức năng' : d.role === 'tdd' ? 'TDD' : 'Tài liệu'}] ${d.name}: ${d.path}`).join('\n')
+    ds
+      .map((d) =>
+        d.source
+          ? `- [Confluence · ${label(d)}] "${d.name}"${d.source.trail.length ? ` (trang con, dưới: ${d.source.trail.join(' › ')})` : ''} · phiên bản ${d.source.version}: ${d.path}`
+          : `- [${label(d)}] ${d.name}: ${d.path}`,
+      )
+      .join('\n')
+  const confluence = input.docs.some((d) => d.source)
+  const pdf = input.docs.some((d) => !d.source)
+  const howToRead = [
+    pdf && 'PDF — đọc bằng Read, tài liệu dài thì đọc theo từng khoảng trang',
+    confluence &&
+      'trang Confluence đã được chuyển sang Markdown (.md) — đọc bằng Read; hình / sơ đồ trong trang là file ảnh có đường dẫn tuyệt đối trong cú pháp ![…](…), mở bằng Read khi nội dung phụ thuộc vào hình',
+  ]
+    .filter(Boolean)
+    .join('; ')
+  const extra = input.links.filter((l) => !l.error && l.workdir)
+  const missed = input.links.filter((l) => l.error)
   const code = input.repoName
-    ? `Thư mục hiện tại là code của repo **${input.repoName}** ở \`${input.ref}\` (commit ${input.headSha}). Đối chiếu tài liệu với code: tài liệu mô tả đúng cái code đang/sẽ làm không, API/luồng/tên gọi có khớp không.`
+    ? `Thư mục hiện tại là code của repo **${input.repoName}** ở \`${input.ref}\` (commit ${input.headSha}).${
+        extra.length
+          ? ` Đối chiếu thêm với code của:\n${extra.map((l) => `- **${l.repoName}** ở \`${l.headRef}\` (commit ${l.headSha}) — Read / Grep / Glob theo đường dẫn tuyệt đối: ${l.workdir}`).join('\n')}\n`
+          : ' '
+      }${missed.length ? `Không lấy được: ${missed.map((l) => `${l.repoName} ${l.headRef} — ${l.error}`).join('; ')}.\n` : ''}Đối chiếu tài liệu với code: tài liệu mô tả đúng cái code đang/sẽ làm không, API/luồng/tên gọi có khớp không${extra.length ? ', và giữa các repo với nhau (vd SDK cung cấp đúng thứ app iOS cần)' : ''}. \`file\`/\`line\` chỉ dùng cho file của repo chính; vị trí ở repo khác thì ghi trong nội dung comment.`
     : 'Không có code đi kèm — chỉ review nội dung tài liệu.'
+
+  // Which Confluence pages moved since last round, so the follow-up reads those first.
+  const before = new Map(input.prevDocs.filter((d) => d.source).map((d) => [d.source!.pageId, d]))
+  const changes = input.docs
+    .filter((d) => d.source)
+    .map((d) => {
+      const old = before.get(d.source!.pageId)
+      if (!old) return `- "${d.name}": trang mới (vòng trước chưa có)`
+      return old.source!.version === d.source!.version ? '' : `- "${d.name}": phiên bản ${old.source!.version} → ${d.source!.version} (bản cũ: ${old.path})`
+    })
+    .filter(Boolean)
+  const gone = [...before.values()].filter((d) => !input.docs.some((x) => x.source?.pageId === d.source!.pageId))
+  const pageChanges =
+    input.round > 1 && before.size
+      ? `\nThay đổi trên Confluence so với vòng trước:\n${[...changes, ...gone.map((d) => `- "${d.name}": không còn (đã xoá / chuyển đi)`)].join('\n') || '- Không trang nào đổi phiên bản.'}\n`
+      : ''
+
   const followUp =
     input.round > 1
-      ? `Đây là **vòng review thứ ${input.round}**: tác giả đã cập nhật tài liệu.${input.prevDocs.length ? ` Bản trước để so sánh:\n${list(input.prevDocs)}` : ''}
+      ? `Đây là **vòng review thứ ${input.round}**: tác giả đã cập nhật tài liệu.${input.prevDocs.length ? ` Bản trước để so sánh:\n${list(input.prevDocs)}` : ''}${pageChanges}
 1. Với MỖI vấn đề ở danh sách "vòng trước", kiểm tra bản mới và trả vào \`previous\`: fixed / partial / not_fixed kèm một câu.
 2. Chỉ đưa vào \`findings\` vấn đề MỚI (ưu tiên phần vừa thêm/sửa), không lặp lại vấn đề cũ.
 3. \`reviewer_note\`: tác giả đã cập nhật được bao nhiêu, còn gì đáng lo, tài liệu đã đủ để implement chưa.`
       : '`reviewer_note`: tài liệu đã đủ để implement chưa, 3–5 điểm lớn nhất cần bổ sung / sửa, chỗ nào người review nên tự đọc kỹ.'
+  const anchor = confluence
+    ? `\nMỗi finding điền \`doc\` = đường dẫn tài liệu chứa vấn đề (đúng như danh sách). Với trang Confluence, điền thêm \`quote\`: đoạn chữ nguyên văn trong trang để comment được gắn (highlight) đúng chỗ — người review sẽ gửi finding thành comment trên chính trang đó. Vấn đề chung của cả bộ tài liệu thì để \`doc\` là trang gốc.\n`
+    : ''
 
   return `Bạn đang review tài liệu kỹ thuật "${input.title}" của team iOS / SDK.
 
-Tài liệu (PDF — đọc bằng Read, tài liệu dài thì đọc theo từng khoảng trang):
+Tài liệu (${howToRead}):
 ${list(input.docs)}
 
 ${code}
@@ -371,7 +427,7 @@ Tìm và phân loại:
 - unreasonable (Chưa hợp lý): thiết kế có rủi ro, phức tạp không cần thiết, khó bảo trì, có cách tốt hơn.
 - mismatch (Lệch với code/spec): tài liệu và code (hoặc TDD và spec) nói hai điều khác nhau. Nếu liên quan code, điền \`file\`/\`line\`.
 \`location\` ghi rõ tài liệu nào, mục nào, trang nào.
-
+${anchor}
 Chỉ đọc, không sửa file. Chỉ nêu điều có căn cứ trong tài liệu/code.
 \`reviewer_note\` là nhận xét RIÊNG cho người review (tech lead) — không gửi tác giả, không xưng hô với tác giả.
 
@@ -381,7 +437,7 @@ ${UNTRUSTED}
 ${SEVERITY_GUIDE}
 
 ${VOICE}
-${addressBlock(input.addressee)}${input.note.trim() ? `\n## Ghi chú của người review\n${input.note.trim()}\n` : ''}${rulesBlock(input.globalRules, input.repoRules)}${previousBlock(input.previous, 'doc')}
+${addressBlock(input.addressee)}${input.note.trim() ? `\n## Ghi chú của người review\n${input.note.trim()}\n` : ''}${rulesBlock(input.globalRules, input.repoRules)}${previousBlock(input.previous, 'doc', input.talk)}
 Khi xong, trả kết quả qua structured output theo schema.`
 }
 

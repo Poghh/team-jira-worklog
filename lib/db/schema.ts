@@ -333,6 +333,8 @@ export const reviewItems = sqliteTable(
     addressee: text("addressee").notNull().default(""),
     /** Doc reviews: the template (Cấu hình → Mẫu tài liệu) to check against; '' = none. */
     templateId: text("template_id").notNull().default(""),
+    /** JSON: Confluence pages (doc reviews) re-fetched by every round. */
+    sources: text("sources").notNull().default("[]"),
     createdAt: integer("created_at").notNull().default(now),
     updatedAt: integer("updated_at").notNull().default(now),
   },
@@ -417,6 +419,12 @@ export const reviewFindings = sqliteTable(
     followReply: text("follow_reply").notNull().default(""),
     /** Where that reply was posted, once sent. */
     followSentUrl: text("follow_sent_url").notNull().default(""),
+    /** Doc findings: Confluence page id the finding is about. */
+    docRef: text("doc_ref").notNull().default(""),
+    /** Doc findings: exact page text an inline Confluence comment hangs on. */
+    quote: text("quote").notNull().default(""),
+    /** Posted to Confluence as: '' | inline | footer (gh_comment_id / gh_url hold the comment). */
+    commentKind: text("comment_kind").notNull().default(""),
     position: integer("position").notNull().default(0),
   },
   (t) => [

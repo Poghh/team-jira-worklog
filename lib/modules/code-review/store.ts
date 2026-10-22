@@ -14,6 +14,7 @@ import {
   type ItemView,
   LIVE_STATES,
   type Addressee,
+  type ConfluenceRef,
   type PrLink,
   type RoundLink,
   type TestSuggestion,
@@ -77,6 +78,7 @@ const toItem = (r: typeof reviewItems.$inferSelect): ItemView => ({
   links: parseJsonArray<PrLink>(r.links),
   addressee: parseAddressee(r.addressee),
   templateId: r.templateId,
+  sources: parseJsonArray<ConfluenceRef>(r.sources),
   updatedAt: r.updatedAt,
 })
 
@@ -122,6 +124,9 @@ const toFinding = (r: typeof reviewFindings.$inferSelect): FindingView => ({
   ghUrl: r.ghUrl,
   followReply: r.followReply,
   followSentUrl: r.followSentUrl,
+  docRef: r.docRef,
+  quote: r.quote,
+  commentKind: r.commentKind === 'inline' || r.commentKind === 'footer' ? r.commentKind : '',
 })
 
 /* ── items ──────────────────────────────────────────────────────────────── */
@@ -148,15 +153,16 @@ export function findPrItem(repoId: string, prNumber: number): ItemView | null {
 }
 
 export function createItem(
-  input: Omit<ItemView, 'id' | 'status' | 'updatedAt' | 'seenAt' | 'links' | 'addressee' | 'templateId'> & {
+  input: Omit<ItemView, 'id' | 'status' | 'updatedAt' | 'seenAt' | 'links' | 'addressee' | 'templateId' | 'sources'> & {
     links?: PrLink[]
     templateId?: string
+    sources?: ConfluenceRef[]
   },
 ): number {
-  const { links, ...rest } = input
+  const { links, sources, ...rest } = input
   return db
     .insert(reviewItems)
-    .values({ ...rest, links: JSON.stringify(links ?? []) })
+    .values({ ...rest, links: JSON.stringify(links ?? []), sources: JSON.stringify(sources ?? []) })
     .returning({ id: reviewItems.id })
     .get().id
 }
@@ -165,7 +171,11 @@ export function setItemLinks(id: number, links: PrLink[]) {
   db.update(reviewItems).set({ links: JSON.stringify(links) }).where(eq(reviewItems.id, id)).run()
 }
 
-export function patchItem(id: number, patch: Partial<Omit<ItemView, 'id' | 'links' | 'addressee' | 'templateId'>>) {
+export function setItemSources(id: number, sources: ConfluenceRef[]) {
+  db.update(reviewItems).set({ sources: JSON.stringify(sources) }).where(eq(reviewItems.id, id)).run()
+}
+
+export function patchItem(id: number, patch: Partial<Omit<ItemView, 'id' | 'links' | 'addressee' | 'templateId' | 'sources'>>) {
   db.update(reviewItems).set({ ...patch, updatedAt: nowSql }).where(eq(reviewItems.id, id)).run()
 }
 
@@ -371,6 +381,8 @@ export function patchFinding(
     ghUrl?: string
     followReply?: string
     followSentUrl?: string
+    commentKind?: '' | 'inline' | 'footer'
+    docRef?: string
   },
 ) {
   db.update(reviewFindings).set(patch).where(eq(reviewFindings.id, id)).run()
