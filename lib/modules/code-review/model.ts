@@ -164,7 +164,23 @@ export interface PrLink {
   headRef: string
   title: string
   url: string
+  /**
+   * Clone làm việc, khi vế kia cũng đang dở **dưới máy** chứ không phải trên
+   * GitHub.
+   *
+   * Đây là trường hợp thường gặp nhất khi sửa hai repo cùng lúc: đổi một API
+   * trong SDK rồi sửa chỗ gọi bên iOS, cả hai đều chưa commit. Link theo PR
+   * không chạm tới được trạng thái đó — `prepareLinks` hỏi `origin`, mà origin
+   * thì chưa thấy gì.
+   *
+   * Khi trường này có giá trị, `headRef` và `baseRef` là **sha đã chốt** lúc
+   * xếp hàng (ảnh chụp và HEAD của nó), không phải tên nhánh.
+   */
+  workPath?: string
 }
+
+/** Vế kia cũng đang sửa dở dưới máy, chưa push. */
+export const isLocalLink = (l: Pick<PrLink, 'workPath'>) => Boolean(l.workPath)
 
 /** A link as one round resolved it: what was actually compared, and where. */
 export interface RoundLink extends PrLink {

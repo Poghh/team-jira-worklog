@@ -235,6 +235,13 @@ async function prepareAndSpawn(roundId: number) {
         if (!addDirs.includes(dir)) addDirs.push(dir)
       }
 
+      // Vế kia của một thay đổi hai repo — thường là SDK đang sửa dở dưới máy
+      // cùng lúc với app. Không có nó thì Claude chỉ thấy một đầu của chỗ nối
+      // và đọc mọi lệch nhau thành lỗi của bên đang soi.
+      links = await prepareLinks(roundId, item.links)
+      updateRound(roundId, { links: JSON.stringify(links) })
+      addDirs.push(...linkDirs(links))
+
       const prevHeadSha = prevHead
       /**
        * Vòng sau soi **đúng phần bạn vừa sửa**, không soi lại từ đầu.
@@ -249,7 +256,7 @@ async function prepareAndSpawn(roundId: number) {
         repoName: r.name,
         docs,
         docsChanged: false,
-        links: [],
+        links,
         addressee: null,
         title: item.title,
         prNumber: null,

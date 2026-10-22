@@ -283,6 +283,38 @@ export async function listWorkAction(
 }
 
 /**
+ * Chụp lại những link "dưới máy", chốt hai đầu mút cho từng cái.
+ *
+ * Cùng lý do với ảnh chụp của chính hồ sơ: giữa lúc bấm và lúc tới lượt có
+ * hàng đợi. Nếu vế kia chụp lúc chạy thì hai bên lệch nhau về thời gian, mà
+ * cả việc link là để đối chiếu hai bên ở **cùng một thời điểm**.
+ *
+ * Link không phải dưới máy (PR, cặp nhánh) đi qua đây nguyên vẹn —
+ * `prepareLinks` tự lấy chúng từ origin lúc chạy.
+ */
+async function snapshotLinks(links: PrLink[]): Promise<{ links?: PrLink[]; message?: string }> {
+  const out: PrLink[] = []
+  for (const l of links) {
+    if (!l.workPath) {
+      out.push(l)
+      continue
+    }
+    const repo = getRepo(l.repoId)
+    if (!repo) return { message: 'Một repo liên kết đã bị xoá khỏi Cấu hình.' }
+    if (!repo.workPaths.includes(l.workPath))
+      return { message: `Clone "${l.workPath}" không còn trong Cấu hình của ${repo.name}.` }
+    const snap = await snapshotLocal(l.workPath)
+    if (!snap.sha) return { message: `${repo.name}: ${snap.why}` }
+    if (snap.sha === snap.base)
+      return {
+        message: `${repo.name} không có thay đổi nào chưa commit — bỏ liên kết đó ra, hoặc liên kết PR của nó.`,
+      }
+    out.push({ ...l, headRef: snap.sha, baseRef: snap.base, title: `${repo.name} · ${snap.label}` })
+  }
+  return { links: out }
+}
+
+/**
  * Xếp hàng một lượt tự review.
  *
  * Soi **thay đổi trước → sau**, không so với nhánh nền: vòng 1 là HEAD → phần
@@ -304,6 +336,8 @@ export async function queueSelfAction(input: {
   title: string
   note: string
   docs?: DocFile[]
+  /** Vế kia của một thay đổi hai repo — xem {@link snapshotLinks}. */
+  links?: PrLink[]
 }): Promise<Result & { itemId?: number }> {
   const blocked = await ready()
   if (blocked) return blocked
@@ -328,6 +362,9 @@ export async function queueSelfAction(input: {
   const head = snap.sha
   const label = snap.label
 
+  const linked = await snapshotLinks(input.links ?? [])
+  if (!linked.links) return { ok: false, message: linked.message! }
+
   const itemId = createItem({
     kind: 'self',
     repoId: input.repoId,
@@ -341,6 +378,7 @@ export async function queueSelfAction(input: {
     author: '',
     url: '',
     note: input.note.trim(),
+    links: linked.links,
   })
   queueRound(itemId, docs)
   ensureTicker()
@@ -390,6 +428,13 @@ export async function reReviewAction(itemId: number, note?: string, newDocs?: Do
     const snap = await snapshotLocal(dir)
     if (!snap.sha) return { ok: false, message: snap.why }
     patchItem(itemId, { headRef: snap.sha })
+    // Vế kia chụp lại cùng lúc, nếu không thì vòng sau đối chiếu code iOS mới
+    // với SDK của vòng trước — và chỗ lệch nó báo là chỗ bạn vừa sửa xong.
+    if (item.links.some((l) => l.workPath)) {
+      const relinked = await snapshotLinks(item.links)
+      if (!relinked.links) return { ok: false, message: relinked.message! }
+      setItemLinks(itemId, relinked.links)
+    }
   }
 
   queueRound(itemId, docs ?? carriedDocs(itemId))

@@ -7,6 +7,7 @@ import {
   type DocFile,
   type FindingView,
   type ItemKind,
+  isLocalLink,
   type RoundLink,
   addressOf,
   isCode,
@@ -227,23 +228,30 @@ function linksBlock(links: RoundLink[]): string {
   if (!links.length) return ''
   const ok = links.filter((l) => !l.error)
   const bad = links.filter((l) => l.error)
+  const anyLocal = ok.some((l) => isLocalLink(l))
   const list = ok
     .map(
-      (l) => `- **${l.repoName}** ${l.prNumber ? `PR #${l.prNumber}` : 'nhánh'} "${l.title}" (\`${l.headRef}\` → \`${l.baseRef}\`)
+      (l) => `- **${l.repoName}** ${isLocalLink(l) ? 'thay đổi chưa commit dưới máy' : l.prNumber ? `PR #${l.prNumber}` : 'nhánh'} "${l.title}"${isLocalLink(l) ? '' : ` (\`${l.headRef}\` → \`${l.baseRef}\`)`}
   - Diff đầy đủ (đọc bằng Read): ${l.diffPath}
   - Code ở commit head ${l.headSha} (Read / Grep / Glob theo đường dẫn tuyệt đối): ${l.workdir}`,
     )
     .join('\n')
   return `
-## PR liên quan ở repo khác — xem cùng để có bức tranh đầy đủ
-Thay đổi này đi cặp với PR dưới đây (vd SDK và app iOS dùng SDK đó). Đọc diff của nó trước, rồi mở code khi cần.
-${list || '(không chuẩn bị được PR liên quan nào)'}${bad.length ? `\nKhông lấy được: ${bad.map((l) => `${l.repoName} ${l.prNumber ? `#${l.prNumber}` : l.headRef} — ${l.error}`).join('; ')}` : ''}
+## Thay đổi đi kèm ở repo khác — xem cùng để có bức tranh đầy đủ
+Thay đổi này đi cặp với thứ dưới đây (vd SDK và app iOS dùng SDK đó), chụp **cùng một thời điểm** với phần đang review. Đọc diff của nó trước, rồi mở code khi cần.
+${list || '(không chuẩn bị được thứ liên quan nào)'}${bad.length ? `\nKhông lấy được: ${bad.map((l) => `${l.repoName} ${l.prNumber ? `#${l.prNumber}` : l.headRef} — ${l.error}`).join('; ')}` : ''}
 Khi review, kiểm tra thêm chỗ nối giữa hai bên:
 - API / model / enum / error mà bên này gọi có khớp với thay đổi bên kia không (tên, tham số, kiểu, optional, giá trị mặc định).
 - Thay đổi hành vi bên kia (luồng, thread / actor gọi callback, thứ tự sự kiện, case mới) bên này đã xử lý chưa.
 - Bên này có dựa vào điều bên kia chưa làm, hoặc làm khác đi không; breaking change nào chưa được cập nhật.
 - Những vấn đề này dùng \`category\` = "Lệch với PR liên quan".
-Finding vẫn chỉ gắn vào file / dòng của PR ĐANG review (repo hiện tại); nói rõ file / dòng bên PR kia trong nội dung comment. Không review chất lượng code của PR kia — nó có lượt review riêng.
+Finding vẫn chỉ gắn vào file / dòng của phần ĐANG review (repo hiện tại); nói rõ file / dòng bên kia trong nội dung comment.${
+    anyLocal
+      ? `
+Phần "chưa commit dưới máy" **không có lượt review riêng** — nó chưa thành PR. Nên nếu chỗ nối sai vì bên kia sai, cứ nói ra: một **comment rời** (\`file\` để trống, không có \`line\`) mô tả file/dòng bên kia và phải sửa gì. Vẫn không đi soi chất lượng code chung của bên kia — chỉ chỗ nối giữa hai bên.`
+      : `
+ Không review chất lượng code của PR kia — nó có lượt review riêng.`
+  }
 `
 }
 

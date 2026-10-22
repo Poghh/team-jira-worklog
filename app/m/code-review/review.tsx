@@ -505,29 +505,44 @@ function NewSelf({ repos, canRun, onDone }: { repos: RepoPreset[]; canRun: boole
           </label>
         </div>
       )}
-      {repo && <SelfForm repo={repo} canRun={canRun} onDone={onDone} />}
+      {repo && <SelfForm repo={repo} repos={repos} canRun={canRun} onDone={onDone} />}
     </div>
   )
 }
 
-function SelfForm({ repo, canRun, onDone }: { repo: RepoPreset; canRun: boolean; onDone: () => void }) {
+function SelfForm({
+  repo,
+  repos,
+  canRun,
+  onDone,
+}: {
+  repo: RepoPreset
+  /** Mọi repo đã khai — để nối với vế kia đang sửa dở ở repo khác. */
+  repos: RepoPreset[]
+  canRun: boolean
+  onDone: () => void
+}) {
   const [work, setWork] = useState(repo.workPaths[0] ?? '')
   const [dirty, setDirty] = useState(0)
   const [head, setHead] = useState('')
+  const [links, setLinks] = useState<PrLink[]>([])
   const [title, setTitle] = useState('')
   const [note, setNote] = useState('')
   const [msg, setMsg] = useState('')
   const [busy, start] = useTransition()
   const attach = useAttachments()
 
+  // Không bọc trong `start`: nó dùng chung cờ với nút gửi, nên nút sẽ đọc
+  // "Đang xếp hàng…" trong lúc trang mới chỉ đang tải — nói dối về một việc
+  // chưa hề xảy ra. Nút vẫn tắt trong lúc tải vì `dirty` còn là 0.
   useEffect(() => {
-    start(async () => {
+    void (async () => {
       const r = await listWorkAction(repo.id, work)
       setDirty(r.dirty)
       setMsg(r.ok ? '' : r.message)
       // Nhánh đang đứng là mặc định hợp lý nhất: gần như luôn là thứ bạn vừa gõ.
       if (r.head) setHead(r.head)
-    })
+    })()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [repo.id, work])
 
@@ -590,6 +605,21 @@ function SelfForm({ repo, canRun, onDone }: { repo: RepoPreset; canRun: boolean;
         được ảnh chụp. Muốn soi cả nhánh thì dùng <b>Nhánh</b>.
       </p>
 
+      {/* Vế kia của một thay đổi hai repo. Chụp cùng lúc với phần đang soi —
+          lệch thời điểm thì chỗ nối Claude báo sai là chỗ bạn vừa sửa xong. */}
+      {repos.length > 1 && (
+        <div className="mt-2.5 border-t border-line pt-2.5">
+          <div className="mb-1.5 text-[12px] text-ink-2">
+            Soi kèm repo khác{' '}
+            <span className="text-ink-3">
+              — SDK và app dùng SDK đó. Claude đối chiếu chỗ nối giữa hai bên,
+              finding vẫn gắn vào repo này.
+            </span>
+          </div>
+          <LinkPicker repos={repos} value={links} onChange={setLinks} preferNot={repo.id} allowLocal />
+        </div>
+      )}
+
       <input value={title} onChange={(e) => setTitle(e.target.value)} className={INPUT + ' mt-2'} placeholder="Tên hồ sơ (không bắt buộc)" />
       <textarea value={note} onChange={(e) => setNote(e.target.value)} rows={2} className={INPUT + ' mt-2'} placeholder="Ghi chú cho Claude (không bắt buộc)" />
       {attach.section('Mô tả chức năng, TDD… Claude sẽ kiểm code có làm đúng và đủ theo tài liệu không.')}
@@ -609,10 +639,12 @@ function SelfForm({ repo, canRun, onDone }: { repo: RepoPreset; canRun: boolean;
                 title,
                 note,
                 docs,
+                links,
               })
               setMsg(r.message)
               if (r.ok) {
                 attach.clear()
+                setLinks([])
                 onDone()
               }
             })
@@ -1132,12 +1164,20 @@ export function LinkPicker({
   value,
   onChange,
   preferNot,
+  allowLocal = false,
 }: {
   repos: RepoPreset[]
   value: PrLink[]
   onChange: (links: PrLink[]) => void
   /** The repo being reviewed — offered last, since the pair is usually cross-repo. */
   preferNot?: string
+  /**
+   * Cho phép liên kết **việc chưa commit** ở clone làm việc của repo kia.
+   *
+   * Chỉ bật cho tự review: sửa một API trong SDK rồi sửa chỗ gọi bên iOS, cả
+   * hai đều chưa push — link theo PR không chạm tới được trạng thái đó.
+   */
+  allowLocal?: boolean
 }) {
   const ordered = [...repos].sort((a, b) => Number(a.id === preferNot) - Number(b.id === preferNot))
   const [repoId, setRepoId] = useState(ordered[0]?.id ?? '')
@@ -1147,6 +1187,17 @@ export function LinkPicker({
   const [head, setHead] = useState('')
   const [base, setBase] = useState('')
   const [msg, setMsg] = useState('')
+  const [work, setWork] = useState('')
+  const [dirty, setDirty] = useState<number | null>(null)
+
+  useEffect(() => {
+    if (!allowLocal) return
+    const dir = repo?.workPaths[0] ?? ''
+    setWork(dir)
+    setDirty(null)
+    if (!dir) return
+    void listWorkAction(repo!.id, dir).then((r) => setDirty(r.ok ? r.dirty : 0))
+  }, [allowLocal, repo])
 
   useEffect(() => {
     setPulls([])
@@ -1160,7 +1211,10 @@ export function LinkPicker({
 
   const name = (id: string) => repos.find((r) => r.id === id)?.name ?? '?'
   const add = (l: PrLink) => {
-    if (value.some((v) => v.repoId === l.repoId && (l.prNumber ? v.prNumber === l.prNumber : v.headRef === l.headRef))) return
+    const same = (v: PrLink) =>
+      v.repoId === l.repoId &&
+      (l.workPath ? v.workPath === l.workPath : l.prNumber ? v.prNumber === l.prNumber : v.headRef === l.headRef)
+    if (value.some(same)) return
     onChange([...value, l])
     setPick('')
     setHead('')
@@ -1191,6 +1245,55 @@ export function LinkPicker({
             </option>
           ))}
         </select>
+        {/* Việc chưa commit đứng trước PR: khi đang sửa hai repo cùng lúc thì
+            đây mới là thứ cần nối, và PR của repo kia thường còn chưa tồn tại. */}
+        {allowLocal && repo && repo.workPaths.length > 0 && (
+          <>
+            {repo.workPaths.length > 1 && (
+              <select
+                value={work}
+                onChange={(e) => {
+                  setWork(e.target.value)
+                  setDirty(null)
+                  void listWorkAction(repo.id, e.target.value).then((r) => setDirty(r.ok ? r.dirty : 0))
+                }}
+                className={INPUT + ' w-auto max-w-[280px] font-mono text-[12px]'}
+              >
+                {repo.workPaths.map((w) => (
+                  <option key={w} value={w}>
+                    {w}
+                  </option>
+                ))}
+              </select>
+            )}
+            <button
+              type="button"
+              className={BTN}
+              disabled={!work || dirty === 0}
+              title={
+                dirty === 0
+                  ? `${repo.name} không có thay đổi nào chưa commit`
+                  : 'Soi kèm việc chưa commit ở repo này'
+              }
+              onClick={() =>
+                add({
+                  repoId,
+                  prNumber: null,
+                  // Hai sha do server chụp lúc xếp hàng; ở đây chỉ đánh dấu
+                  // "lấy dưới máy" và nói clone nào.
+                  headRef: '',
+                  baseRef: '',
+                  title: `${repo.name} · việc chưa commit`,
+                  url: '',
+                  workPath: work,
+                })
+              }
+            >
+              + Việc chưa commit
+              {dirty === null ? '' : dirty > 0 ? ` (${dirty} file)` : ' (không có)'}
+            </button>
+          </>
+        )}
         {repo?.githubRepo ? (
           <>
             <select value={pick} onChange={(e) => setPick(e.target.value)} className={INPUT + ' w-auto max-w-[420px]'}>
