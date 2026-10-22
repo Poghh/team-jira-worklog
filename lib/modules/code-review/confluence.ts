@@ -7,7 +7,8 @@ import { readCreds } from '@/lib/jira/client'
 
 import { locateQuote, markdownToStorage, parsePageUrl, referencedImages, storageToMarkdown, storageToText } from './confluence-md'
 import { assertConfluenceRequest } from './guard'
-import type { ConfluenceRef, DocFile } from './model'
+import { getTemplates } from './config'
+import { type ConfluenceRef, type DocFile, type SubpageChoice, type SubpageInfo, guessRole, guessTemplate } from './model'
 import { DOCS_DIR } from './uploads'
 
 /**
@@ -163,6 +164,18 @@ async function descendants(pageId: string, limit: number): Promise<Descendant[]>
   return out.sort((a, b) => (a.depth ?? 0) - (b.depth ?? 0))
 }
 
+/** The pages under `pageId` with the folders / pages between — what the reviewer classifies. */
+export async function subpages(pageId: string): Promise<SubpageInfo[]> {
+  const tree = await descendants(pageId, MAX_PAGES)
+  const byId = new Map(tree.map((d) => [d.id, d]))
+  const trailOf = (d: Descendant): string[] => {
+    const t: string[] = []
+    for (let p = d.parentId ? byId.get(d.parentId) : undefined; p; p = p.parentId ? byId.get(p.parentId) : undefined) t.unshift(p.title)
+    return t
+  }
+  return tree.filter((d) => d.type === 'page' && d.id !== pageId).map((d) => ({ pageId: d.id, title: d.title, trail: trailOf(d) }))
+}
+
 const safe = (s: string) => s.replace(/[^\p{L}\p{N}._ -]+/gu, '_').trim().slice(0, 80) || 'page'
 
 interface AttachmentJson {
@@ -205,8 +218,8 @@ async function saveImages(pageId: string, xhtml: string, dir: string): Promise<M
 /**
  * Fetches the pasted pages — and the subpages of those that ask for it — at
  * their current version, writes each as Markdown, and returns them as the
- * round's documents. A subpage takes the role and template of the page it
- * was reached from.
+ * round's documents. Each subpage has the role / template the reviewer chose
+ * for it (ConfluenceRef.pages), or one guessed from its title.
  */
 export async function fetchPages(itemId: number, refs: ConfluenceRef[]): Promise<DocFile[]> {
   const s = site()
@@ -214,25 +227,29 @@ export async function fetchPages(itemId: number, refs: ConfluenceRef[]): Promise
   await fs.mkdir(dir, { recursive: true })
 
   // Which pages to read, root first, then its tree — each page once.
-  const plan: Array<{ pageId: string; ref: ConfluenceRef; trail: string[] }> = []
+  const templates = getTemplates()
+  const plan: Array<{ pageId: string; ref: ConfluenceRef; trail: string[]; role: ConfluenceRef['role']; templateId: string }> = []
   const seen = new Set<string>()
   for (const ref of refs) {
     if (!seen.has(ref.pageId)) {
       seen.add(ref.pageId)
-      plan.push({ pageId: ref.pageId, ref, trail: [] })
+      plan.push({ pageId: ref.pageId, ref, trail: [], role: ref.role, templateId: ref.templateId })
     }
     if (!ref.children) continue
-    const tree = await descendants(ref.pageId, MAX_PAGES)
-    const byId = new Map(tree.map((d) => [d.id, d]))
-    const trailOf = (d: Descendant): string[] => {
-      const t: string[] = []
-      for (let p = d.parentId ? byId.get(d.parentId) : undefined; p; p = p.parentId ? byId.get(p.parentId) : undefined) t.unshift(p.title)
-      return t
-    }
-    for (const d of tree) {
-      if (d.type !== 'page' || seen.has(d.id)) continue
-      seen.add(d.id)
-      plan.push({ pageId: d.id, ref, trail: [ref.title, ...trailOf(d)] })
+    for (const d of await subpages(ref.pageId)) {
+      if (seen.has(d.pageId)) continue
+      // Chosen when the link was added; a page added since is guessed from its title.
+      const choice: SubpageChoice | undefined = ref.pages?.[d.pageId]
+      if (choice?.skip) continue
+      seen.add(d.pageId)
+      const role = choice?.role ?? guessRole(d.title)
+      plan.push({
+        pageId: d.pageId,
+        ref,
+        trail: [ref.title, ...d.trail],
+        role,
+        templateId: choice ? choice.templateId : guessTemplate({ name: d.title, role }, templates, ''),
+      })
     }
   }
   if (plan.length > MAX_PAGES) {
@@ -258,9 +275,9 @@ export async function fetchPages(itemId: number, refs: ConfluenceRef[]): Promise
     await fs.writeFile(file, `${head}\n${markdown || '_(trang trống)_'}\n`)
     docs.push({
       name: page.title,
-      role: p.ref.role,
+      role: p.role,
       path: file,
-      ...(p.ref.templateId ? { templateId: p.ref.templateId } : {}),
+      ...(p.templateId ? { templateId: p.templateId } : {}),
       source: { pageId: p.pageId, url, version, rootId: p.ref.pageId, trail: p.trail },
     })
   }
@@ -411,12 +428,33 @@ export async function resolveSources(input: unknown): Promise<ConfluenceRef[] | 
         pageId: info.pageId,
         title: info.title,
         children: raw?.children !== false,
-        role: (ROLES as readonly string[]).includes(raw?.role) ? raw.role : /tdd|design|thiết kế|thiet ke/i.test(info.title) ? 'tdd' : 'spec',
+        role: (ROLES as readonly string[]).includes(raw?.role) ? raw.role : guessRole(info.title),
         templateId: typeof raw?.templateId === 'string' ? raw.templateId : '',
+        pages: cleanChoices(raw?.pages),
       })
     } catch (err) {
       return (err as Error).message
     }
   }
   return out
+}
+
+function cleanChoices(input: unknown): Record<string, SubpageChoice> | undefined {
+  if (!input || typeof input !== 'object') return undefined
+  const out: Record<string, SubpageChoice> = {}
+  for (const [id, c] of Object.entries(input as Record<string, Partial<SubpageChoice>>).slice(0, 200)) {
+    if (!/^\d+$/.test(id) || !c) continue
+    out[id] = {
+      role: (ROLES as readonly string[]).includes(c.role ?? '') ? c.role! : 'other',
+      templateId: typeof c.templateId === 'string' ? c.templateId : '',
+      ...(c.skip ? { skip: true } : {}),
+    }
+  }
+  return Object.keys(out).length ? out : undefined
+}
+
+/** A pasted link, read now: its title and — for the reviewer to classify — every subpage. */
+export async function previewLink(url: string): Promise<{ pageId: string; title: string; url: string; subpages: SubpageInfo[] }> {
+  const info = await resolvePageLink(url)
+  return { ...info, subpages: await subpages(info.pageId) }
 }

@@ -2,7 +2,7 @@
 
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
-import { useCallback, useEffect, useMemo, useState, useTransition } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, useTransition } from 'react'
 
 import type { ClaudeCheck } from '@/lib/modules/code-review/claude'
 import {
@@ -11,8 +11,11 @@ import {
   type DocRole,
   type DocTemplate,
   type ItemSummary,
+  guessRole,
   guessTemplate,
   LIVE_STATES,
+  type SubpageChoice,
+  type SubpageInfo,
   type PrLink,
   linkLabel,
   type RepoPreset,
@@ -25,6 +28,7 @@ import {
   archiveItemAction,
   cancelRoundAction,
   checkUpdatesAction,
+  confluencePreviewAction,
   dashboardAction,
   deleteItemAction,
   listBranchesAction,
@@ -823,7 +827,7 @@ export function RepoRows({ repos, value, onChange }: { repos: RepoPreset[]; valu
   )
 }
 
-/** A pasted Confluence link, before the server has read it. */
+/** A pasted Confluence link — and, once read, its subpages with the role / template of each. */
 export interface SourceRow {
   url: string
   children: boolean
@@ -831,9 +835,18 @@ export interface SourceRow {
   templateId: string
   /** Template chosen by hand — not re-guessed. */
   touched?: boolean
+  /** Filled in once the link has been read. */
+  title?: string
+  subpages?: SubpageInfo[]
+  pages?: Record<string, SubpageChoice>
+  error?: string
 }
 
-/** A readable name from the link itself (…/pages/123/TDD+iOS+Login) — for guessing role and template. */
+/** What the server keeps of a row — the rest is for this form only. */
+export const sourcePayload = (rows: SourceRow[]) =>
+  rows.map(({ url, children, role, templateId, pages }) => ({ url, children, role, templateId, pages }))
+
+/** A readable name from the link itself (…/pages/123/TDD+iOS+Login), until the page is read. */
 const titleFromUrl = (url: string) => {
   try {
     const seg = new URL(url).pathname.split('/').filter(Boolean)
@@ -843,15 +856,58 @@ const titleFromUrl = (url: string) => {
   }
 }
 
-export function sourceRow(url: string, templates: DocTemplate[], fallback: string): SourceRow {
-  const name = titleFromUrl(url)
-  const role: DocRole = /tdd|design|thiet.?ke|thiết.?kế/i.test(name) ? 'tdd' : 'spec'
-  return { url, children: true, role, templateId: guessTemplate({ name, role }, templates, fallback) }
+function RoleTemplate({
+  role,
+  templateId,
+  templates,
+  onRole,
+  onTemplate,
+  disabled,
+}: {
+  role: DocRole
+  templateId: string
+  templates: DocTemplate[]
+  onRole: (r: DocRole) => void
+  onTemplate: (t: string) => void
+  disabled?: boolean
+}) {
+  return (
+    <>
+      <select
+        value={role}
+        disabled={disabled}
+        onChange={(e) => onRole(e.target.value as DocRole)}
+        className="rounded-md border border-line bg-ground px-1.5 py-0.5 text-[12px] disabled:opacity-50"
+      >
+        {(Object.keys(DOC_ROLE_LABEL) as DocRole[]).map((r) => (
+          <option key={r} value={r}>
+            {DOC_ROLE_LABEL[r]}
+          </option>
+        ))}
+      </select>
+      <select
+        value={templateId}
+        disabled={disabled}
+        onChange={(e) => onTemplate(e.target.value)}
+        className="max-w-[180px] rounded-md border border-line bg-ground px-1.5 py-0.5 text-[12px] disabled:opacity-50"
+        title="Mẫu tài liệu trang này phải theo"
+      >
+        <option value="">📐 Không mẫu</option>
+        {templates.map((t) => (
+          <option key={t.id} value={t.id}>
+            📐 {t.name}
+          </option>
+        ))}
+      </select>
+    </>
+  )
 }
 
 /**
  * Confluence pages to review, pasted as links — many at once (one per line).
- * A page with subpages is read with all of them unless "subpage" is unticked.
+ * Each link is read right away: its subpages are listed so every one gets its
+ * own role and template (spec page above, TDD iOS / TDD SDK below), or is
+ * left out. Subpages added on Confluence later are guessed from their title.
  */
 export function SourceRows({
   value,
@@ -865,19 +921,73 @@ export function SourceRows({
   fallbackTemplate: string
 }) {
   const [draft, setDraft] = useState('')
+  const [loading, setLoading] = useState<Set<string>>(new Set())
+  const [openTree, setOpenTree] = useState<Set<string>>(new Set())
+  // The latest rows, for previews that come back after other edits.
+  const latest = useRef(value)
+  latest.current = value
+
+  const guessT = (name: string, role: DocRole) => guessTemplate({ name, role }, templates, role === 'tdd' ? fallbackTemplate : '')
+
+  const read = async (url: string) => {
+    setLoading((l) => new Set(l).add(url))
+    const r = await confluencePreviewAction(url)
+    setLoading((l) => {
+      const n = new Set(l)
+      n.delete(url)
+      return n
+    })
+    onChange(
+      latest.current.map((row) => {
+        if (row.url !== url) return row
+        if (!r.ok) return { ...row, error: r.message }
+        const title = r.title ?? row.title
+        const role = row.touched ? row.role : guessRole(title ?? '')
+        const pages: Record<string, SubpageChoice> = { ...row.pages }
+        for (const p of r.subpages ?? []) {
+          if (pages[p.pageId]) continue
+          const pr = guessRole(p.title)
+          pages[p.pageId] = { role: pr, templateId: guessT(p.title, pr) }
+        }
+        return {
+          ...row,
+          error: '',
+          title,
+          role,
+          templateId: row.touched ? row.templateId : guessT(title ?? '', role),
+          subpages: r.subpages ?? [],
+          pages,
+        }
+      }),
+    )
+  }
+
+  // Rows saved before this form existed (detail page) are read once to list their subpages.
+  useEffect(() => {
+    for (const row of value) if (!row.subpages && !row.error && !loading.has(row.url)) void read(row.url)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [value.map((v) => v.url).join('\n')])
+
   const add = (text: string) => {
-    const urls = text
-      .split(/[\s,]+/)
-      .map((u) => u.trim())
-      .filter((u) => /^https?:\/\//.test(u) && !value.some((v) => v.url === u))
-    if (urls.length) onChange([...value, ...[...new Set(urls)].map((u) => sourceRow(u, templates, fallbackTemplate))])
+    const urls = [
+      ...new Set(
+        text
+          .split(/[\s,]+/)
+          .map((u) => u.trim())
+          .filter((u) => /^https?:\/\//.test(u) && !value.some((v) => v.url === u)),
+      ),
+    ]
+    if (urls.length) onChange([...value, ...urls.map((url) => ({ url, children: true, role: 'spec' as DocRole, templateId: '' }))])
     setDraft('')
   }
   const set = (i: number, p: Partial<SourceRow>) => onChange(value.map((v, j) => (j === i ? { ...v, ...p } : v)))
+  const setPage = (i: number, id: string, p: Partial<SubpageChoice>) =>
+    onChange(value.map((v, j) => (j === i ? { ...v, pages: { ...v.pages, [id]: { ...(v.pages?.[id] ?? { role: 'spec', templateId: '' }), ...p } } } : v)))
+
   return (
     <div className="flex flex-col gap-1.5">
       <div className="text-[12px] text-ink-2">
-        🌐 Trang Confluence — dán một hoặc nhiều link (mỗi dòng một link). Trang có subpage thì Claude tự đọc luôn cả cây bên dưới, không cần dán link subpage.
+        🌐 Trang Confluence — dán một hoặc nhiều link (mỗi dòng một link). Trang có subpage thì Claude tự đọc luôn cả cây bên dưới; chọn loại / mẫu cho từng subpage ở danh sách hiện ra.
       </div>
       <textarea
         value={draft}
@@ -898,51 +1008,103 @@ export function SourceRows({
         onBlur={() => draft.trim() && add(draft)}
         rows={2}
         className={INPUT}
-        placeholder="https://….atlassian.net/wiki/spaces/…/pages/123456/TDD+…"
+        placeholder="https://….atlassian.net/wiki/spaces/…/pages/123456/…"
       />
       {value.length > 0 && (
-        <ul className="flex flex-col gap-1.5">
-          {value.map((v, i) => (
-            <li key={v.url} className="flex flex-wrap items-center gap-2 text-[12.5px]">
-              <select
-                value={v.role}
-                onChange={(e) => {
-                  const role = e.target.value as DocRole
-                  set(i, { role, templateId: v.touched ? v.templateId : guessTemplate({ name: titleFromUrl(v.url), role }, templates, fallbackTemplate) })
-                }}
-                className="rounded-md border border-line bg-ground px-1.5 py-0.5 text-[12px]"
-              >
-                {(Object.keys(DOC_ROLE_LABEL) as DocRole[]).map((r) => (
-                  <option key={r} value={r}>
-                    {DOC_ROLE_LABEL[r]}
-                  </option>
-                ))}
-              </select>
-              <select
-                value={v.templateId}
-                onChange={(e) => set(i, { templateId: e.target.value, touched: true })}
-                className="max-w-[180px] rounded-md border border-line bg-ground px-1.5 py-0.5 text-[12px]"
-                title="Mẫu tài liệu trang này (và subpage) phải theo"
-              >
-                <option value="">📐 Không mẫu</option>
-                {templates.map((t) => (
-                  <option key={t.id} value={t.id}>
-                    📐 {t.name}
-                  </option>
-                ))}
-              </select>
-              <label className="flex items-center gap-1 text-[12px] text-ink-2" title="Đọc cả các trang con bên dưới">
-                <input type="checkbox" checked={v.children} onChange={(e) => set(i, { children: e.target.checked })} />
-                cả subpage
-              </label>
-              <a href={v.url} target="_blank" rel="noreferrer" className="min-w-0 flex-1 truncate text-accent-ink hover:underline" title={v.url}>
-                {titleFromUrl(v.url) || v.url}
-              </a>
-              <button type="button" className="text-ink-3 hover:text-crit" onClick={() => onChange(value.filter((_, j) => j !== i))}>
-                ✕
-              </button>
-            </li>
-          ))}
+        <ul className="flex flex-col gap-2">
+          {value.map((v, i) => {
+            const subs = v.subpages ?? []
+            const kept = subs.filter((p) => !v.pages?.[p.pageId]?.skip).length
+            // Open by default — the point is to classify each page; long trees can be folded.
+            const shown = !openTree.has(v.url)
+            return (
+              <li key={v.url} className="rounded-md border border-line px-2.5 py-2 text-[12.5px]">
+                <div className="flex flex-wrap items-center gap-2">
+                  <RoleTemplate
+                    role={v.role}
+                    templateId={v.templateId}
+                    templates={templates}
+                    onRole={(role) => set(i, { role, templateId: v.touched ? v.templateId : guessT(v.title ?? '', role) })}
+                    onTemplate={(templateId) => set(i, { templateId, touched: true })}
+                  />
+                  <a href={v.url} target="_blank" rel="noreferrer" className="min-w-0 flex-1 truncate font-medium text-accent-ink hover:underline" title={v.url}>
+                    {v.title || titleFromUrl(v.url) || v.url}
+                  </a>
+                  <button type="button" className="text-ink-3 hover:text-crit" onClick={() => onChange(value.filter((_, j) => j !== i))}>
+                    ✕
+                  </button>
+                </div>
+                {loading.has(v.url) && <div className="mt-1 text-[12px] text-ink-3">Đang đọc trang và subpage…</div>}
+                {v.error && (
+                  <div className="mt-1 text-[12px] text-crit">
+                    {v.error}{' '}
+                    <button type="button" className="underline" onClick={() => void read(v.url)}>
+                      Thử lại
+                    </button>
+                  </div>
+                )}
+                {subs.length > 0 && (
+                  <div className="mt-1.5 border-l-2 border-line pl-2.5">
+                    <div className="mb-1 flex flex-wrap items-center gap-2 text-[12px] text-ink-2">
+                      <label className="flex items-center gap-1">
+                        <input type="checkbox" checked={v.children} onChange={(e) => set(i, { children: e.target.checked })} />
+                        Đọc cả subpage
+                      </label>
+                      <span className="text-ink-3">
+                        · {kept}/{subs.length} trang
+                      </span>
+                      {subs.length > 3 && (
+                        <button
+                          type="button"
+                          className="text-accent-ink hover:underline"
+                          onClick={() =>
+                            setOpenTree((o) => {
+                              const n = new Set(o)
+                              if (n.has(v.url)) n.delete(v.url)
+                              else n.add(v.url)
+                              return n
+                            })
+                          }
+                        >
+                          {shown ? 'Thu gọn' : 'Hiện từng trang'}
+                        </button>
+                      )}
+                    </div>
+                    {v.children && shown && (
+                      <ul className="flex flex-col gap-1">
+                        {subs.map((p) => {
+                          const c = v.pages?.[p.pageId] ?? { role: guessRole(p.title), templateId: '' }
+                          return (
+                            <li key={p.pageId} className={'flex flex-wrap items-center gap-2 ' + (c.skip ? 'opacity-50' : '')}>
+                              <input
+                                type="checkbox"
+                                checked={!c.skip}
+                                title="Đọc trang này"
+                                onChange={(e) => setPage(i, p.pageId, { skip: !e.target.checked })}
+                              />
+                              <RoleTemplate
+                                role={c.role}
+                                templateId={c.templateId}
+                                templates={templates}
+                                disabled={c.skip}
+                                onRole={(role) => setPage(i, p.pageId, { role, templateId: guessT(p.title, role) })}
+                                onTemplate={(templateId) => setPage(i, p.pageId, { templateId })}
+                              />
+                              <span className="min-w-0 flex-1 truncate" title={[...p.trail, p.title].join(' › ')}>
+                                {p.trail.length > 0 && <span className="text-ink-3">{p.trail.join(' › ')} › </span>}
+                                {p.title}
+                              </span>
+                            </li>
+                          )
+                        })}
+                      </ul>
+                    )}
+                  </div>
+                )}
+                {v.subpages && subs.length === 0 && <div className="mt-1 text-[11.5px] text-ink-3">Trang này không có subpage.</div>}
+              </li>
+            )
+          })}
         </ul>
       )}
     </div>
@@ -982,14 +1144,14 @@ function NewDoc({ repos, templates, canRun }: { repos: RepoPreset[]; templates: 
           <button
             type="button"
             className={BTN_PRI}
-            disabled={!up.ready || !title.trim() || missingRef || (up.count === 0 && sources.length === 0)}
+            disabled={!up.ready || !title.trim() || missingRef || (up.count === 0 && sources.length === 0) || sources.some((x) => !x.subpages)}
             onClick={() =>
               void up.submit({
                 title,
                 note,
                 templateId: fallback,
                 repos: JSON.stringify(docRepos),
-                ...(sources.length ? { sources: JSON.stringify(sources.map(({ touched: _, ...s }) => s)) } : {}),
+                ...(sources.length ? { sources: JSON.stringify(sourcePayload(sources)) } : {}),
               })
             }
           >

@@ -28,11 +28,12 @@ import {
   ConfluenceError,
   checkConfluenceAccess,
   postPageComment,
+  previewLink,
   replyToPageComment,
   resolveSources,
 } from '@/lib/modules/code-review/confluence'
 import { ForbiddenAction } from '@/lib/modules/code-review/guard'
-import { confluencePages, type Addressee, type DocFile, type DocTemplate, type FindingStatus, HONORIFICS, type PrLink, addressOf, anchorInDiff, cleanHandle, validHandle, type FindingView, type ItemSummary, type RepoPreset, type RoundView, where } from '@/lib/modules/code-review/model'
+import { confluencePages, type SubpageInfo, type Addressee, type DocFile, type DocTemplate, type FindingStatus, HONORIFICS, type PrLink, addressOf, anchorInDiff, cleanHandle, validHandle, type FindingView, type ItemSummary, type RepoPreset, type RoundView, where } from '@/lib/modules/code-review/model'
 import { type LogLine, cancelRound, ensureTicker, tick, updateRoundSummary, viewLog } from '@/lib/modules/code-review/runner'
 import {
   createItem,
@@ -878,6 +879,18 @@ export async function confluenceReplyAction(findingId: number, body: string): Pr
     const c = await replyToPageComment({ kind: f.commentKind, parentId: f.ghCommentId, body: text, pageUrl })
     patchFinding(findingId, { followSentUrl: c.url })
     return { ok: true, message: 'Đã trả lời trong thread trên Confluence.', url: c.url }
+  } catch (err) {
+    return failure(err)
+  }
+}
+
+/** A pasted Confluence link: its title and its subpages, so each can get its own role and template. */
+export async function confluencePreviewAction(
+  url: string,
+): Promise<Result & { pageId?: string; title?: string; url?: string; subpages?: SubpageInfo[] }> {
+  if (!enabled()) return OFF
+  try {
+    return { ok: true, message: '', ...(await previewLink(url)) }
   } catch (err) {
     return failure(err)
   }

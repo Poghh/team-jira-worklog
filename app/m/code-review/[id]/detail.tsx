@@ -50,7 +50,7 @@ import {
   setTemplateAction,
   updateSummaryAction,
 } from '../actions'
-import { type DocRepo, LinkPicker, RepoRows, type SourceRow, SourceRows, useAttachments, useDocUpload } from '../review'
+import { type DocRepo, LinkPicker, RepoRows, type SourceRow, SourceRows, sourcePayload, useAttachments, useDocUpload } from '../review'
 import { CfAccessNote, CfProvider, FindingConfluence, SendAllConfluence } from './confluence'
 import { type ChatHandle, ChatPanel, ChatShortcut } from './chat'
 import { AccessNote, DiscussionPanel, FindingGithub, GhProvider, ReplyWithBody, SubmitReview, useGh } from './github'
@@ -253,7 +253,7 @@ function DocSourcesBar({ item, repos, templates }: { item: ItemView; repos: Repo
   const initialRepos = (): DocRepo[] =>
     item.repoId ? [{ repoId: item.repoId, ref: item.headRef }, ...item.links.map((l) => ({ repoId: l.repoId, ref: l.headRef }))] : []
   const initialSources = (): SourceRow[] =>
-    item.sources.map((s) => ({ url: s.url, children: s.children, role: s.role, templateId: s.templateId, touched: true }))
+    item.sources.map((s) => ({ url: s.url, children: s.children, role: s.role, templateId: s.templateId, pages: s.pages, title: s.title, touched: true }))
   const [open, setOpen] = useState(false)
   const [docRepos, setDocRepos] = useState(initialRepos)
   const [sources, setSources] = useState(initialSources)
@@ -295,7 +295,7 @@ function DocSourcesBar({ item, repos, templates }: { item: ItemView; repos: Repo
               disabled={busy || docRepos.some((r) => !r.ref.trim())}
               onClick={() =>
                 start(async () => {
-                  const a = await setSourcesAction(item.id, sources.map(({ touched: _, ...s }) => s))
+                  const a = await setSourcesAction(item.id, sourcePayload(sources))
                   const b = a.ok ? await setDocReposAction(item.id, docRepos) : a
                   setMsg(a.ok && b.ok ? `${a.message} ${b.message}` : b.message)
                   if (a.ok && b.ok) {

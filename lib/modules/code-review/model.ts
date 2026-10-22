@@ -95,8 +95,36 @@ export interface ConfluenceRef {
   /** Also read every subpage under it. */
   children: boolean
   role: DocRole
-  /** Template the page (and its subpages) must follow; '' = none / the item's default. */
+  /** Template the pasted page must follow; '' = none / the item's default. */
   templateId: string
+  /**
+   * Per subpage, by page id: its own role / template, or `skip` to leave it
+   * out. A subpage not listed (added after the link was pasted) is guessed
+   * from its title.
+   */
+  pages?: Record<string, SubpageChoice>
+}
+
+export interface SubpageChoice {
+  role: DocRole
+  templateId: string
+  skip?: boolean
+}
+
+/** A page under a pasted one, as listed for the reviewer to classify. */
+export interface SubpageInfo {
+  pageId: string
+  title: string
+  /** Titles between the pasted page and this one (folders included). */
+  trail: string[]
+}
+
+/**
+ * The role a page most likely plays, from its title: a TDD / design / iOS /
+ * SDK / Android page is a TDD, anything else a functional spec.
+ */
+export function guessRole(title: string): DocRole {
+  return /tdd|design|thi[eế]t.?k[eế]|\bios\b|\bsdk\b|android|backend|\bweb\b/i.test(title) ? 'tdd' : 'spec'
 }
 
 /** One fetched page, as a round saw it. */
