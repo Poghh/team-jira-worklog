@@ -18,7 +18,6 @@ import {
   linkLabel,
   type RepoPreset,
   shortSha,
-  type WorkBranch,
 } from '@/lib/modules/code-review/model'
 
 import {
@@ -512,11 +511,9 @@ function NewSelf({ repos, canRun, onDone }: { repos: RepoPreset[]; canRun: boole
 }
 
 function SelfForm({ repo, canRun, onDone }: { repo: RepoPreset; canRun: boolean; onDone: () => void }) {
-  const [branches, setBranches] = useState<WorkBranch[]>([])
   const [work, setWork] = useState(repo.workPaths[0] ?? '')
   const [dirty, setDirty] = useState(0)
   const [head, setHead] = useState('')
-  const [base, setBase] = useState('')
   const [title, setTitle] = useState('')
   const [note, setNote] = useState('')
   const [msg, setMsg] = useState('')
@@ -526,7 +523,6 @@ function SelfForm({ repo, canRun, onDone }: { repo: RepoPreset; canRun: boolean;
   useEffect(() => {
     start(async () => {
       const r = await listWorkAction(repo.id, work)
-      setBranches(r.branches)
       setDirty(r.dirty)
       setMsg(r.ok ? '' : r.message)
       // Nhánh đang đứng là mặc định hợp lý nhất: gần như luôn là thứ bạn vừa gõ.
@@ -534,8 +530,6 @@ function SelfForm({ repo, canRun, onDone }: { repo: RepoPreset; canRun: boolean;
     })
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [repo.id, work])
-
-  const localOnly = branches.filter((b) => !b.onRemote).length
 
   if (!repo.workPaths.length)
     return (
@@ -552,8 +546,8 @@ function SelfForm({ repo, canRun, onDone }: { repo: RepoPreset; canRun: boolean;
     <div className={CARD}>
       <div className={CTITLE}>Tự review — {repo.name}</div>
       <p className="mt-1.5 text-[12.5px] text-ink-3">
-        Thấy được cả nhánh chưa push{localOnly ? ` (đang có ${localOnly})` : ''} và việc chưa
-        commit. App chỉ đọc clone này, không ghi gì vào nó.
+        Soi đúng phần bạn đang sửa dở — thay đổi <b>chưa commit</b>, so với
+        HEAD. App chỉ đọc clone này, không ghi gì vào nó.
       </p>
 
       {/* Một repo, nhiều clone — đo trên máy thật: hai clone cùng trỏ về
@@ -574,33 +568,26 @@ function SelfForm({ repo, canRun, onDone }: { repo: RepoPreset; canRun: boolean;
         <p className="mt-1 font-mono text-[11.5px] text-ink-3">{work}</p>
       )}
 
-      {/* Không có ô "soi cái gì" nữa. Tự review soi **thay đổi dưới máy ngay
-          lúc bấm** — commit chưa push cộng việc chưa commit — nên chỉ còn một
-          câu hỏi: so với nhánh nền nào. */}
+      {/* Không còn ô nào. Tự review soi **thay đổi trước → sau**: vòng 1 là
+          HEAD → phần đang gõ dở, vòng sau là lần sửa trước → lần sửa này. Hỏi
+          nhánh nền là hỏi sai câu — nó kéo cả lịch sử nhánh vào mỗi lượt, và
+          phần vừa sửa chìm trong đó. */}
       <div className="mt-2 rounded-md border border-line bg-ground px-2.5 py-2 text-[12.5px] text-ink-2">
-        Sẽ soi: <b>{head || 'HEAD'}</b>
-        {dirty > 0 ? ` · ${dirty} file chưa commit` : ' · cây làm việc đang sạch'}
+        {dirty > 0 ? (
+          <>
+            Sẽ soi <b>{dirty} file chưa commit</b> trên{' '}
+            <span className="font-mono">{head || 'HEAD'}</span>
+          </>
+        ) : (
+          <span className="text-warn">
+            Cây làm việc đang sạch — chưa có thay đổi nào để soi.
+          </span>
+        )}
       </div>
-      <label className="mt-2 block text-[12px] text-ink-2">
-        So với nhánh nền
-        <input
-          list={`self-br-${repo.id}`}
-          value={base}
-          onChange={(e) => setBase(e.target.value)}
-          className={INPUT}
-          placeholder="ctalk/develop"
-        />
-      </label>
-      <datalist id={`self-br-${repo.id}`}>
-        <option value="HEAD" />
-        {branches.map((b) => (
-          <option key={b.name} value={b.name} />
-        ))}
-      </datalist>
       <p className="mt-1 text-[11.5px] text-ink-3">
-        Gồm cả commit chưa push lẫn việc chưa commit. File chưa từng{' '}
-        <span className="font-mono">git add</span> không vào được ảnh chụp.
-        {' '}Chạy lại lần sau sẽ chụp lại và chỉ soi phần bạn vừa sửa.
+        Vòng sau chỉ soi <b>phần bạn vừa sửa thêm</b>, không soi lại từ đầu.
+        File chưa từng <span className="font-mono">git add</span> không vào
+        được ảnh chụp. Muốn soi cả nhánh thì dùng <b>Nhánh</b>.
       </p>
 
       <input value={title} onChange={(e) => setTitle(e.target.value)} className={INPUT + ' mt-2'} placeholder="Tên hồ sơ (không bắt buộc)" />
@@ -611,7 +598,7 @@ function SelfForm({ repo, canRun, onDone }: { repo: RepoPreset; canRun: boolean;
         <button
           type="button"
           className={BTN_PRI}
-          disabled={busy || !canRun || !base.trim()}
+          disabled={busy || !canRun || dirty === 0}
           onClick={() =>
             start(async () => {
               const docs = await attach.upload()
@@ -619,7 +606,6 @@ function SelfForm({ repo, canRun, onDone }: { repo: RepoPreset; canRun: boolean;
               const r = await queueSelfAction({
                 repoId: repo.id,
                 workPath: work,
-                baseRef: base.trim(),
                 title,
                 note,
                 docs,
