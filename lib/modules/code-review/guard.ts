@@ -3,7 +3,7 @@
  * allowlists, so "review and comment, nothing else" is a property of the code
  * rather than a habit of whoever edits it next.
  *
- * Three layers, each enough on its own:
+ * Three layers (plus Confluence, 1b), each enough on its own:
  *
  *   1. GitHub: the token may be able to merge, push, delete branches. The app
  *      may only POST to the four endpoints that create comments / reviews, and
@@ -72,6 +72,30 @@ export function assertGraphql(query: string) {
   const others = [...q.matchAll(/\b(\w+)\s*\(\s*input\s*:/g)].map((m) => m[1])
   if (!top || !GRAPHQL_MUTATIONS.includes(top) || others.some((m) => !GRAPHQL_MUTATIONS.includes(m)) || others.length > 1) {
     throw new ForbiddenAction(`Chặn: GraphQL mutation "${top ?? '?'}" không được phép (chỉ resolve / unresolve thread).`)
+  }
+}
+
+/* ── 1b. Confluence ─────────────────────────────────────────────────────── */
+
+/**
+ * The Atlassian token is the reviewer's own, and it can usually edit, move and
+ * delete the pages being reviewed. The module reads pages and adds comments
+ * (new ones and replies) — nothing else: no PUT, no DELETE, no page bodies,
+ * no attachments, no labels, no resolving someone else's comment.
+ */
+const CONFLUENCE_WRITES: RegExp[] = [
+  /^\/wiki\/api\/v2\/footer-comments$/,
+  /^\/wiki\/api\/v2\/inline-comments$/,
+]
+
+/** Reads anywhere under /wiki; the two comment endpoints for POST; nothing else. */
+export function assertConfluenceRequest(method: string, pathname: string) {
+  const bare = pathname.split('?')[0]
+  if (!bare.startsWith('/wiki/')) throw new ForbiddenAction(`Chặn: ${bare} không phải Confluence.`)
+  if (method === 'GET') return
+  if (method !== 'POST') throw new ForbiddenAction(`Chặn: module chỉ được đọc và comment, không được ${method} lên Confluence.`)
+  if (!CONFLUENCE_WRITES.some((re) => re.test(bare))) {
+    throw new ForbiddenAction(`Chặn: ${bare} không nằm trong danh sách được phép (chỉ comment trên Confluence).`)
   }
 }
 

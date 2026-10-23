@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation'
 import { useCallback, useEffect, useMemo, useRef, useState, useTransition } from 'react'
 
 import type { ClaudeCheck } from '@/lib/modules/code-review/claude'
+import type { ConfluenceAccess } from '@/lib/modules/code-review/confluence'
 import type { GithubAccess } from '@/lib/modules/code-review/github'
 import {
   DOC_CATEGORIES,
@@ -29,6 +30,8 @@ import {
   VERDICT_LABEL,
   allClipboard,
   blobUrl,
+  confluencePages,
+  type DocFile,
   findingClipboard,
   shortSha,
   where,
@@ -41,11 +44,14 @@ import {
   patchFindingAction,
   reReviewAction,
   setAddresseeAction,
+  setDocReposAction,
   setLinksAction,
+  setSourcesAction,
   setTemplateAction,
   updateSummaryAction,
 } from '../actions'
-import { LinkPicker, useAttachments, useDocUpload } from '../review'
+import { type DocRepo, LinkPicker, RepoRows, type SourceRow, SourceRows, sourcePayload, useAttachments, useDocUpload } from '../review'
+import { CfAccessNote, CfProvider, FindingConfluence, SendAllConfluence } from './confluence'
 import { type ChatHandle, ChatPanel, ChatShortcut } from './chat'
 import { AccessNote, DiscussionPanel, FindingGithub, GhProvider, ReplyWithBody, SubmitReview, useGh } from './github'
 import {
@@ -75,6 +81,7 @@ export function ReviewDetail({
   linkedItems,
   addressee,
   templates,
+  cfAccess,
 }: {
   item: ItemView
   repoName: string
@@ -82,6 +89,8 @@ export function ReviewDetail({
   claude: ClaudeCheck
   initialTab: 'review' | 'discussion'
   access: GithubAccess
+  /** Doc reviews on Confluence: whether the account may comment on the pages. */
+  cfAccess: ConfluenceAccess
   repos: RepoPreset[]
   /** `${repoId}#${prNumber}` → id of the item tracking that linked PR here. */
   linkedItems: Record<string, number>
@@ -126,6 +135,7 @@ export function ReviewDetail({
 
   return (
     <GhProvider itemId={item.id} onGithub={onGithub} initialAccess={access}>
+    <CfProvider itemId={item.id} enabled={item.kind === 'doc' && item.sources.length > 0} initialAccess={cfAccess}>
       <header className="mb-4">
         <Link href="/m/code-review" className={CTITLE + ' hover:text-ink'}>
           ← Code review
@@ -141,12 +151,22 @@ export function ReviewDetail({
               {item.headRef} → {item.baseRef}
             </span>
           ) : (
-            item.headRef && <span className="font-mono">đối chiếu {item.headRef}</span>
+            item.headRef && (
+              <span className="font-mono">
+                đối chiếu {item.headRef}
+                {item.links.map((l) => (
+                  <span key={`${l.repoId}:${l.headRef}`}>
+                    {' '}
+                    · {repos.find((r) => r.id === l.repoId)?.name ?? '?'} {l.headRef}
+                  </span>
+                ))}
+              </span>
+            )
           )}
           {item.author && <span>· {item.author}</span>}
           {item.url && (
             <a href={item.url} target="_blank" rel="noreferrer" className="text-accent-ink hover:underline">
-              Mở trên GitHub ↗
+              {item.kind === 'doc' ? 'Mở trên Confluence ↗' : 'Mở trên GitHub ↗'}
             </a>
           )}
         </div>
@@ -154,6 +174,7 @@ export function ReviewDetail({
 
       {item.kind === 'pr' && <AddresseeBar item={item} addressee={addressee} />}
       {item.kind === 'doc' && <TemplateBar item={item} templates={templates} />}
+      {item.kind === 'doc' && <DocSourcesBar item={item} repos={repos} templates={templates} />}
       {item.kind === 'pr' && <LinksBar item={item} repos={repos} linkedItems={linkedItems} />}
 
       <ClaudeBanner check={claude} onChange={setClaude} />
@@ -217,11 +238,83 @@ export function ReviewDetail({
       )}
         </>
       )}
+    </CfProvider>
     </GhProvider>
   )
 }
 
 /** Which document template this doc review is held to — changeable, from the next round. */
+/**
+ * What a doc review reads: the pasted Confluence pages (fetched afresh every
+ * round) and the repos it is checked against. Changes apply from the next round.
+ */
+function DocSourcesBar({ item, repos, templates }: { item: ItemView; repos: RepoPreset[]; templates: DocTemplate[] }) {
+  const router = useRouter()
+  const initialRepos = (): DocRepo[] =>
+    item.repoId ? [{ repoId: item.repoId, ref: item.headRef }, ...item.links.map((l) => ({ repoId: l.repoId, ref: l.headRef }))] : []
+  const initialSources = (): SourceRow[] =>
+    item.sources.map((s) => ({ url: s.url, children: s.children, role: s.role, templateId: s.templateId, pages: s.pages, title: s.title, touched: true }))
+  const [open, setOpen] = useState(false)
+  const [docRepos, setDocRepos] = useState(initialRepos)
+  const [sources, setSources] = useState(initialSources)
+  const [msg, setMsg] = useState('')
+  const [busy, start] = useTransition()
+
+  return (
+    <div className="-mt-2 mb-4 text-[12px]">
+      <div className="flex flex-wrap items-center gap-2">
+        {item.sources.length > 0 ? (
+          <span className="text-ink-2">
+            🌐{' '}
+            {item.sources.map((s, i) => (
+              <span key={s.pageId}>
+                {i > 0 && ' · '}
+                <a href={s.url} target="_blank" rel="noreferrer" className="text-accent-ink hover:underline">
+                  {s.title}
+                </a>
+                {s.children && <span className="text-ink-3"> (+ subpage)</span>}
+              </span>
+            ))}
+          </span>
+        ) : (
+          <span className="text-ink-3">🌐 Chưa có trang Confluence</span>
+        )}
+        <button type="button" className={BTN} onClick={() => setOpen((v) => !v)}>
+          {open ? 'Đóng' : 'Sửa link Confluence / repo đối chiếu'}
+        </button>
+        {msg && <span className="text-ink-2">{msg}</span>}
+      </div>
+      {open && (
+        <div className={CARD + ' mt-2 flex flex-col gap-3'}>
+          <SourceRows value={sources} onChange={setSources} templates={templates} fallbackTemplate={item.templateId} />
+          <RepoRows repos={repos} value={docRepos} onChange={setDocRepos} />
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              className={BTN_PRI}
+              disabled={busy || docRepos.some((r) => !r.ref.trim())}
+              onClick={() =>
+                start(async () => {
+                  const a = await setSourcesAction(item.id, sourcePayload(sources))
+                  const b = a.ok ? await setDocReposAction(item.id, docRepos) : a
+                  setMsg(a.ok && b.ok ? `${a.message} ${b.message}` : b.message)
+                  if (a.ok && b.ok) {
+                    setOpen(false)
+                    router.refresh()
+                  }
+                })
+              }
+            >
+              {busy ? 'Đang kiểm tra link…' : 'Lưu'}
+            </button>
+            <span className="text-ink-3">Áp dụng từ vòng review tiếp theo.</span>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
 function TemplateBar({ item, templates }: { item: ItemView; templates: DocTemplate[] }) {
   const router = useRouter()
   const [value, setValue] = useState(item.templateId)
@@ -528,9 +621,15 @@ function RoundPanel({
                 : `${shortSha(round.round > 1 && round.prevHeadSha ? round.prevHeadSha : round.baseSha)}…${shortSha(round.headSha)}`}
             </span>
           )}
-          {round.docs.length > 0 && (
+          {confluencePages(round.docs).length > 0 && (
+            <span title={confluencePages(round.docs).map((d) => `${d.name} · v${d.source.version}`).join('\n')}>
+              🌐 {confluencePages(round.docs).length} trang Confluence
+            </span>
+          )}
+          {round.docs.some((d) => !d.source) && (
             <span>
               {round.docs
+                .filter((d) => !d.source)
                 .map((d) => {
                   const t = templates.find((x) => x.id === (d.templateId || (d.role === 'spec' ? '' : item.templateId)))
                   return `${DOC_ROLE_LABEL[d.role]}: ${d.name}${t ? ` (📐 ${t.name})` : ''}`
@@ -727,6 +826,8 @@ function DoneRound({
       )}
 
       {isLatest && <SubmitReview round={round} findings={findings} onDone={onChanged} />}
+      {isLatest && item.kind === 'doc' && <CfAccessNote />}
+      {isLatest && item.kind === 'doc' && <SendAllConfluence roundId={round.id} findings={findings} docs={round.docs} onDone={onChanged} />}
       {isLatest && <AccessNote onGithub={item.kind === 'pr' && Boolean(item.prNumber) && Boolean(githubRepo)} />}
 
       <div className="flex flex-wrap items-center gap-1.5 text-[12.5px]">
@@ -767,6 +868,7 @@ function DoneRound({
                 key={f.id}
                 f={f}
                 kind={item.kind}
+                docs={round.docs}
                 link={blobUrl(githubRepo, round.headSha, f)}
                 onPatch={(p) => patch(f.id, p)}
                 onPosted={onChanged}
@@ -785,6 +887,7 @@ function DoneRound({
 function FindingCard({
   f,
   kind,
+  docs,
   link,
   onPatch,
   onPosted,
@@ -792,6 +895,7 @@ function FindingCard({
 }: {
   f: FindingView
   kind: ItemView['kind']
+  docs: DocFile[]
   link: string
   onPatch: (p: Partial<FindingView>) => void
   onPosted: () => void
@@ -822,6 +926,11 @@ function FindingCard({
             <span className="text-[11px] text-ink-3">· {f.category}</span>
           ))}
       </div>
+      {kind === 'doc' && f.quote && (
+        <div className="mt-1 truncate text-[11.5px] text-ink-3" title={f.quote}>
+          ❝ {f.quote}
+        </div>
+      )}
       {(loc || (kind === 'doc' && f.file)) && (
         <div className="mt-1 flex flex-wrap items-center gap-2 font-mono text-[11.5px] text-ink-3">
           {kind === 'doc' && f.file && <span>{loc}</span>}
@@ -886,6 +995,7 @@ function FindingCard({
         <CopyButton text={findingClipboard({ ...f, body }, kind)} />
         {!f.ghUrl && f.status !== 'dismissed' && f.status !== 'fixed' && <FindingGithub f={{ ...f, body }} onPosted={onPosted} />}
         <ReplyWithBody f={f} body={body} onSent={onPosted} />
+        {kind === 'doc' && !f.ghUrl && <FindingConfluence f={f} body={body} docs={docs} onPosted={onPosted} />}
         <button type="button" className={BTN} onClick={() => setEditing(true)}>
           Sửa
         </button>
@@ -906,7 +1016,7 @@ function FindingCard({
       </div>
       {f.ghUrl && (
         <div className="mt-2">
-          <FindingGithub f={{ ...f, body }} onPosted={onPosted} />
+          {kind === 'doc' ? <FindingConfluence f={f} body={body} docs={docs} onPosted={onPosted} /> : <FindingGithub f={{ ...f, body }} onPosted={onPosted} />}
         </div>
       )}
     </div>
@@ -964,7 +1074,9 @@ function NextRound({
           ? done
             ? 'Claude sẽ lấy commit mới nhất, xem phần vừa sửa so với vòng trước, đánh giá lại từng điểm còn mở và chỉ tìm vấn đề mới trong code vừa đổi.'
             : 'Vòng trước không ra kết quả — chạy lại với commit mới nhất.'
-          : 'Tải bản PDF mới lên để Claude so với bản trước và kiểm tra các điểm còn mở — hoặc chạy lại với đúng tài liệu cũ.'}
+          : item.sources.length
+            ? 'Claude sẽ lấy bản mới nhất của các trang Confluence (cả subpage), so với bản vòng trước, đánh giá lại từng điểm còn mở và đọc thêm trả lời dưới các comment đã gửi. PDF (nếu có) giữ như cũ, hoặc chọn bản mới bên dưới.'
+            : 'Tải bản PDF mới lên để Claude so với bản trước và kiểm tra các điểm còn mở — hoặc chạy lại với đúng tài liệu cũ.'}
       </p>
       {item.kind === 'doc' && <div className="mb-2">{up.picker}</div>}
       {item.kind === 'pr' && current.length > 0 && (
@@ -982,12 +1094,22 @@ function NextRound({
         )}
       <div className="mt-2 flex flex-wrap items-center gap-2">
         {item.kind === 'doc' && (
-          <button type="button" className={BTN_PRI} disabled={!up.ready} onClick={() => void up.submit({ note })}>
-            {up.busy ? 'Đang tải lên…' : 'Review tiếp với bản mới'}
+          <button type="button" className={BTN_PRI} disabled={!up.ready || up.count === 0} onClick={() => void up.submit({ note })}>
+            {up.busy ? 'Đang tải lên…' : item.sources.length ? 'Review tiếp với PDF mới + Confluence' : 'Review tiếp với bản mới'}
           </button>
         )}
-        <button type="button" className={item.kind === 'pr' ? BTN_PRI : BTN} disabled={busy || !canRun} onClick={again}>
-          {item.kind === 'pr' ? (busy && attach.count ? 'Đang tải tài liệu…' : done ? 'Review tiếp' : 'Chạy lại') : 'Chạy lại với tài liệu cũ'}
+        <button type="button" className={item.kind === 'pr' || item.sources.length ? BTN_PRI : BTN} disabled={busy || !canRun} onClick={again}>
+          {item.kind === 'pr'
+            ? busy && attach.count
+              ? 'Đang tải tài liệu…'
+              : done
+                ? 'Review tiếp'
+                : 'Chạy lại'
+            : item.sources.length
+              ? done
+                ? 'Review tiếp (lấy bản mới từ Confluence)'
+                : 'Chạy lại (lấy bản mới từ Confluence)'
+              : 'Chạy lại với tài liệu cũ'}
         </button>
         {(msg || up.msg) && <span className="text-[12px] text-ink-2">{msg || up.msg}</span>}
       </div>
