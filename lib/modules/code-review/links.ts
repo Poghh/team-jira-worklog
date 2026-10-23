@@ -71,12 +71,16 @@ export async function prepareLinks(roundId: number, links: PrLink[]): Promise<Ro
           await fetchAll(repo.localPath)
           headSha = await revParse(repo.localPath, `origin/${l.headRef}`)
         }
-        baseSha = await mergeBase(repo.localPath, `origin/${l.baseRef}`, headSha)
+        // A repo a document is checked against has a branch and no base: code, no diff.
+        baseSha = l.baseRef ? await mergeBase(repo.localPath, `origin/${l.baseRef}`, headSha) : headSha
         const workdir = await addWorktree(repo.localPath, `r${roundId}-l${i}`, headSha)
         return { headSha, baseSha, workdir }
       })
-      const diffPath = path.join(await fs.realpath(linkDir(roundId)), `link${i}-${repo.name.replace(/[^\w.-]+/g, '_')}.diff`)
-      await fs.writeFile(diffPath, await diffText(repo.localPath, resolved.baseSha, resolved.headSha))
+      let diffPath = ''
+      if (l.baseRef) {
+        diffPath = path.join(await fs.realpath(linkDir(roundId)), `link${i}-${repo.name.replace(/[^\w.-]+/g, '_')}.diff`)
+        await fs.writeFile(diffPath, await diffText(repo.localPath, resolved.baseSha, resolved.headSha))
+      }
       out.push({ ...base, ...resolved, diffPath })
     } catch (err) {
       out.push({ ...base, error: gitSays(err) })
@@ -99,7 +103,7 @@ export async function restoreLinks(roundId: number, links: RoundLink[]): Promise
     if (!repo || !(await commitExists(repo.localPath, l.headSha))) continue
     try {
       await withRepoLock(repo.localPath, () => addWorktree(repo.localPath, path.basename(l.workdir), l.headSha))
-      await fs.writeFile(l.diffPath, await diffText(repo.localPath, l.baseSha, l.headSha))
+      if (l.diffPath) await fs.writeFile(l.diffPath, await diffText(repo.localPath, l.baseSha, l.headSha))
       out.push(l)
     } catch {}
   }
