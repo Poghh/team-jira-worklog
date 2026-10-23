@@ -5,6 +5,7 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 
 import { reapChats } from './chat'
+import { pageCommentReplies, fetchPages } from './confluence'
 import { checkClaude } from './claude'
 import { getRepo, getReviewConfig, resolveAddressee, templatesForDocs } from './config'
 import {
@@ -26,7 +27,7 @@ import {
 import { type RawFinding, buildFreshRows } from './findings'
 import { getDiscussion, getPull, listPullComments } from './github'
 import { cleanupLinks, linkDirs, prepareLinks } from './links'
-import { type DocFile, type FindingStatus, type FindingView, type RoundLink, type TestSuggestion, anchorInDiff, isCode } from './model'
+import { type DocFile, type FindingStatus, confluencePages, type FindingView, type RoundLink, type TestSuggestion, anchorInDiff, isCode } from './model'
 import { ALLOWED_TOOLS, DISALLOWED_TOOLS, ISOLATION_FLAGS, reviewEnv } from './guard'
 import { CODE_SCHEMA, DOC_SCHEMA, type ThreadTalk, codePrompt, docPrompt } from './prompts'
 import { type LogLine, bootTime, lastResult, parseLog, pidAlive, readLog, strayLines } from './proc'
@@ -352,7 +353,12 @@ async function prepareAndSpawn(roundId: number) {
       })
     } else {
       schema = DOC_SCHEMA
-      const docs = parseDocs(round.docs)
+      // Uploaded PDFs as queued; Confluence pages fetched now, at their latest version.
+      const docs = parseDocs(round.docs).filter((d) => !d.source)
+      if (item.sources.length) {
+        docs.push(...(await fetchPages(item.id, item.sources)))
+        updateRound(roundId, { docs: JSON.stringify(docs) })
+      }
       if (!docs.length) return fail('Vòng này chưa có tài liệu nào.')
       const prevDocs = prev ? parseDocs(prev.docs) : []
       for (const d of [...docs, ...prevDocs]) {
@@ -372,6 +378,10 @@ async function prepareAndSpawn(roundId: number) {
           headSha = await revParse(repo.localPath, `origin/${item.headRef}`)
           workdir = await addWorktree(repo.localPath, `r${roundId}`, headSha)
         })
+        // More repos to check against (SDK + iOS…): read-only worktrees, no diff.
+        links = await prepareLinks(roundId, item.links)
+        updateRound(roundId, { links: JSON.stringify(links) })
+        addDirs.push(...linkDirs(links))
       } else {
         workdir = addDirs[0]
       }
@@ -381,6 +391,8 @@ async function prepareAndSpawn(roundId: number) {
         repoName: repo?.name ?? '',
         ref: item.headRef,
         headSha,
+        links,
+        talk: await pageTalk(previous),
         docs,
         prevDocs,
         note: item.note,
@@ -483,6 +495,20 @@ async function threadTalk(repo: string, number: number, previous: FindingView[])
   }
 }
 
+/** Replies under the previous findings already posted on Confluence — best-effort, read-only. */
+async function pageTalk(previous: FindingView[]): Promise<ThreadTalk | undefined> {
+  const posted = previous.filter((f) => f.ghCommentId && f.commentKind)
+  if (!posted.length) return undefined
+  const talk: ThreadTalk = new Map()
+  for (const f of posted) {
+    try {
+      const replies = await pageCommentReplies(f.commentKind as 'inline' | 'footer', f.ghCommentId!)
+      if (replies.length) talk.set(f.id, replies)
+    } catch {}
+  }
+  return talk
+}
+
 /** Suggested tests, kept as text for the reviewer to copy — nothing here is ever executed. */
 function cleanTestPlan(plan: Output['test_plan']): TestSuggestion[] {
   return (plan ?? [])
@@ -583,7 +609,10 @@ async function storeOutput(r: RoundRow, out: Output) {
     ranges = await diffRanges(repo.localPath, r.baseSha, r.headSha).catch(() => null)
   }
 
-  const rows = await buildFreshRows(r, item.kind, repo, out.findings ?? [], ranges, 0)
+  const docs = parseDocs(r.docs)
+  const rows = await buildFreshRows(r, item.kind, repo, out.findings ?? [], ranges, 0, docs)
+  // A page that is no longer in this round (deleted, moved out of the tree) cannot take comments.
+  const pages = new Set(confluencePages(docs).map((d) => d.source.pageId))
   let position = rows.length
 
   // Carry every finding the previous round left open into this one, with
@@ -632,6 +661,9 @@ async function storeOutput(r: RoundRow, out: Output) {
         followNote: v?.note?.trim() || (v ? '' : 'Claude không đánh giá lại điểm này — tự kiểm tra.'),
         // Only meaningful for a finding already on GitHub: what to say next in its thread.
         followReply: old.ghUrl ? (v?.reply ?? '').trim() : '',
+        docRef: pages.has(old.docRef) ? old.docRef : '',
+        quote: old.quote,
+        commentKind: old.commentKind,
         position: position++,
       })
     }

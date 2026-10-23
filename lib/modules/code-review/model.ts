@@ -91,7 +91,68 @@ export interface DocFile {
   path: string
   /** Doc reviews: the template this file must follow (TDD iOS / TDD SDK…); none = the item's default. */
   templateId?: string
+  /** Set when the file is a Confluence page, saved as Markdown for this round. */
+  source?: ConfluencePage
 }
+
+/**
+ * A Confluence page the reviewer pasted a link to. A round fetches it (and,
+ * with `children`, every page under it) afresh, so "Review tiếp" always reads
+ * the latest version.
+ */
+export interface ConfluenceRef {
+  url: string
+  pageId: string
+  /** Title when the link was added — the round records the current one. */
+  title: string
+  /** Also read every subpage under it. */
+  children: boolean
+  role: DocRole
+  /** Template the pasted page must follow; '' = none / the item's default. */
+  templateId: string
+  /**
+   * Per subpage, by page id: its own role / template, or `skip` to leave it
+   * out. A subpage not listed (added after the link was pasted) is guessed
+   * from its title.
+   */
+  pages?: Record<string, SubpageChoice>
+}
+
+export interface SubpageChoice {
+  role: DocRole
+  templateId: string
+  skip?: boolean
+}
+
+/** A page under a pasted one, as listed for the reviewer to classify. */
+export interface SubpageInfo {
+  pageId: string
+  title: string
+  /** Titles between the pasted page and this one (folders included). */
+  trail: string[]
+}
+
+/**
+ * The role a page most likely plays, from its title: a TDD / design / iOS /
+ * SDK / Android page is a TDD, anything else a functional spec.
+ */
+export function guessRole(title: string): DocRole {
+  return /tdd|design|thi[eế]t.?k[eế]|\bios\b|\bsdk\b|android|backend|\bweb\b/i.test(title) ? 'tdd' : 'spec'
+}
+
+/** One fetched page, as a round saw it. */
+export interface ConfluencePage {
+  pageId: string
+  url: string
+  version: number
+  /** The pasted page this one was reached from; equal to pageId for the page itself. */
+  rootId: string
+  /** Titles from the pasted page down to this one's parent. */
+  trail: string[]
+}
+
+/** The Confluence pages of a round, in the order Claude was given them. */
+export const confluencePages = (docs: DocFile[]) => docs.filter((d): d is DocFile & { source: ConfluencePage } => Boolean(d.source))
 
 /**
  * The template a picked file most likely follows: a TDD whose name says "sdk"
@@ -279,6 +340,12 @@ export interface FindingView {
   followReply: string
   /** Set once that reply is posted. */
   followSentUrl: string
+  /** Doc findings on Confluence: the page it is about ('' = not known). */
+  docRef: string
+  /** Doc findings: the exact text the comment hangs on, for an inline comment. */
+  quote: string
+  /** Once posted to Confluence: 'inline' | 'footer' — replies go to the same kind. */
+  commentKind: '' | 'inline' | 'footer'
 }
 
 export interface RoundView {
@@ -326,6 +393,8 @@ export interface ItemView {
   addressee: Addressee | null
   /** Doc reviews: the template it is checked against; '' = none. */
   templateId: string
+  /** Doc reviews: Confluence pages fetched afresh by every round. */
+  sources: ConfluenceRef[]
   updatedAt: number
 }
 

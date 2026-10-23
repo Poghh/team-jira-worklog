@@ -36,8 +36,17 @@ import {
   submitReview,
   viewerLogin,
 } from '@/lib/modules/code-review/github'
+import {
+  type ConfluenceAccess,
+  ConfluenceError,
+  checkConfluenceAccess,
+  postPageComment,
+  previewLink,
+  replyToPageComment,
+  resolveSources,
+} from '@/lib/modules/code-review/confluence'
 import { ForbiddenAction } from '@/lib/modules/code-review/guard'
-import { type Addressee, type DocFile, type DocTemplate, type FindingStatus, HONORIFICS, type PrLink, addressOf, anchorInDiff, cleanHandle, validHandle, type FindingView, type ItemSummary, type RepoPreset, type RoundView, where } from '@/lib/modules/code-review/model'
+import { confluencePages, type SubpageInfo, type Addressee, type DocFile, type DocTemplate, type FindingStatus, HONORIFICS, type PrLink, addressOf, anchorInDiff, cleanHandle, validHandle, type FindingView, type ItemSummary, type RepoPreset, type RoundView, where } from '@/lib/modules/code-review/model'
 import { type LogLine, cancelRound, ensureTicker, tick, updateRoundSummary, viewLog } from '@/lib/modules/code-review/runner'
 import {
   createItem,
@@ -57,7 +66,9 @@ import {
   queueRound,
   setItemAddressee,
   setItemLinks,
+  setItemSources,
   setItemTemplate,
+  toRound,
 } from '@/lib/modules/code-review/store'
 import { validDocs } from '@/lib/modules/code-review/uploads'
 import { isModuleEnabled } from '@/lib/modules/state'
@@ -539,7 +550,7 @@ export async function githubAccessAction(itemId: number, force = false): Promise
 
 const failure = (err: unknown): Result => ({
   ok: false,
-  message: err instanceof ForbiddenAction || err instanceof GithubError ? err.message : `Lỗi: ${(err as Error).message}`,
+  message: err instanceof ForbiddenAction || err instanceof GithubError || err instanceof ConfluenceError ? err.message : `Lỗi: ${(err as Error).message}`,
 })
 
 const locationLine = (f: FindingView) => `**\`${where(f)}\`**`
@@ -986,4 +997,159 @@ export async function followUpAction(findingId: number, body: string): Promise<R
   } catch (err) {
     return failure(err)
   }
+}
+
+/* ── Confluence (doc reviews) ───────────────────────────────────────────── */
+
+/**
+ * Doc findings go back onto the Confluence page they are about — inline on
+ * the quoted text where it is still there, as a page comment otherwise. Same
+ * rules as GitHub: one explicit click (two, to confirm), the server re-checks
+ * the permission, and only the comment endpoints exist (guard.ts). The comment
+ * id and link are kept in gh_comment_id / gh_url, with comment_kind set.
+ */
+export async function confluenceAccessAction(itemId: number, force = false): Promise<ConfluenceAccess> {
+  if (!enabled()) return { read: false, write: false, reason: 'Module đang tắt.' }
+  const item = getItem(itemId)
+  const pageId = item?.sources[0]?.pageId
+  if (!item || item.kind !== 'doc' || !pageId) return { read: false, write: false, reason: 'Hồ sơ này không có trang Confluence.' }
+  return checkConfluenceAccess(pageId, force)
+}
+
+/** The finding, and the Confluence page of its round it may be posted to. */
+function pageTarget(findingId: number, pageId?: string) {
+  const f = getFinding(findingId)
+  if (!f) return 'Không thấy finding.'
+  const row = getRound(f.roundId)
+  const item = row ? getItem(row.itemId) : null
+  if (!row || !item || item.kind !== 'doc') return 'Finding này không thuộc hồ sơ tài liệu.'
+  const pages = confluencePages(toRound(row).docs)
+  // Only a page this round actually read — never an id from the browser alone.
+  const page = pages.find((p) => p.source.pageId === (pageId || f.docRef))
+  if (!page) return pages.length ? 'Chọn trang Confluence để gửi comment.' : 'Vòng này không đọc trang Confluence nào.'
+  return { f, page }
+}
+
+async function postOne(findingId: number, pageId?: string): Promise<Result & { url?: string }> {
+  const t = pageTarget(findingId, pageId)
+  if (typeof t === 'string') return { ok: false, message: t }
+  const { f, page } = t
+  if (f.ghUrl) return { ok: false, message: 'Finding này đã được gửi.' }
+  const access = await checkConfluenceAccess(page.source.pageId)
+  if (!access.write) return { ok: false, message: access.reason }
+  try {
+    const c = await postPageComment({ pageId: page.source.pageId, pageUrl: page.source.url, body: f.body, quote: f.quote })
+    patchFinding(findingId, { ghCommentId: c.id, ghUrl: c.url, commentKind: c.kind, docRef: page.source.pageId })
+    return {
+      ok: true,
+      message: c.anchored ? `Đã comment vào đoạn được chọn trên "${page.name}".` : `Đã gửi thành comment cuối trang "${page.name}"${f.quote ? ' (đoạn trích không còn khớp — có trích kèm)' : ''}.`,
+      url: c.url,
+    }
+  } catch (err) {
+    return failure(err)
+  }
+}
+
+export async function postConfluenceAction(findingId: number, pageId?: string): Promise<Result & { url?: string }> {
+  if (!enabled()) return OFF
+  return postOne(findingId, pageId)
+}
+
+/** The findings the reviewer kept, each as its own comment — one after another, stopping at the first refusal of access. */
+export async function postAllConfluenceAction(roundId: number, findingIds: number[]): Promise<Result & { sent: number }> {
+  if (!enabled()) return { ...OFF, sent: 0 }
+  const round = getRound(roundId)
+  if (!round || round.state !== 'done') return { ok: false, message: 'Vòng review này chưa xong.', sent: 0 }
+  const mine = new Set(listFindings(roundId).map((f) => f.id))
+  let sent = 0
+  const problems: string[] = []
+  for (const id of findingIds) {
+    if (!mine.has(id)) continue
+    const r = await postOne(id)
+    if (r.ok) sent++
+    else {
+      problems.push(`#${id}: ${r.message}`)
+      if (/quyền|401|403|token/i.test(r.message)) break
+    }
+  }
+  return {
+    ok: problems.length === 0,
+    sent,
+    message: `Đã gửi ${sent} comment lên Confluence.${problems.length ? ` Không gửi được ${problems.length}: ${problems.slice(0, 3).join(' · ')}` : ''}`,
+  }
+}
+
+/** A reply under a finding already on Confluence, in its thread. */
+export async function confluenceReplyAction(findingId: number, body: string): Promise<Result & { url?: string }> {
+  if (!enabled()) return OFF
+  const text = body.trim()
+  if (!text) return { ok: false, message: 'Nội dung trống.' }
+  const f = getFinding(findingId)
+  if (!f?.ghCommentId || !f.commentKind) return { ok: false, message: 'Finding này chưa được gửi lên Confluence.' }
+  const t = pageTarget(findingId, f.docRef)
+  const pageId = typeof t === 'string' ? f.docRef : t.page.source.pageId
+  const pageUrl = typeof t === 'string' ? f.ghUrl : t.page.source.url
+  if (pageId) {
+    const access = await checkConfluenceAccess(pageId)
+    if (!access.write) return { ok: false, message: access.reason }
+  }
+  try {
+    const c = await replyToPageComment({ kind: f.commentKind, parentId: f.ghCommentId, body: text, pageUrl })
+    patchFinding(findingId, { followSentUrl: c.url })
+    return { ok: true, message: 'Đã trả lời trong thread trên Confluence.', url: c.url }
+  } catch (err) {
+    return failure(err)
+  }
+}
+
+/** A pasted Confluence link: its title and its subpages, so each can get its own role and template. */
+export async function confluencePreviewAction(
+  url: string,
+): Promise<Result & { pageId?: string; title?: string; url?: string; subpages?: SubpageInfo[] }> {
+  if (!enabled()) return OFF
+  try {
+    return { ok: true, message: '', ...(await previewLink(url)) }
+  } catch (err) {
+    return failure(err)
+  }
+}
+
+/** The pasted Confluence pages of a doc review — used from the next round on. */
+export async function setSourcesAction(itemId: number, input: unknown): Promise<Result> {
+  if (!enabled()) return OFF
+  const item = getItem(itemId)
+  if (!item || item.kind !== 'doc') return { ok: false, message: 'Không thấy hồ sơ tài liệu.' }
+  const sources = await resolveSources(input)
+  if (typeof sources === 'string') return { ok: false, message: sources }
+  for (const s of sources) if (s.templateId && !getTemplate(s.templateId)) return { ok: false, message: 'Mẫu tài liệu không còn trong Cấu hình.' }
+  setItemSources(itemId, sources)
+  revalidatePath('/m/code-review')
+  return { ok: true, message: sources.length ? `Đã lưu ${sources.length} link Confluence — áp dụng từ vòng tiếp theo.` : 'Đã bỏ hết link Confluence.' }
+}
+
+/**
+ * The code a doc review is checked against: the first repo is where Claude
+ * runs, the others are read beside it (stored as links with no base).
+ */
+export async function setDocReposAction(itemId: number, repos: Array<{ repoId: string; ref: string }>): Promise<Result> {
+  if (!enabled()) return OFF
+  const item = getItem(itemId)
+  if (!item || item.kind !== 'doc') return { ok: false, message: 'Không thấy hồ sơ tài liệu.' }
+  const picked: Array<{ repoId: string; ref: string }> = []
+  for (const r of (Array.isArray(repos) ? repos : []).slice(0, 6)) {
+    const id = String(r?.repoId ?? '').trim()
+    const ref = String(r?.ref ?? '').trim()
+    if (!id) continue
+    const repo = getRepo(id)
+    if (!repo) return { ok: false, message: 'Không thấy repo.' }
+    if (!ref) return { ok: false, message: `Chọn nhánh cho ${repo.name}.` }
+    if (!picked.some((p) => p.repoId === id && p.ref === ref)) picked.push({ repoId: id, ref })
+  }
+  patchItem(itemId, { repoId: picked[0]?.repoId ?? '', headRef: picked[0]?.ref ?? '' })
+  setItemLinks(
+    itemId,
+    picked.slice(1).map((p) => ({ repoId: p.repoId, prNumber: null, baseRef: '', headRef: p.ref, title: p.ref, url: '' })),
+  )
+  revalidatePath('/m/code-review')
+  return { ok: true, message: picked.length ? `Đối chiếu với ${picked.length} repo — áp dụng từ vòng tiếp theo.` : 'Không đối chiếu code nữa.' }
 }

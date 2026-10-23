@@ -3,7 +3,7 @@
 
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
-import { useCallback, useEffect, useMemo, useState, useTransition } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, useTransition } from 'react'
 
 import type { ClaudeCheck } from '@/lib/modules/code-review/claude'
 import {
@@ -12,8 +12,11 @@ import {
   type DocRole,
   type DocTemplate,
   type ItemSummary,
+  guessRole,
   guessTemplate,
   LIVE_STATES,
+  type SubpageChoice,
+  type SubpageInfo,
   type PrLink,
   linkLabel,
   type RepoPreset,
@@ -26,6 +29,7 @@ import {
   archiveItemAction,
   cancelRoundAction,
   checkUpdatesAction,
+  confluencePreviewAction,
   dashboardAction,
   deleteItemAction,
   listBranchesAction,
@@ -949,64 +953,383 @@ export function useDocUpload(opts: {
     }
   }
 
-  return { picker, submit, busy, msg, ready: !busy && opts.canRun && docs.length > 0 }
+  return { picker, submit, busy, msg, count: docs.length, ready: !busy && opts.canRun }
+}
+
+/** A repo + branch the documents are checked against. */
+export interface DocRepo {
+  repoId: string
+  ref: string
+}
+
+/**
+ * The repos a doc review compares against — as many as the change spans
+ * (SDK + iOS…). The first is where Claude runs; the others are read beside it.
+ */
+export function RepoRows({ repos, value, onChange }: { repos: RepoPreset[]; value: DocRepo[]; onChange: (v: DocRepo[]) => void }) {
+  const [branches, setBranches] = useState<Record<string, string[]>>({})
+  const ids = value.map((v) => v.repoId).filter(Boolean).join(',')
+  useEffect(() => {
+    for (const id of ids.split(',').filter(Boolean)) {
+      if (branches[id]) continue
+      void listBranchesAction(id).then((r) => setBranches((b) => ({ ...b, [id]: r.branches })))
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ids])
+  const set = (i: number, p: Partial<DocRepo>) => onChange(value.map((v, j) => (j === i ? { ...v, ...p } : v)))
+  const unused = repos.find((r) => !value.some((v) => v.repoId === r.id))
+  return (
+    <div className="flex flex-col gap-1.5">
+      <div className="text-[12px] text-ink-2">Đối chiếu với code của repo {value.length > 1 && <span className="text-ink-3">· repo đầu là repo chính (file / dòng trong finding)</span>}</div>
+      {value.length === 0 && <div className="text-[12px] text-ink-3">— Không đối chiếu code —</div>}
+      {value.map((v, i) => (
+        <div key={i} className="grid items-center gap-2 sm:grid-cols-[1fr_1fr_auto]">
+          <select value={v.repoId} onChange={(e) => set(i, { repoId: e.target.value, ref: '' })} className={INPUT}>
+            {repos.map((r) => (
+              <option key={r.id} value={r.id}>
+                {r.name}
+              </option>
+            ))}
+          </select>
+          <input
+            list={`doc-branches-${i}`}
+            value={v.ref}
+            onChange={(e) => set(i, { ref: e.target.value })}
+            className={INPUT}
+            placeholder="Nhánh — develop / feature/…"
+          />
+          <datalist id={`doc-branches-${i}`}>
+            {(branches[v.repoId] ?? []).map((b) => (
+              <option key={b} value={b} />
+            ))}
+          </datalist>
+          <button type="button" className="text-ink-3 hover:text-crit" title="Bỏ repo này" onClick={() => onChange(value.filter((_, j) => j !== i))}>
+            ✕
+          </button>
+        </div>
+      ))}
+      {repos.length > 0 && (
+        <button
+          type="button"
+          className={BTN + ' w-fit'}
+          onClick={() => onChange([...value, { repoId: (unused ?? repos[0]).id, ref: '' }])}
+        >
+          + Thêm repo đối chiếu
+        </button>
+      )}
+    </div>
+  )
+}
+
+/** A pasted Confluence link — and, once read, its subpages with the role / template of each. */
+export interface SourceRow {
+  url: string
+  children: boolean
+  role: DocRole
+  templateId: string
+  /** Template chosen by hand — not re-guessed. */
+  touched?: boolean
+  /** Filled in once the link has been read. */
+  title?: string
+  subpages?: SubpageInfo[]
+  pages?: Record<string, SubpageChoice>
+  error?: string
+}
+
+/** What the server keeps of a row — the rest is for this form only. */
+export const sourcePayload = (rows: SourceRow[]) =>
+  rows.map(({ url, children, role, templateId, pages }) => ({ url, children, role, templateId, pages }))
+
+/** A readable name from the link itself (…/pages/123/TDD+iOS+Login), until the page is read. */
+const titleFromUrl = (url: string) => {
+  try {
+    const seg = new URL(url).pathname.split('/').filter(Boolean)
+    return decodeURIComponent((seg.at(-1) ?? '').replace(/\+/g, ' '))
+  } catch {
+    return url
+  }
+}
+
+function RoleTemplate({
+  role,
+  templateId,
+  templates,
+  onRole,
+  onTemplate,
+  disabled,
+}: {
+  role: DocRole
+  templateId: string
+  templates: DocTemplate[]
+  onRole: (r: DocRole) => void
+  onTemplate: (t: string) => void
+  disabled?: boolean
+}) {
+  return (
+    <>
+      <select
+        value={role}
+        disabled={disabled}
+        onChange={(e) => onRole(e.target.value as DocRole)}
+        className="rounded-md border border-line bg-ground px-1.5 py-0.5 text-[12px] disabled:opacity-50"
+      >
+        {(Object.keys(DOC_ROLE_LABEL) as DocRole[]).map((r) => (
+          <option key={r} value={r}>
+            {DOC_ROLE_LABEL[r]}
+          </option>
+        ))}
+      </select>
+      <select
+        value={templateId}
+        disabled={disabled}
+        onChange={(e) => onTemplate(e.target.value)}
+        className="max-w-[180px] rounded-md border border-line bg-ground px-1.5 py-0.5 text-[12px] disabled:opacity-50"
+        title="Mẫu tài liệu trang này phải theo"
+      >
+        <option value="">📐 Không mẫu</option>
+        {templates.map((t) => (
+          <option key={t.id} value={t.id}>
+            📐 {t.name}
+          </option>
+        ))}
+      </select>
+    </>
+  )
+}
+
+/**
+ * Confluence pages to review, pasted as links — many at once (one per line).
+ * Each link is read right away: its subpages are listed so every one gets its
+ * own role and template (spec page above, TDD iOS / TDD SDK below), or is
+ * left out. Subpages added on Confluence later are guessed from their title.
+ */
+export function SourceRows({
+  value,
+  onChange,
+  templates,
+  fallbackTemplate,
+}: {
+  value: SourceRow[]
+  onChange: (v: SourceRow[]) => void
+  templates: DocTemplate[]
+  fallbackTemplate: string
+}) {
+  const [draft, setDraft] = useState('')
+  const [loading, setLoading] = useState<Set<string>>(new Set())
+  const [openTree, setOpenTree] = useState<Set<string>>(new Set())
+  // The latest rows, for previews that come back after other edits.
+  const latest = useRef(value)
+  latest.current = value
+
+  const guessT = (name: string, role: DocRole) => guessTemplate({ name, role }, templates, role === 'tdd' ? fallbackTemplate : '')
+
+  const read = async (url: string) => {
+    setLoading((l) => new Set(l).add(url))
+    const r = await confluencePreviewAction(url)
+    setLoading((l) => {
+      const n = new Set(l)
+      n.delete(url)
+      return n
+    })
+    onChange(
+      latest.current.map((row) => {
+        if (row.url !== url) return row
+        if (!r.ok) return { ...row, error: r.message }
+        const title = r.title ?? row.title
+        const role = row.touched ? row.role : guessRole(title ?? '')
+        const pages: Record<string, SubpageChoice> = { ...row.pages }
+        for (const p of r.subpages ?? []) {
+          if (pages[p.pageId]) continue
+          const pr = guessRole(p.title)
+          pages[p.pageId] = { role: pr, templateId: guessT(p.title, pr) }
+        }
+        return {
+          ...row,
+          error: '',
+          title,
+          role,
+          templateId: row.touched ? row.templateId : guessT(title ?? '', role),
+          subpages: r.subpages ?? [],
+          pages,
+        }
+      }),
+    )
+  }
+
+  // Rows saved before this form existed (detail page) are read once to list their subpages.
+  useEffect(() => {
+    for (const row of value) if (!row.subpages && !row.error && !loading.has(row.url)) void read(row.url)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [value.map((v) => v.url).join('\n')])
+
+  const add = (text: string) => {
+    const urls = [
+      ...new Set(
+        text
+          .split(/[\s,]+/)
+          .map((u) => u.trim())
+          .filter((u) => /^https?:\/\//.test(u) && !value.some((v) => v.url === u)),
+      ),
+    ]
+    if (urls.length) onChange([...value, ...urls.map((url) => ({ url, children: true, role: 'spec' as DocRole, templateId: '' }))])
+    setDraft('')
+  }
+  const set = (i: number, p: Partial<SourceRow>) => onChange(value.map((v, j) => (j === i ? { ...v, ...p } : v)))
+  const setPage = (i: number, id: string, p: Partial<SubpageChoice>) =>
+    onChange(value.map((v, j) => (j === i ? { ...v, pages: { ...v.pages, [id]: { ...(v.pages?.[id] ?? { role: 'spec', templateId: '' }), ...p } } } : v)))
+
+  return (
+    <div className="flex flex-col gap-1.5">
+      <div className="text-[12px] text-ink-2">
+        🌐 Trang Confluence — dán một hoặc nhiều link (mỗi dòng một link). Trang có subpage thì Claude tự đọc luôn cả cây bên dưới; chọn loại / mẫu cho từng subpage ở danh sách hiện ra.
+      </div>
+      <textarea
+        value={draft}
+        onChange={(e) => setDraft(e.target.value)}
+        onPaste={(e) => {
+          const t = e.clipboardData.getData('text')
+          if (/https?:\/\//.test(t)) {
+            e.preventDefault()
+            add(draft + '\n' + t)
+          }
+        }}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter' && !e.shiftKey) {
+            e.preventDefault()
+            add(draft)
+          }
+        }}
+        onBlur={() => draft.trim() && add(draft)}
+        rows={2}
+        className={INPUT}
+        placeholder="https://….atlassian.net/wiki/spaces/…/pages/123456/…"
+      />
+      {value.length > 0 && (
+        <ul className="flex flex-col gap-2">
+          {value.map((v, i) => {
+            const subs = v.subpages ?? []
+            const kept = subs.filter((p) => !v.pages?.[p.pageId]?.skip).length
+            // Open by default — the point is to classify each page; long trees can be folded.
+            const shown = !openTree.has(v.url)
+            return (
+              <li key={v.url} className="rounded-md border border-line px-2.5 py-2 text-[12.5px]">
+                <div className="flex flex-wrap items-center gap-2">
+                  <RoleTemplate
+                    role={v.role}
+                    templateId={v.templateId}
+                    templates={templates}
+                    onRole={(role) => set(i, { role, templateId: v.touched ? v.templateId : guessT(v.title ?? '', role) })}
+                    onTemplate={(templateId) => set(i, { templateId, touched: true })}
+                  />
+                  <a href={v.url} target="_blank" rel="noreferrer" className="min-w-0 flex-1 truncate font-medium text-accent-ink hover:underline" title={v.url}>
+                    {v.title || titleFromUrl(v.url) || v.url}
+                  </a>
+                  <button type="button" className="text-ink-3 hover:text-crit" onClick={() => onChange(value.filter((_, j) => j !== i))}>
+                    ✕
+                  </button>
+                </div>
+                {loading.has(v.url) && <div className="mt-1 text-[12px] text-ink-3">Đang đọc trang và subpage…</div>}
+                {v.error && (
+                  <div className="mt-1 text-[12px] text-crit">
+                    {v.error}{' '}
+                    <button type="button" className="underline" onClick={() => void read(v.url)}>
+                      Thử lại
+                    </button>
+                  </div>
+                )}
+                {subs.length > 0 && (
+                  <div className="mt-1.5 border-l-2 border-line pl-2.5">
+                    <div className="mb-1 flex flex-wrap items-center gap-2 text-[12px] text-ink-2">
+                      <label className="flex items-center gap-1">
+                        <input type="checkbox" checked={v.children} onChange={(e) => set(i, { children: e.target.checked })} />
+                        Đọc cả subpage
+                      </label>
+                      <span className="text-ink-3">
+                        · {kept}/{subs.length} trang
+                      </span>
+                      {subs.length > 3 && (
+                        <button
+                          type="button"
+                          className="text-accent-ink hover:underline"
+                          onClick={() =>
+                            setOpenTree((o) => {
+                              const n = new Set(o)
+                              if (n.has(v.url)) n.delete(v.url)
+                              else n.add(v.url)
+                              return n
+                            })
+                          }
+                        >
+                          {shown ? 'Thu gọn' : 'Hiện từng trang'}
+                        </button>
+                      )}
+                    </div>
+                    {v.children && shown && (
+                      <ul className="flex flex-col gap-1">
+                        {subs.map((p) => {
+                          const c = v.pages?.[p.pageId] ?? { role: guessRole(p.title), templateId: '' }
+                          return (
+                            <li key={p.pageId} className={'flex flex-wrap items-center gap-2 ' + (c.skip ? 'opacity-50' : '')}>
+                              <input
+                                type="checkbox"
+                                checked={!c.skip}
+                                title="Đọc trang này"
+                                onChange={(e) => setPage(i, p.pageId, { skip: !e.target.checked })}
+                              />
+                              <RoleTemplate
+                                role={c.role}
+                                templateId={c.templateId}
+                                templates={templates}
+                                disabled={c.skip}
+                                onRole={(role) => setPage(i, p.pageId, { role, templateId: guessT(p.title, role) })}
+                                onTemplate={(templateId) => setPage(i, p.pageId, { templateId })}
+                              />
+                              <span className="min-w-0 flex-1 truncate" title={[...p.trail, p.title].join(' › ')}>
+                                {p.trail.length > 0 && <span className="text-ink-3">{p.trail.join(' › ')} › </span>}
+                                {p.title}
+                              </span>
+                            </li>
+                          )
+                        })}
+                      </ul>
+                    )}
+                  </div>
+                )}
+                {v.subpages && subs.length === 0 && <div className="mt-1 text-[11.5px] text-ink-3">Trang này không có subpage.</div>}
+              </li>
+            )
+          })}
+        </ul>
+      )}
+    </div>
+  )
 }
 
 function NewDoc({ repos, templates, canRun }: { repos: RepoPreset[]; templates: DocTemplate[]; canRun: boolean }) {
   const router = useRouter()
   const [title, setTitle] = useState('')
-  const [repoId, setRepoId] = useState(repos[0]?.id ?? '')
+  const [docRepos, setDocRepos] = useState<DocRepo[]>(repos[0] ? [{ repoId: repos[0].id, ref: '' }] : [])
+  const [sources, setSources] = useState<SourceRow[]>([])
   const defaultTemplate = (rid: string) => templates.find((t) => t.repoIds.includes(rid))?.id ?? ''
-  const [ref, setRef] = useState('')
+  const fallback = defaultTemplate(docRepos[0]?.repoId ?? '')
   const [note, setNote] = useState('')
-  const [branches, setBranches] = useState<string[]>([])
   const up = useDocUpload({
     canRun,
     onQueued: (id) => router.push(`/m/code-review/${id}`),
     templates,
-    fallbackTemplate: defaultTemplate(repoId),
+    fallbackTemplate: fallback,
   })
-
-  useEffect(() => {
-    if (!repoId) return setBranches([])
-    void listBranchesAction(repoId).then((r) => setBranches(r.branches))
-  }, [repoId])
+  const missingRef = docRepos.some((r) => !r.ref.trim())
 
   return (
     <div className={CARD}>
-      <div className={CTITLE + ' mb-2'}>Review tài liệu PDF (mô tả chức năng + TDD iOS / SDK)</div>
-      <div className="flex flex-col gap-2.5">
+      <div className={CTITLE + ' mb-2'}>Review tài liệu — trang Confluence và / hoặc PDF (mô tả chức năng + TDD iOS / SDK)</div>
+      <div className="flex flex-col gap-3">
         <input value={title} onChange={(e) => setTitle(e.target.value)} className={INPUT} placeholder="Tên hồ sơ — vd: TDD Payment v2" />
-        <div className="grid gap-2 sm:grid-cols-2">
-          <label className="text-[12px] text-ink-2">
-            Đối chiếu với code của repo
-            <select
-              value={repoId}
-              onChange={(e) => setRepoId(e.target.value)}
-              className={INPUT}
-            >
-              <option value="">— Không đối chiếu code —</option>
-              {repos.map((r) => (
-                <option key={r.id} value={r.id}>
-                  {r.name}
-                </option>
-              ))}
-            </select>
-          </label>
-          {repoId && (
-            <label className="text-[12px] text-ink-2">
-              Ở nhánh
-              <input list="doc-branches" value={ref} onChange={(e) => setRef(e.target.value)} className={INPUT} placeholder="develop / feature/…" />
-              <datalist id="doc-branches">
-                {branches.map((b) => (
-                  <option key={b} value={b} />
-                ))}
-              </datalist>
-            </label>
-          )}
-        </div>
+        <RepoRows repos={repos} value={docRepos} onChange={setDocRepos} />
+        <SourceRows value={sources} onChange={setSources} templates={templates} fallbackTemplate={fallback} />
         <div className="text-[12px] text-ink-2">
-          Tài liệu — mỗi file chọn loại và <span className="font-medium">📐 mẫu</span> nó phải theo (vd Mô tả chức năng: không mẫu · TDD iOS: mẫu iOS · TDD SDK: mẫu SDK). Mẫu được đoán sẵn theo tên file.
+          📄 PDF (không bắt buộc nếu đã có link Confluence) — mỗi file chọn loại và <span className="font-medium">📐 mẫu</span> nó phải theo (vd Mô tả chức năng: không mẫu · TDD iOS: mẫu iOS · TDD SDK: mẫu SDK). Mẫu được đoán sẵn theo tên.
           {templates.length === 0 && <span className="text-ink-3"> Chưa có mẫu nào — thêm ở tab Cấu hình → Mẫu tài liệu.</span>}
         </div>
         {up.picker}
@@ -1015,12 +1338,21 @@ function NewDoc({ repos, templates, canRun }: { repos: RepoPreset[]; templates: 
           <button
             type="button"
             className={BTN_PRI}
-            disabled={!up.ready || !title.trim() || (Boolean(repoId) && !ref.trim())}
-            onClick={() => void up.submit({ title, repoId, ref, note, templateId: defaultTemplate(repoId) })}
+            disabled={!up.ready || !title.trim() || missingRef || (up.count === 0 && sources.length === 0) || sources.some((x) => !x.subpages)}
+            onClick={() =>
+              void up.submit({
+                title,
+                note,
+                templateId: fallback,
+                repos: JSON.stringify(docRepos),
+                ...(sources.length ? { sources: JSON.stringify(sourcePayload(sources)) } : {}),
+              })
+            }
           >
-            {up.busy ? 'Đang tải lên…' : 'Review tài liệu'}
+            {up.busy ? (sources.length ? 'Đang kiểm tra link…' : 'Đang tải lên…') : 'Review tài liệu'}
           </button>
           {up.msg && <span className="text-[12px] text-ink-2">{up.msg}</span>}
+          {missingRef && <span className="text-[12px] text-ink-3">Chọn nhánh cho từng repo.</span>}
           {!canRun && <span className="text-[12px] text-crit">Claude CLI chưa sẵn sàng.</span>}
         </div>
       </div>
