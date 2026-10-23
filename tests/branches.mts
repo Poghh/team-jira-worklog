@@ -23,6 +23,9 @@ import {
   cardLadder,
   cleanupStep,
   type StageConfig,
+  type StagePair,
+  cleanStages,
+  parseStages,
   branchSegments,
   envBranchNames,
   inboundPrs,
@@ -41,6 +44,18 @@ import {
   suggestBranch,
   withLocalState,
 } from '@/lib/modules/branches/model'
+import {
+  toGroups,
+  fromGroups,
+  groupName,
+  groupExpects,
+  renameGroup,
+  setGroupBranch,
+  setGroupExpects,
+  newGroup,
+  groupProblem,
+  retagGroup,
+} from '@/lib/modules/branches/stage-groups'
 import {
   buildCarries,
   joinBuilds,
@@ -83,6 +98,8 @@ import {
   shortRepo,
   advanceStage,
   stageFor,
+  envLadder,
+  envFurthest,
 } from '@/lib/modules/branches/github-model'
 
 let n = 0
@@ -112,6 +129,10 @@ eq(S.filter((s) => s.reach === 'built').map((s) => s.branch),
 eq(S.filter((s) => s.reach === 'built').every((s) => s.expects !== 'prog'), true,
    'a build column expects a testable status — that is what the column is for')
 
+/** Khai cặp cho cột "PR đang mở" — mặc định nó chưa nhận cặp nào. */
+const pairsOn = (list: StageConfig[], pairs: StagePair[]) =>
+  list.map((x) => (x.phase === 'open' ? { ...x, pairs } : x))
+
 /* ── mỗi cột tự nói ra luật của nó ──────────────────────────────────────── */
 const ruleOf = (n: string) => stageRule(S.find((s) => s.name === n)!)
 eq(ruleOf('task'), 'nhánh task chưa mở PR — hoặc PR còn draft, hoặc đã đóng', 'cột không nhánh, chưa có PR')
@@ -121,7 +142,7 @@ eq(ruleOf('đã merge develop'), 'code đã nằm trong ctalk/develop', 'đã me
 eq(ruleOf('đã build develop'), 'đã có bản build của ctalk/develop mang code này', 'đã build hỏi bản build')
 eq(ruleOf('done'), 'code của mọi nhánh đã có trong master', 'cột cuối')
 // Điều kiện PR chồng thêm thì câu phải nói ra cả hai vế.
-eq(stageRule({ name: 'x', expects: '', branch: 'staging', phase: 'open', reach: 'merged', kind: '', intoKind: '' }),
+eq(stageRule({ name: 'x', expects: '', branch: 'staging', phase: 'open', reach: 'merged', kind: '', pairs: [] }),
    'code đã nằm trong staging, và PR đang mở', 'hai điều kiện thì nói cả hai')
 
 /* ── cột điểm bắt đầu, tách theo loại nhánh ─────────────────────────────── */
@@ -154,13 +175,13 @@ eq(S.slice(0, 5).map((x) => x.name), ['resolve', 'task', 'bugfix', 'feature', 'r
 
   /* Cột "PR đang mở" là một **cặp**. Chưa khai vế đích thì nó im — không vơ
      hết như bản cũ, vốn chỉ hỏi "có PR đang mở" và chạy đúng do may. */
-  eq(S.find((x) => x.phase === 'open')?.intoKind, '', 'mặc định chưa khai cặp nào')
+  eq(S.find((x) => x.phase === 'open')?.pairs.length, 0, 'mặc định chưa khai cặp nào')
   eq(stageFor({}, openPr, S, [openPr], [], 'ctalk/bugfix/VT-1') === 'review', false,
      'cột review chưa khai đích thì không nhận nhánh nào')
 
   /* Khai cặp rồi thì nhận, và cả ba loại nhánh đều đi tới được — `review` phải
      đứng sau các cột theo loại, nếu không luật chỉ-tiến chặn nhánh feature. */
-  const P = S.map((x) => (x.phase === 'open' ? { ...x, intoKind: 'feature' } : x))
+  const P = pairsOn(S, [{ from: '', into: 'feature' }])
   for (const [branch, from] of [
     ['ctalk/bugfix/VT-1', 'bugfix'],
     ['ctalk/feature/VT-2', 'feature'],
@@ -173,7 +194,7 @@ eq(S.slice(0, 5).map((x) => x.name), ['resolve', 'task', 'bugfix', 'feature', 'r
   }
 
   /* Vế nguồn khai thì siết thêm: chỉ nhánh đúng loại ấy mới vào. */
-  const Q = S.map((x) => (x.phase === 'open' ? { ...x, kind: 'bugfix', intoKind: 'feature' } : x))
+  const Q = pairsOn(S, [{ from: 'bugfix', into: 'feature' }])
   eq(stageFor({}, openPr, Q, [openPr], [], 'ctalk/bugfix/VT-1'), 'review',
      'khai cả hai vế thì nhánh bugfix vào feature vẫn đúng cặp')
   eq(stageFor({}, openPr, Q, [openPr], [], 'ctalk/task/VT-3') === 'review', false,
@@ -184,6 +205,189 @@ eq(S.slice(0, 5).map((x) => x.name), ['resolve', 'task', 'bugfix', 'feature', 'r
   const toEnv = { ...openPr, baseRefName: 'ctalk/develop' }
   eq(stageFor({}, toEnv, P, [toEnv], [], 'ctalk/bugfix/VT-1'), 'develop',
      'PR nhắm thẳng vào môi trường thuộc về cột môi trường, không phải review')
+
+  /* Nhiều cặp là MỘT cột, không phải nhiều cột trùng tên: `task → feature` và
+     `bugfix → feature` cùng là một bước việc, user chỉ thấy một cột review. */
+  const R = pairsOn(S, [
+    { from: 'task', into: 'feature' },
+    { from: 'bugfix', into: 'feature' },
+  ])
+  eq(stageFor({}, openPr, R, [openPr], [], 'ctalk/task/VT-3'), 'review', 'cặp thứ nhất khớp')
+  eq(stageFor({}, openPr, R, [openPr], [], 'ctalk/bugfix/VT-1'), 'review', 'cặp thứ hai cũng khớp')
+  eq(stageFor({}, openPr, R, [openPr], [], 'ctalk/hotfix/VT-9') === 'review', false,
+     'loại không nằm trong cặp nào thì cột im, dù PR vẫn đang mở vào feature')
+
+  /* Cặp kén cả hai vế thắng cặp chỉ kén đích, dù khai sau. */
+  const T = S.map((x) =>
+    x.name === 'review'
+      ? { ...x, pairs: [{ from: '', into: 'feature' }] }
+      : x.phase === 'open'
+        ? x
+        : x,
+  ).concat([{ ...S.find((x) => x.name === 'review')!, name: 'review gấp',
+              pairs: [{ from: 'hotfix', into: 'feature' }] }])
+  eq(stageFor({}, openPr, T, [openPr], [], 'ctalk/hotfix/VT-9'), 'review gấp',
+     'khai càng cụ thể càng ưu tiên, kể cả khi cột chung đứng trước')
+  eq(stageFor({}, openPr, T, [openPr], [], 'ctalk/task/VT-3'), 'review',
+     'loại không ai kén riêng thì về cột chung')
+}
+
+/* ── môi trường xa nhất, cho dãy rút gọn trên task board ────────────────── */
+{
+  /* Truyền cả danh sách cột: `envLadder` tự gọi `envSteps`, và chính nó lấy
+     tên môi trường từ cột "chờ PR" — lọc sẵn thì mất tên, ra "đã merge X". */
+  const at = (o: Record<string, unknown>) => envFurthest(envLadder(o as never, DEFAULT_STAGES))
+
+  eq(at({})?.env.name, undefined, 'chưa đo gì thì không có môi trường nào')
+  eq(at({ 'ctalk/develop': { ahead: 3 }, develop: { ahead: 9 }, staging: { ahead: 9 } })?.env.name,
+     undefined, 'còn behind cả ba thì chưa lên môi trường nào — dãy phải im')
+  eq(at({ 'ctalk/develop': { ahead: 0 }, develop: { ahead: 4 }, staging: { ahead: 4 } })?.env.name,
+     'develop', 'mới tới bậc đầu')
+  eq(at({ 'ctalk/develop': { ahead: 0 }, develop: { ahead: 0 }, staging: { ahead: 7 } })?.env.name,
+     'integration', 'lấy bậc CAO nhất đã tới, không phải bậc đầu')
+  eq(at({ 'ctalk/develop': { ahead: 0 }, develop: { ahead: 0 }, staging: { ahead: 0 } })?.env.name,
+     'staging', 'tới hết thì là bậc cuối')
+
+  /* Vào bằng đường khác vẫn là đã tới — nội dung nằm ở đó rồi. */
+  eq(at({ 'ctalk/develop': { ahead: 0 }, develop: { ahead: 5, landed: true }, staging: { ahead: 5 } })
+       ?.env.name, 'integration', 'landed cũng tính là đã tới')
+  eq(at({ 'ctalk/develop': { ahead: 0 }, develop: { ahead: 5, landed: true }, staging: { ahead: 5 } })
+       ?.kind, 'landed', 'và giữ nguyên kiểu để vẽ đúng dấu ✓~')
+
+  /* Repo không có nhánh môi trường ấy thì là chưa đo, không phải đã tới. */
+  eq(at({ 'ctalk/develop': { ahead: null }, develop: { ahead: null }, staging: { ahead: null } })?.env.name,
+     undefined, 'absent không phải là đã tới')
+}
+
+/* ── cột gom thành nhóm người dùng thật sự khai ─────────────────────────── */
+/* Engine đọc cột phẳng; người dùng nghĩ "ba môi trường, bốn loại nhánh, một
+   bước review". Dịch sai chiều nào cũng là mất cấu hình, nên kiểm cả hai. */
+{
+  const G = toGroups(DEFAULT_STAGES)
+  eq(G.map((g) => g.tag), ['kind', 'kind', 'kind', 'kind', 'review', 'env', 'env', 'env', 'end'],
+     'mặc định 15 cột gom thành 9 nhóm')
+  eq(G.map((g) => g.cols.length), [1, 1, 1, 1, 1, 3, 3, 3, 1], 'môi trường là ba cột, còn lại một')
+  eq(G.map(groupName), ['resolve', 'task', 'bugfix', 'feature', 'review', 'develop', 'integration', 'staging', 'done'],
+     'tên nhóm môi trường là tên cột "chờ PR", không phải "đã merge X"')
+  eq(fromGroups(G), DEFAULT_STAGES, 'gom rồi trải lại ra đúng danh sách cũ')
+
+  /* Ngưỡng của môi trường là ngưỡng cột "đã build" — hai cột trước hỏi ngưỡng
+     test thì mọi card đều lệch, và `migrate` vốn đã sửa ngược lại kiểu ấy. */
+  const dev = G[5]
+  eq(groupExpects(dev), 'test', 'ngưỡng môi trường đọc từ cột "đã build"')
+  eq(setGroupExpects(dev, 'done').cols.map((s) => s.expects), ['prog', 'prog', 'done'],
+     'đặt ngưỡng chỉ chạm cột cuối')
+
+  /* Đổi tên môi trường phải kéo cả ba cột về đúng khuôn, nếu không
+     `addBuildColumns` mọc thêm một cột build nữa bên cạnh. */
+  eq(renameGroup(dev, 'dev2').cols.map((s) => s.name), ['dev2', 'đã merge dev2', 'đã build dev2'],
+     'đổi tên môi trường đặt lại cả ba cột đúng khuôn')
+  eq(renameGroup(G[0], 'xyz').cols.map((s) => s.name), ['xyz'], 'nhóm một cột thì chỉ đổi cột ấy')
+  eq(envSteps(fromGroups([...G.slice(0, 5), renameGroup(dev, 'dev2'), ...G.slice(6)])).map((e) => e.name),
+     ['dev2', 'integration', 'staging'], 'và đường ống vẫn nhận ra nó là một môi trường')
+
+  eq(setGroupBranch(dev, 'x').cols.map((s) => s.branch), ['x', 'x', 'x'],
+     'đổi nhánh thì cả ba cột cùng trỏ một chỗ — lệch một cột là tan nhóm')
+
+  /* Cột lệch khuôn không bị nuốt: nó thành nhóm `raw` một cột, vẫn hiện ra. */
+  const odd = toGroups([
+    { name: 'lẻ', expects: '', branch: 'staging', phase: '', reach: 'built', kind: '', pairs: [] },
+  ])
+  eq(odd.map((g) => g.tag), ['raw'], 'cột gắn nhánh mà không đủ bộ ba thì là cột lẻ')
+  eq(toGroups([]).length, 0, 'danh sách rỗng gom ra rỗng')
+
+  /* Nhóm mới không được đoán tên: tên cột là thứ card bám vào. */
+  eq(newGroup('env').cols.map((s) => s.reach), ['queued', 'merged', 'built'], 'môi trường mới đủ ba bước')
+  eq(newGroup('review').cols[0].pairs, [], 'cột review mới chưa nhận nhánh nào')
+  eq(groupName(newGroup('kind')), '', 'nhóm mới để trống tên')
+
+  /* Môi trường thiếu nhánh là cái bẫy: `cleanStages` ép cột không nhánh về
+     `queued`, nên ba cột mất hai bước merge/build và lần mở sau hiện ra thành
+     ba dòng rác. Phải chặn lúc lưu, không sửa giùm. */
+  eq(groupProblem(newGroup('env')), 'chưa đặt tên', 'nhóm mới chưa đặt tên thì chưa lưu được')
+  eq(groupProblem(renameGroup(newGroup('env'), 'qa')), 'chưa chọn nhánh', 'môi trường phải có nhánh')
+  eq(groupProblem(setGroupBranch(renameGroup(newGroup('env'), 'qa'), 'qa')), '', 'khai đủ thì lưu được')
+  eq(groupProblem(renameGroup(newGroup('review'), 'review')), '',
+     'cột review chưa có rule KHÔNG phải lỗi — đó là trạng thái chưa khai có chủ ý')
+  eq(G.map(groupProblem).filter(Boolean), [], 'cấu hình mặc định không vướng gì')
+
+  /* Và nếu lỡ lưu được thật thì đúng là hỏng như trên — nên mới phải chặn. */
+  eq(toGroups(cleanStages(fromGroups([renameGroup(newGroup('env'), 'qa')]))).map((x) => x.tag),
+     ['kind', 'kind', 'kind'], 'môi trường thiếu nhánh mà lưu thì vỡ thành ba dòng rác')
+
+  /* Đổi loại ngay trong dòng: giữ tên, giữ nhánh khi còn nghĩa, dựng lại
+     phần còn lại — sót một trường cũ là dòng thành cột lẻ ở lần mở sau. */
+  eq(retagGroup(dev, 'end').cols.map((s) => [s.name, s.branch, s.reach]),
+     [['develop', 'ctalk/develop', 'gone']], 'môi trường → kết thúc: giữ tên và nhánh, còn một cột')
+  eq(retagGroup(dev, 'review').cols.map((s) => [s.name, s.branch, s.phase, s.reach]),
+     [['develop', '', 'open', 'queued']], 'môi trường → review: bỏ nhánh, không sót reach cũ')
+  eq(retagGroup(G[1], 'env').cols.map((s) => s.name), ['task', 'đã merge task', 'đã build task'],
+     'loại nhánh → môi trường: nở ra ba cột đúng khuôn')
+  eq(retagGroup(G[1], 'kind'), G[1], 'đổi về chính loại đang có thì không đụng gì')
+  /* Đổi loại rồi lưu rồi đọc lại phải ra đúng loại ấy — với hai loại cần
+     nhánh thì chỉ đúng khi đã chọn nhánh, mà `groupProblem` vốn đã chặn lưu
+     khi chưa chọn. */
+  for (const tag of ['kind', 'review', 'env', 'end'] as const) {
+    let g = retagGroup(G[1], tag)
+    if (tag === 'env' || tag === 'end') g = setGroupBranch(g, 'qa')
+    eq(groupProblem(g), '', `đổi sang ${tag} rồi khai đủ thì lưu được`)
+    eq(toGroups(cleanStages(fromGroups([g])))[0].tag, tag,
+       `đổi sang ${tag}, lưu rồi đọc lại vẫn đúng loại ấy`)
+  }
+}
+
+/* ── đọc/ghi ô JSON của bảng cột ────────────────────────────────────────── */
+/* Hình dạng cũ chỉ khai được MỘT cặp, viết thành hai trường `kind`+`intoKind`.
+   Bảng của người đã khai cặp ấy phải chạy y nguyên sau khi đổi sang danh sách. */
+{
+  const legacy = parseStages(JSON.stringify([
+    { name: 'review', expects: '', branch: '', phase: 'open', reach: 'queued',
+      kind: 'bugfix', intoKind: 'feature' },
+  ]))
+  eq(legacy[0]?.pairs, [{ from: 'bugfix', into: 'feature' }], 'một cặp cũ đọc lên thành danh sách một phần tử')
+
+  eq(parseStages(JSON.stringify([
+    { name: 'review', phase: 'open', reach: 'queued', kind: 'bugfix' },
+  ]))[0]?.pairs, [], 'cũ mà chưa khai đích thì vẫn là chưa khai cặp nào')
+
+  const both = parseStages(JSON.stringify([
+    { name: 'review', phase: 'open', reach: 'queued', kind: 'bugfix', intoKind: 'feature',
+      pairs: [{ from: 'task', into: 'feature' }] },
+  ]))
+  eq(both[0]?.pairs, [{ from: 'task', into: 'feature' }], 'có danh sách rồi thì hai trường cũ hết quyền')
+
+  eq(parseStages(JSON.stringify([
+    { name: 'review', phase: 'open', reach: 'queued',
+      pairs: [{ from: ' task ', into: ' feature ' }, { from: 'x', into: '  ' }, 'rác'] },
+  ]))[0]?.pairs, [{ from: 'task', into: 'feature' }],
+     'cắt khoảng trắng, bỏ cặp thiếu đích và phần tử không phải object')
+}
+
+/* Ghi lại thì mỗi trường phải được gọi tên, nếu không nó mất lúc lưu. */
+{
+  const review: StageConfig = { name: 'review', expects: '', branch: '', phase: 'open',
+    reach: 'queued', kind: '', pairs: [{ from: ' task ', into: 'feature' }, { from: 'x', into: '' }] }
+  eq(cleanStages([review])[0]?.pairs, [{ from: 'task', into: 'feature' }],
+     'lưu cột review thì giữ cặp, cắt khoảng trắng, bỏ cặp thiếu đích')
+  eq(cleanStages([review])[0]?.name, 'review', 'và cột vẫn còn đó')
+
+  eq(cleanStages([{ ...review, branch: 'staging', phase: '' }])[0]?.pairs, [],
+     'cột môi trường thì cặp là cấu hình chết, xoá thẳng')
+  eq(cleanStages([{ ...review, phase: 'nopr' }])[0]?.pairs, [],
+     'cột "chưa mở PR" cũng vậy — nó kén bằng loại nhánh, không bằng cặp')
+
+  /* Cột `resolve` mặc định là `phase: ""` mà vẫn kén loại nhánh. Bản cũ chỉ
+     giữ `kind` khi `phase === "nopr"`, nên bấm Lưu một lần là mọi nhánh
+     resolve nhảy sang cột task. */
+  eq(cleanStages(DEFAULT_STAGES).filter((x) => x.kind).map((x) => x.kind),
+     ['resolve', 'task', 'bugfix', 'feature'], 'lưu rồi vẫn còn đủ bốn cột kén loại')
+  eq(stageFor({}, null, cleanStages(DEFAULT_STAGES), [], [], 'ctalk/resolve/VT-1'), 'resolve',
+     'và nhánh resolve vẫn về đúng cột resolve sau khi lưu')
+
+  /* Lưu rồi đọc lại phải ra đúng cái đã lưu, nếu không mỗi lần mở settings là
+     một lần bào mòn cấu hình. */
+  eq(parseStages(JSON.stringify(cleanStages(DEFAULT_STAGES))), cleanStages(DEFAULT_STAGES),
+     'mặc định đi qua lưu-rồi-đọc không đổi')
 }
 eq(S.filter((x) => x.kind).map((x) => x.kind), ['resolve', 'task', 'bugfix', 'feature'],
    'bốn cột kén loại, resolve trước')
@@ -228,7 +432,7 @@ eq(stageFor(none, null, S, []), 'task', 'không biết tên nhánh thì về c�
 // Mở PR rồi thì PR quyết định, không phải cái tên — nếu không thì nhánh feature
 // sẽ kẹt ở cột feature suốt đời. Cần một cấu hình **đã khai cặp**: cột "PR
 // đang mở" chưa khai đích thì im, theo luật cặp.
-const SP = S.map((x) => (x.phase === 'open' ? { ...x, intoKind: 'feature' } : x))
+const SP = pairsOn(S, [{ from: '', into: 'feature' }])
 eq(stageFor(none, open('ctalk/feature/x'), SP, [open('ctalk/feature/x')], [], 'ctalk/feature/VT-2583'),
    'review', 'mở PR rồi thì cái tên hết quyền')
 eq(stageFor(none, open('ctalk/develop'), S, [open('ctalk/develop')], [], 'ctalk/feature/VT-1'), 'develop',

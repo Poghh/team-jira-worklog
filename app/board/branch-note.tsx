@@ -292,9 +292,14 @@ export function BranchLine({
           ⇡ {note.localOnly ? "chưa push" : note.localAhead}
         </span>
       )}
+      {/* Chỉ bậc cao nhất đã tới. Dòng này là một task, không phải một đường
+          ống: ba ô xám "chưa tới" chiếm chỗ ngang với tên nhánh để nói đúng
+          một điều — nhánh chưa đi đâu cả — mà không có ô nào cũng nói được
+          chừng ấy. Đường ống đầy đủ vẫn ở module Nhánh. */}
       <EnvLadder
         state={parseEnvState(note.envState)}
         envs={envs}
+        mode="current"
         expected={Boolean(note.repo && note.branch && !note.localOnly)}
       />
       {badge && (

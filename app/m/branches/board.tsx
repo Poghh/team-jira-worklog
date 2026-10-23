@@ -50,6 +50,7 @@ import {
   sortByStatus,
   stageDrift,
   suggestBranch,
+  branchSegments,
 } from "@/lib/modules/branches/model";
 
 import {
@@ -59,10 +60,10 @@ import {
   moveNoteAction,
   quickScanAction,
   saveNoteAction,
-  saveStagesAction,
   updateNoteBodyAction,
 } from "./actions";
 import { GitHubPanel, PR_CLS } from "./github-panel";
+import { StagesManager } from "./stages-editor";
 
 const CARD = "rounded-[9px] border border-line bg-surface p-[17px]";
 const CTITLE = "font-mono text-[10.5px] uppercase tracking-[0.09em] text-ink-3";
@@ -124,6 +125,47 @@ export function BranchBoard({
   /** Tên trạng thái thật của project — rỗng khi Jira không trả lời được. */
   statusNames?: string[];
 }) {
+  /**
+   * Gợi ý cho hai ô của tab Cột, lấy từ chính những card đã quét.
+   *
+   * Nhánh dài hạn là **đích** của PR, không phải nhánh của card: `staging`
+   * xuất hiện vì có PR nhắm vào nó, chứ không vì có card nào tên thế. Loại
+   * nhánh thì ngược lại — đọc từ đoạn giữa tên nhánh của card.
+   *
+   * Cả hai chỉ là gợi ý: cột do người dùng khai, không suy ra từ repo. Ô loại
+   * nhánh vẫn gõ tự do, còn ô nhánh vẫn có đường "+ nhánh khác…".
+   */
+  const branchOptions = useMemo(() => {
+    // Xếp theo số PR nhắm vào, nhánh đã khai trong cột luôn lên đầu. Một nhánh
+    // tính năng lẻ cũng là đích của PR nên cũng lọt vào đây — không loại nó
+    // ra, vì loại thì một môi trường mới chỉ có một PR cũng biến mất; nhưng
+    // thứ tự thì phải để môi trường thật đứng trước.
+    const n = new Map<string, number>();
+    for (const b of stages.map((s) => s.branch.trim()).filter(Boolean))
+      n.set(b, Infinity);
+    for (const r of initial)
+      for (const side of r.sides)
+        for (const pr of side.prs)
+          if (pr.base) n.set(pr.base, (n.get(pr.base) ?? 0) + 1);
+    return [...n]
+      .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+      .map(([b]) => b);
+  }, [initial, stages]);
+
+  const kindOptions = useMemo(() => {
+    const n = new Map<string, number>();
+    for (const r of initial)
+      for (const side of r.sides) {
+        // Đoạn giữa: `ctalk/feature/VT-1` → `feature`. Nhánh hai đoạn thì
+        // không có loại nào để đoán, bỏ qua còn hơn đếm nhầm tên repo.
+        const seg = branchSegments(side.branch);
+        if (seg.length >= 3) n.set(seg[1], (n.get(seg[1]) ?? 0) + 1);
+      }
+    return [...n]
+      .map(([kind, count]) => ({ kind, n: count }))
+      .sort((a, b) => b.n - a.n);
+  }, [initial]);
+
   const [tab, setTab] = useState<"board" | "config" | "github">(
     stages.length ? "board" : "config",
   );
@@ -175,7 +217,12 @@ export function BranchBoard({
         />
       )}
       {tab === "config" && (
-        <StagesManager stages={stages} statusNames={statusNames} />
+        <StagesManager
+          stages={stages}
+          statusNames={statusNames}
+          branchOptions={branchOptions}
+          kindOptions={kindOptions}
+        />
       )}
       {tab === "github" && (
         <GitHubPanel view={ghView} stages={stages} baseUrl={baseUrl} />
@@ -2791,405 +2838,6 @@ function NoteModal({
           </div>
         </div>
       </div>
-    </div>
-  );
-}
-
-// ── stage config ─────────────────────────────────────────────────────────────
-
-/**
- * Nhãn của ô cảnh báo, gọi **đúng tên trạng thái Jira** của môi trường dòng ấy.
- *
- * Trước đây ô này nói "phải chờ test" — diễn đạt lại thay vì gọi tên, và thiếu
- * một nửa: `stageDrift` không hỏi "ticket đã chờ test chưa" mà hỏi "đã chờ
- * test **trên môi trường của cột này** chưa", nên `VERIFIED ON DEVELOP` vẫn là
- * lệch ở một cột staging.
- *
- * Tên lấy từ Jira chứ không ghép tay: hai cách viết rất gần nhau cùng tồn tại
- * ngoài đời — `READY TO TEST ON X` và `READY FOR TEST ON X` — và project này
- * dùng cách thứ nhất. Đoán sai một chữ thì nhãn nói dối về chính thứ người
- * dùng sắp chọn.
- *
- * Ngưỡng là *ít nhất*, không phải so bằng: `stageDrift` so `have >= need`, nên
- * ticket đã `VERIFIED ON DEVELOP` vẫn thoả ô `READY TO TEST ON DEVELOP`. Chữ
- * "ít nhất" ấy nằm ở **tiêu đề cột**, nói một lần, để từng lựa chọn giữ đúng
- * tên Jira và không có chữ nào của app lẫn vào. Nhét nó vào từng dòng thì nhãn
- * vừa dài vừa lặp; bỏ hẳn thì nhãn hứa một sự so bằng mà luật không làm.
- */
-function expectLabels(
-  env: string,
-  statusNames: string[],
-): Array<{ value: StageConfig["expects"]; label: string }> {
-  const up = env.trim().toUpperCase();
-  const find = (re: RegExp) =>
-    statusNames.find((n) => re.test(n.toUpperCase()) && n.toUpperCase().includes(up));
-
-  const ready = up ? find(/^READY\b.*\bTEST\b/) : "";
-  const verified = up ? find(/^VERIFIED\b/) : "";
-  const done = statusNames.find((n) => n.trim().toUpperCase() === "DONE");
-
-  const prog = statusNames.find((n) => n.trim().toUpperCase() === "IN PROGRESS");
-
-  // Từng lựa chọn là **tên Jira nguyên văn**, không kèm chữ nào của mình.
-  // Nghĩa "ít nhất" nằm ở tiêu đề cột, nói một lần — xem ghi chú trên hàm.
-  return [
-    { value: "", label: "không kiểm tra" },
-    { value: "prog", label: prog || "In Progress" },
-    {
-      value: "test",
-      label: ready || (up ? `(Jira chưa có READY TO TEST ON ${up})` : "(cần điền nhánh)"),
-    },
-    {
-      value: "done",
-      // Cột gắn môi trường thì `VERIFIED` trên chính môi trường ấy đã thoả;
-      // cột cuối không gắn môi trường nào nên nó đòi đúng `Done`.
-      label: verified || done || "Done",
-    },
-  ];
-}
-
-function StagesManager({
-  stages,
-  statusNames,
-}: {
-  stages: StageConfig[];
-  statusNames: string[];
-}) {
-  const [list, setList] = useState<StageConfig[]>(
-    stages.length
-      ? stages
-      : [
-          {
-            name: "",
-            expects: "",
-            branch: "",
-            phase: "nopr",
-            reach: "queued",
-            kind: "",
-            intoKind: "",
-          },
-        ],
-  );
-  const [note, setNote] = useState<string | null>(null);
-  const [pending, startTransition] = useTransition();
-  const patch = (i: number, p: Partial<StageConfig>) =>
-    setList((l) => l.map((s, n) => (n === i ? { ...s, ...p } : s)));
-
-  const move = (i: number, d: -1 | 1) =>
-    setList((l) => {
-      const j = i + d;
-      if (j < 0 || j >= l.length) return l;
-      const next = [...l];
-      [next[i], next[j]] = [next[j], next[i]];
-      return next;
-    });
-
-  function save() {
-    startTransition(async () => {
-      const res = await saveStagesAction(list);
-      setNote(res.message);
-      // Cards are grouped by stage *name*, so a rename leaves existing cards
-      // pointing at a column that no longer exists — the board surfaces them in
-      // its "không thuộc cột nào" block rather than dropping them.
-      if (res.ok) location.reload();
-    });
-  }
-
-  return (
-    <section className={CARD}>
-      <div className={CTITLE}>Cột của bảng = đường đi của code</div>
-      <p className="mt-1 max-w-prose text-[12.5px] text-ink-3">
-        Một danh sách duy nhất, theo thứ tự. Mỗi cột có <b>một điều kiện</b>{" "}
-        quyết định card có vào đó hay không. Cột nào điền <b>nhánh</b> thì là
-        một môi trường, và điều kiện của nó hỏi về code; cột không có nhánh thì
-        chỉ còn PR để dựa vào. Quét luôn lấy môi trường xa nhất trước, vì đó là
-        sự thật trong repo, còn PR chỉ là ý định.
-      </p>
-
-      {/* Thứ tự môi trường, nói thẳng ra.
-          Nó vốn đã được suy từ danh sách dưới đây — các cột `đã merge` theo
-          đúng thứ tự bạn xếp — nhưng không màn hình nào nói điều đó, nên
-          người dùng không có cách nào biết app đang hiểu đường ống thế nào
-          cho tới lúc nhìn một card và thấy nó sai. Và đây cũng chính là thứ
-          tự quyết định lời mời "tạo PR lên bậc kế tiếp". */}
-      <EnvPipeline list={list} />
-
-      <div className="mt-3 flex flex-col gap-2">
-        <div className="flex items-center gap-2 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-3">
-          <span className="w-[52px] shrink-0" />
-          <span className="min-w-[130px] flex-1">Tên cột</span>
-          <span className="min-w-[150px] flex-1">Nhánh môi trường</span>
-          {/* Ô này chưa bao giờ có tiêu đề, nên nó đọc như một cái hộp không rõ
-              hỏi gì — trong khi nó mới là ô quyết định chính. */}
-          <span className="w-[212px] shrink-0">Card vào cột này khi</span>
-          <span className="w-[0px] shrink-0" />
-          {/* Không cùng loại với ba ô bên trái, nên không được đọc như nhau:
-              ba ô kia quyết định card vào cột nào, ô này chỉ bật cảnh báo. */}
-          <span className="w-[232px] shrink-0 text-ink-3/70">⚠ Yêu cầu ticket ít nhất ở trạng thái</span>
-          <span className="w-7 shrink-0" />
-        </div>
-
-        {list.map((s, i) => (
-          <div key={i} className="flex flex-col gap-1">
-          <div className="flex flex-wrap items-center gap-2">
-            <span className="flex w-[52px] shrink-0 items-center gap-px">
-              <span className="w-4 text-center font-mono text-[11px] text-ink-3">
-                {i + 1}
-              </span>
-              <button
-                type="button"
-                onClick={() => move(i, -1)}
-                disabled={i === 0}
-                title="Lên trước"
-                className="grid size-[18px] place-items-center rounded text-[10px] text-ink-3 hover:bg-surface-2 disabled:opacity-25"
-              >
-                ▲
-              </button>
-              <button
-                type="button"
-                onClick={() => move(i, 1)}
-                disabled={i === list.length - 1}
-                title="Xuống sau"
-                className="grid size-[18px] place-items-center rounded text-[10px] text-ink-3 hover:bg-surface-2 disabled:opacity-25"
-              >
-                ▼
-              </button>
-            </span>
-            <input
-              value={s.name}
-              onChange={(e) => patch(i, { name: e.target.value })}
-              placeholder="tên cột"
-              className="min-w-[130px] flex-1 rounded-md border border-line bg-ground px-2.5 py-1 text-[12.5px]"
-            />
-            <input
-              value={s.branch}
-              onChange={(e) => patch(i, { branch: e.target.value })}
-              placeholder="— không phải môi trường —"
-              title="Nhánh dài hạn đại diện cho môi trường này. Để trống nếu cột này nằm trước khi merge."
-              className="min-w-[150px] flex-1 rounded-md border border-line bg-ground px-2.5 py-1 font-mono text-[12px]"
-            />
-            {/*
-             * Một ô, một câu — không phải hai ô để người đọc tự nối.
-             *
-             * Bản trước đặt "điều kiện code" và "điều kiện PR" cạnh nhau, và ô
-             * PR trên hàng môi trường luôn rỗng vì vế PR đã nằm trong ô kia.
-             * Một ô rỗng thì đọc như chỗ bị bỏ quên, và không cách viết nào cứu
-             * được điều đó — nên ô ấy biến mất khỏi hàng, thay bằng một link chỉ
-             * hiện khi người dùng thật sự muốn chồng thêm điều kiện.
-             */}
-            <select
-              value={
-                s.reach === "gone"
-                  ? "gone"
-                  : s.branch.trim()
-                    ? s.reach
-                    : `phase:${s.phase}`
-              }
-              onChange={(e) => {
-                const v = e.target.value;
-                if (v.startsWith("phase:"))
-                  patch(i, {
-                    reach: "queued",
-                    phase: v.slice(6) as StageConfig["phase"],
-                  });
-                else patch(i, { reach: v as StageConfig["reach"] });
-              }}
-              title="Điều kiện quyết định card có vào cột này hay không."
-              className="w-[212px] shrink-0 rounded-md border border-line bg-ground px-2 py-1 text-[12px]"
-            >
-              {/* Cột có nhánh thì câu hỏi là code đã đi tới đâu; cột không có
-                  nhánh thì chỉ còn PR để dựa vào, nên chính ô này là điều kiện
-                  PR — và không có ô thứ hai nào để phải giải thích. */}
-              {s.branch.trim() ? (
-                <>
-                  <option value="queued">có PR đang mở vào nhánh</option>
-                  <option value="merged">code đã nằm trong nhánh</option>
-                  <option value="built">đã có bản build</option>
-                </>
-              ) : (
-                <>
-                  <option value="phase:nopr">chưa mở PR</option>
-                  <option value="phase:open">PR đang mở</option>
-                  <option value="phase:">không khớp cột nào khác</option>
-                </>
-              )}
-              <option value="gone">code đã có trong nhánh trunk</option>
-            </select>
-
-            {/*
-             * Chỉ hiện trên cột "chưa mở PR" — chỗ duy nhất loại nhánh có
-             * nghĩa. Ẩn hẳn thay vì disable: một ô xám trên mọi hàng khác là
-             * một câu hỏi người đọc phải tự trả lời "vì sao cái này tắt", mà
-             * câu trả lời chẳng liên quan gì tới hàng họ đang sửa.
-             */}
-            {!s.branch.trim() && s.reach !== "gone" && s.phase === "nopr" && (
-              <input
-                value={s.kind}
-                onChange={(e) => patch(i, { kind: e.target.value })}
-                placeholder="— mọi loại —"
-                title={
-                  "Cột này là điểm bắt đầu của loại nhánh nào.\n" +
-                  "Khớp theo một đoạn của tên nhánh: `feature` khớp ctalk/feature/VT-1, không khớp ctalk/bugfix/resolve_feature.\n" +
-                  "Để trống thì cột nhận mọi loại."
-                }
-                className="w-[118px] shrink-0 rounded-md border border-line bg-ground px-2 py-1 font-mono text-[12px]"
-              />
-            )}
-
-            {/*
-             * Cột "PR đang mở" là một **cặp**: nhánh loại X gửi PR vào nhánh
-             * loại Y. Hai ô cạnh nhau, đọc liền thành câu.
-             *
-             * Vế đích để trống thì cột **không nhận nhánh nào** — nói thẳng
-             * bằng placeholder và viền cảnh báo, vì một cột im lặng không nhận
-             * gì sẽ đọc thành "chưa có card nào" chứ không phải "chưa khai".
-             */}
-            {!s.branch.trim() && s.reach !== "gone" && s.phase === "open" && (
-              <>
-                <input
-                  value={s.kind}
-                  onChange={(e) => patch(i, { kind: e.target.value })}
-                  placeholder="— mọi loại —"
-                  title={
-                    "Vế nguồn: nhánh loại nào gửi PR.\n" +
-                    "Để trống thì mọi loại nhánh đều tính."
-                  }
-                  className="w-[104px] shrink-0 rounded-md border border-line bg-ground px-2 py-1 font-mono text-[12px]"
-                />
-                <span className="shrink-0 text-[11px] text-ink-3">gửi PR vào</span>
-                <input
-                  value={s.intoKind}
-                  onChange={(e) => patch(i, { intoKind: e.target.value })}
-                  placeholder="— chưa khai —"
-                  title={
-                    "Vế đích: PR nhắm vào nhánh loại nào.\n" +
-                    "Ví dụ `feature` — nhánh bugfix gửi PR vào nhánh tính năng.\n\n" +
-                    "Để trống thì cột này KHÔNG nhận nhánh nào: luật là một cặp, " +
-                    "thiếu một vế thì nó im thay vì đoán."
-                  }
-                  className={
-                    "w-[118px] shrink-0 rounded-md border bg-ground px-2 py-1 font-mono text-[12px] " +
-                    (s.intoKind.trim()
-                      ? "border-line"
-                      : "border-warn bg-warn-soft text-warn placeholder:text-warn/70")
-                  }
-                />
-              </>
-            )}
-
-            <select
-              value={s.expects}
-              onChange={(e) =>
-                patch(i, { expects: e.target.value as StageConfig["expects"] })
-              }
-              title={"Chỉ bật cảnh báo, không quyết định card vào cột nào.\nTới cột này mà Jira chưa tới trạng thái đã chọn thì card hiện cảnh báo lệch.\n\nNgưỡng là **ít nhất**: chọn READY TO TEST ON DEVELOP thì ticket đã VERIFIED ON DEVELOP cũng thoả. Nhưng tính theo đúng môi trường của cột này — verified ở môi trường trước đó vẫn là lệch."}
-              className="w-[232px] shrink-0 rounded-md border border-line bg-ground px-2 py-1 text-[12px]"
-            >
-              {expectLabels(
-                envSteps(list).find((e) => e.branch === s.branch)?.name ?? "",
-                statusNames,
-              ).map((o) => (
-                <option key={o.value} value={o.value}>
-                  {o.label}
-                </option>
-              ))}
-            </select>
-            <button
-              type="button"
-              onClick={() => setList((l) => l.filter((_, n) => n !== i))}
-              className="w-7 shrink-0 rounded px-2 py-1 text-[13px] text-ink-3 hover:bg-crit-soft hover:text-crit"
-              title="Bỏ cột"
-            >
-              ✕
-            </button>
-          </div>
-          {/* Sinh từ đúng những trường engine đọc, nên không thể lệch với nó. */}
-          <p className="pl-[54px] text-[11.5px] leading-snug text-ink-3">
-            ↳ <span className="text-ink-2">{stageRule(s)}</span>
-          </p>
-          </div>
-        ))}
-      </div>
-
-      <div className="mt-3 flex flex-wrap items-center gap-2">
-        <button
-          type="button"
-          onClick={() =>
-            setList((l) => [
-              ...l,
-              {
-                name: "",
-                expects: "",
-                branch: "",
-                phase: "",
-                reach: "queued",
-                kind: "",
-                intoKind: "",
-              },
-            ])
-          }
-          className={BTN}
-        >
-          + Cột
-        </button>
-        <button
-          type="button"
-          onClick={save}
-          disabled={pending}
-          className={BTN_PRI}
-        >
-          {pending ? "Đang lưu…" : "Lưu"}
-        </button>
-        {note && <span className="text-[12px] text-ink-3">{note}</span>}
-        <span className="text-[11.5px] text-ink-3">
-          Đổi cột xong nên chạy lại quét — card sẽ tự xếp về đúng chỗ.
-        </span>
-      </div>
-    </section>
-  );
-}
-
-/**
- * Đường ống môi trường mà cấu hình cột đang nói ra.
- *
- * Đọc bằng đúng `envSteps` của phần còn lại, không dựng lại luật ở đây — nếu
- * hai chỗ hiểu khác nhau thì màn hình này thành lời trấn an sai.
- */
-function EnvPipeline({ list }: { list: StageConfig[] }) {
-  const envs = envSteps(list);
-
-  return (
-    <div className="mt-3 rounded-md border border-line bg-ground px-3 py-2">
-      <div className="font-mono text-[9.5px] uppercase tracking-[0.08em] text-ink-3">
-        Thứ tự môi trường app đang hiểu
-      </div>
-      {envs.length ? (
-        <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
-          {envs.map((e, i) => (
-            <span key={e.branch} className="flex items-center gap-1.5">
-              {i > 0 && <span className="font-mono text-[11px] text-ink-3">→</span>}
-              <span
-                title={`Nhánh: ${e.branch}`}
-                className="rounded-[3px] border border-line-strong bg-surface px-1.5 py-px font-mono text-[11px] text-ink-2"
-              >
-                {e.name}
-                <span className="ml-1 text-ink-3">{e.branch}</span>
-              </span>
-            </span>
-          ))}
-        </div>
-      ) : (
-        <p className="mt-1 text-[12px] text-warn">
-          Chưa có môi trường nào. Một môi trường là một cột có điền{" "}
-          <b>nhánh</b> và điều kiện <b>đã merge</b> — thêm cột như vậy thì nó
-          hiện ở đây.
-        </p>
-      )}
-      <p className="mt-1.5 text-[11.5px] leading-relaxed text-ink-3">
-        Suy từ các cột <b>đã merge</b> bên dưới, theo đúng thứ tự bạn xếp. Đổi
-        chỗ cột là đổi thứ tự đường ống — và đó cũng là thứ tự quyết định lời
-        mời “tạo PR lên bậc kế tiếp” khi ticket đã verified.
-      </p>
     </div>
   );
 }

@@ -10,6 +10,7 @@ import {
   commitExists,
   diffText,
   fetchAll,
+  fetchFromWork,
   fetchPull,
   gitSays,
   mergeBase,
@@ -17,7 +18,7 @@ import {
   revParse,
   withRepoLock,
 } from './git'
-import type { PrLink, RoundLink } from './model'
+import { isLocalLink, type PrLink, type RoundLink } from './model'
 
 /**
  * The other half of a cross-repo change — the SDK PR an iOS PR builds on, or
@@ -47,16 +48,30 @@ export async function prepareLinks(roundId: number, links: PrLink[]): Promise<Ro
       out.push({ ...base, error: 'repo đã bị xoá khỏi Cấu hình' })
       continue
     }
+    // Đường dẫn tới từ trình duyệt, nên phải đối chiếu với cấu hình: một đường
+    // dẫn tuỳ ý sẽ biến ô chọn clone thành cách đọc bất kỳ repo nào trên máy.
+    if (isLocalLink(l) && !repo.workPaths.includes(l.workPath!)) {
+      out.push({ ...base, error: `clone "${l.workPath}" không còn trong Cấu hình` })
+      continue
+    }
     try {
       const resolved = await withRepoLock(repo.localPath, async () => {
         let headSha: string
+        let baseSha: string
+        if (isLocalLink(l)) {
+          // Hai sha đã chốt lúc xếp hàng, kéo thẳng từ clone làm việc. Không
+          // hỏi origin: thứ cần xem chưa push, origin không thấy nó.
+          headSha = await fetchFromWork(repo.localPath, l.workPath!, l.headRef, `r${roundId}-l${i}-head`)
+          baseSha = await fetchFromWork(repo.localPath, l.workPath!, l.baseRef, `r${roundId}-l${i}-base`)
+          return { headSha, baseSha, workdir: await addWorktree(repo.localPath, `r${roundId}-l${i}`, headSha) }
+        }
         if (l.prNumber && repo.githubRepo) {
           headSha = await fetchPull(repo.localPath, l.prNumber, l.baseRef)
         } else {
           await fetchAll(repo.localPath)
           headSha = await revParse(repo.localPath, `origin/${l.headRef}`)
         }
-        const baseSha = await mergeBase(repo.localPath, `origin/${l.baseRef}`, headSha)
+        baseSha = await mergeBase(repo.localPath, `origin/${l.baseRef}`, headSha)
         const workdir = await addWorktree(repo.localPath, `r${roundId}-l${i}`, headSha)
         return { headSha, baseSha, workdir }
       })

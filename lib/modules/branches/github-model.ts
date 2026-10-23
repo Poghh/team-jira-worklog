@@ -1055,29 +1055,33 @@ export function stageFor(
    * loại nào vẫn chạy y hệt.
    */
   /**
-   * Cột "PR đang mở" là một **cặp**: nhánh loại X mở PR vào nhánh loại Y.
+   * Cột "PR đang mở" nhận **những cặp** `nhánh loại X → nhánh loại Y`.
    *
-   * Vế đích (`intoKind`) phải được khai, nếu không cột im. Trước đây cột
-   * `review` chỉ hỏi "có PR đang mở" và chạy đúng do may — PR nhắm vào môi
-   * trường đã bị cột môi trường giành ở vòng trên, nên phần còn lại tình cờ
-   * đúng là PR vào nhánh feature. Khi luật là một cặp thì vế thiếu phải im:
-   * một cột chưa khai đủ cặp mà vẫn vơ hết là cách cũ quay lại qua cửa sau.
+   * Cột chưa khai cặp nào thì im. Trước đây cột `review` chỉ hỏi "có PR đang
+   * mở" và chạy đúng do may — PR nhắm vào môi trường đã bị cột môi trường
+   * giành ở vòng trên, nên phần còn lại tình cờ đúng là PR vào nhánh feature.
+   * Khi luật là những cặp thì chưa khai phải im: một cột vơ hết là cách cũ
+   * quay lại qua cửa sau.
    *
-   * Vế nguồn (`kind`) để trống thì nhận mọi loại — cặp vẫn đủ nghĩa với một
-   * vế, và đó là cách khai gọn nhất cho "bất kỳ nhánh nào gửi vào feature".
+   * Nhiều cặp là một cột chứ không phải nhiều cột: `task → feature` và
+   * `bugfix → feature` cùng là một bước việc, user thấy một cột "đang review".
+   * Vế nguồn để trống thì nhận mọi loại nhánh.
    */
   const base = pr?.baseRefName ?? "";
-  const pairs = pre.filter(
-    (s) =>
-      s.phase === "open" &&
-      s.intoKind.trim() &&
-      kindMatches(base, s.intoKind) &&
-      (!s.kind.trim() || kindMatches(branchName, s.kind)),
-  );
+  const hits = pre.flatMap((stage) => {
+    if (stage.phase !== "open") return [];
+    const pair = stage.pairs.find(
+      (r) =>
+        r.into.trim() &&
+        kindMatches(base, r.into) &&
+        (!r.from.trim() || kindMatches(branchName, r.from)),
+    );
+    return pair ? [{ stage, pair }] : [];
+  });
   if (want === "open") {
-    // Cột kén cả hai vế thắng cột chỉ kén đích: khai càng cụ thể càng ưu tiên.
+    // Cặp kén cả hai vế thắng cặp chỉ kén đích: khai càng cụ thể càng ưu tiên.
     return (
-      (pairs.find((s) => s.kind.trim()) ?? pairs[0])?.name ??
+      (hits.find((h) => h.pair.from.trim()) ?? hits[0])?.stage.name ??
       pre.find((s) => s.phase === "nopr" && s.kind.trim() && kindMatches(branchName, s.kind))
         ?.name ??
       pre.find((s) => s.phase === "nopr" && !s.kind.trim())?.name ??
@@ -1315,6 +1319,24 @@ export function envLadder(state: EnvState, envs: StageConfig[]): EnvCell[] {
     if (p.landed) return { env, kind: "landed" as const, ahead: p.ahead };
     return { env, kind: "behind" as const, ahead: p.ahead };
   });
+}
+
+/**
+ * Môi trường xa nhất code đã tới, hoặc null nếu chưa tới đâu.
+ *
+ * Lấy ô **cuối cùng** đã tới chứ không phải ô đầu: thứ tự `envSteps` là đường
+ * đi của code, nên tới được `staging` nghĩa là đã qua cả hai bậc dưới — và
+ * bậc đáng nói là bậc cao nhất.
+ *
+ * `landed` cũng tính là đã tới: nội dung nằm ở đó rồi, chỉ là vào bằng đường
+ * khác. Một dãy toàn `behind` trả về null, và đó đúng là "chưa lên môi trường
+ * nào" — khác hẳn với chưa đo được, vốn là `absent` và người gọi phải tự phân
+ * biệt.
+ */
+export function envFurthest(cells: EnvCell[]): EnvCell | null {
+  let out: EnvCell | null = null;
+  for (const c of cells) if (c.kind === "arrived" || c.kind === "landed") out = c;
+  return out;
 }
 
 /**

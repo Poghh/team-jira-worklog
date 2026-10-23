@@ -9,6 +9,7 @@ import {
   type PlanRow,
   REPO_COLORS,
   envLadder,
+  envFurthest,
   prBadge,
   repoSolidClass,
   repoLabel,
@@ -1227,15 +1228,32 @@ export function EnvLadder({
   envs,
   /** True when the card names a branch, so "no data" means "not scanned yet". */
   expected = false,
+  /**
+   * `"full"` vẽ cả đường ống; `"current"` chỉ vẽ bậc cao nhất code đã tới, và
+   * im hẳn khi chưa tới bậc nào.
+   *
+   * Task board không phải chỗ theo dõi đường ống — mỗi dòng ở đó là một task,
+   * và ba ô xám "chưa tới" chiếm chỗ ngang với tên nhánh để nói một điều mà
+   * không ô nào trong ba ô ấy nói: nhánh chưa đi đâu cả. Một ô xanh "staging"
+   * nói đúng chừng ấy; còn không có ô nào cũng nói đúng chừng ấy.
+   */
+  mode = "full",
   className = "",
 }: {
   state: EnvState;
   envs: StageConfig[];
   expected?: boolean;
+  mode?: "full" | "current";
   className?: string;
 }) {
   if (!envs.length) return null;
-  const cells = envLadder(state, envs);
+  const all = envLadder(state, envs);
+  const furthest = envFurthest(all);
+  // Chế độ rút gọn vẫn phải phân biệt "chưa tới đâu" với "chưa đo được": cả
+  // hai đều im lặng nếu gộp, mà im lặng thì đọc thành "chưa tới đâu".
+  const cells = mode === "current" ? (furthest ? [furthest] : []) : all;
+  if (mode === "current" && !furthest && !all.every((c) => c.kind === "absent"))
+    return null;
 
   // Nothing measured. Silence used to be the answer here, which read as "this
   // branch is nowhere" — and appeared exactly when a card was freshly pinned,
