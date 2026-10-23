@@ -7,6 +7,7 @@ import {
   type DocFile,
   type FindingView,
   type ItemKind,
+  isLocalLink,
   type RoundLink,
   addressOf,
   isCode,
@@ -227,23 +228,30 @@ function linksBlock(links: RoundLink[]): string {
   if (!links.length) return ''
   const ok = links.filter((l) => !l.error)
   const bad = links.filter((l) => l.error)
+  const anyLocal = ok.some((l) => isLocalLink(l))
   const list = ok
     .map(
-      (l) => `- **${l.repoName}** ${l.prNumber ? `PR #${l.prNumber}` : 'nhánh'} "${l.title}" (\`${l.headRef}\` → \`${l.baseRef}\`)
+      (l) => `- **${l.repoName}** ${isLocalLink(l) ? 'thay đổi chưa commit dưới máy' : l.prNumber ? `PR #${l.prNumber}` : 'nhánh'} "${l.title}"${isLocalLink(l) ? '' : ` (\`${l.headRef}\` → \`${l.baseRef}\`)`}
   - Diff đầy đủ (đọc bằng Read): ${l.diffPath}
   - Code ở commit head ${l.headSha} (Read / Grep / Glob theo đường dẫn tuyệt đối): ${l.workdir}`,
     )
     .join('\n')
   return `
-## PR liên quan ở repo khác — xem cùng để có bức tranh đầy đủ
-Thay đổi này đi cặp với PR dưới đây (vd SDK và app iOS dùng SDK đó). Đọc diff của nó trước, rồi mở code khi cần.
-${list || '(không chuẩn bị được PR liên quan nào)'}${bad.length ? `\nKhông lấy được: ${bad.map((l) => `${l.repoName} ${l.prNumber ? `#${l.prNumber}` : l.headRef} — ${l.error}`).join('; ')}` : ''}
+## Thay đổi đi kèm ở repo khác — xem cùng để có bức tranh đầy đủ
+Thay đổi này đi cặp với thứ dưới đây (vd SDK và app iOS dùng SDK đó), chụp **cùng một thời điểm** với phần đang review. Đọc diff của nó trước, rồi mở code khi cần.
+${list || '(không chuẩn bị được thứ liên quan nào)'}${bad.length ? `\nKhông lấy được: ${bad.map((l) => `${l.repoName} ${l.prNumber ? `#${l.prNumber}` : l.headRef} — ${l.error}`).join('; ')}` : ''}
 Khi review, kiểm tra thêm chỗ nối giữa hai bên:
 - API / model / enum / error mà bên này gọi có khớp với thay đổi bên kia không (tên, tham số, kiểu, optional, giá trị mặc định).
 - Thay đổi hành vi bên kia (luồng, thread / actor gọi callback, thứ tự sự kiện, case mới) bên này đã xử lý chưa.
 - Bên này có dựa vào điều bên kia chưa làm, hoặc làm khác đi không; breaking change nào chưa được cập nhật.
 - Những vấn đề này dùng \`category\` = "Lệch với PR liên quan".
-Finding vẫn chỉ gắn vào file / dòng của PR ĐANG review (repo hiện tại); nói rõ file / dòng bên PR kia trong nội dung comment. Không review chất lượng code của PR kia — nó có lượt review riêng.
+Finding vẫn chỉ gắn vào file / dòng của phần ĐANG review (repo hiện tại); nói rõ file / dòng bên kia trong nội dung comment.${
+    anyLocal
+      ? `
+Phần "chưa commit dưới máy" **không có lượt review riêng** — nó chưa thành PR. Nên nếu chỗ nối sai vì bên kia sai, cứ nói ra: một **comment rời** (\`file\` để trống, không có \`line\`) mô tả file/dòng bên kia và phải sửa gì. Vẫn không đi soi chất lượng code chung của bên kia — chỉ chỗ nối giữa hai bên.`
+      : `
+ Không review chất lượng code của PR kia — nó có lượt review riêng.`
+  }
 `
 }
 
@@ -300,16 +308,26 @@ export function codePrompt(input: {
   const scope = followUp
     ? input.incremental
       ? `Đây là **vòng review thứ ${input.round}**. ${who} đã sửa thêm code sau lần review trước (ảnh chụp cũ ${input.prevHeadSha}).
-- Phần vừa sửa: \`git diff ${input.prevHeadSha} ${input.headSha}\` và \`git log --oneline ${input.prevHeadSha}..${input.headSha}\`.
-- Toàn bộ PR (để hiểu ngữ cảnh): \`git diff ${input.baseSha} ${input.headSha}\`.
+- Phần vừa sửa: \`git diff ${input.prevHeadSha} ${input.headSha}\` và \`git log --oneline ${input.prevHeadSha}..${input.headSha}\`.${
+          input.selfReview
+            ? ''
+            : `
+- Toàn bộ PR (để hiểu ngữ cảnh): \`git diff ${input.baseSha} ${input.headSha}\`.`
+        }
 Việc cần làm:
 1. Với MỖI vấn đề ở danh sách "vòng trước" bên dưới, kiểm tra code hiện tại và trả vào \`previous\`: fixed / partial / not_fixed kèm một câu giải thích, và nếu chưa sửa hết thì kèm \`line\` là dòng hiện tại của nó ở commit head mới.
 2. Tìm vấn đề MỚI chỉ trong phần code vừa thay đổi (không soi lại phần đã review, trừ khi phát hiện lỗi nghiêm trọng bị bỏ sót). Không lặp lại vấn đề đã có trong danh sách vòng trước.`
       : `Đây là **vòng review thứ ${input.round}**, nhưng không còn ảnh chụp cũ ${input.prevHeadSha} để so. Review lại toàn bộ \`git diff ${input.baseSha} ${input.headSha}\`, đánh giá lại từng vấn đề vòng trước vào \`previous\`, và chỉ đưa vào \`findings\` những vấn đề mới.`
-    : `Diff cần review: \`git diff ${input.baseSha} ${input.headSha}\` (base là merge-base với \`${input.baseRef}\`). Danh sách commit: \`git log --oneline ${input.baseSha}..${input.headSha}\`.`
+    : input.selfReview
+      ? `Diff cần review: \`git diff ${input.baseSha} ${input.headSha}\` — đúng phần đang sửa dở, so với HEAD lúc bấm (${input.baseSha}). Không soi phần còn lại của nhánh: nó đã nằm trong lịch sử rồi, và không phải thứ cần review lượt này.`
+      : `Diff cần review: \`git diff ${input.baseSha} ${input.headSha}\` (base là merge-base với \`${input.baseRef}\`). Danh sách commit: \`git log --oneline ${input.baseSha}..${input.headSha}\`.`
 
   return `Bạn đang review code cho ${pr} của repo **${input.repoName}**: "${input.title}"${input.author ? ` — tác giả ${input.author}` : ''}.
-Merge từ \`${input.headRef}\` vào \`${input.baseRef}\`. Thư mục hiện tại là worktree đang đứng đúng commit head ${input.headSha}.
+${
+    input.selfReview
+      ? `Đây là code chưa commit dưới máy, chưa thành PR.`
+      : `Merge từ \`${input.headRef}\` vào \`${input.baseRef}\`.`
+  } Thư mục hiện tại là worktree đang đứng đúng commit head ${input.headSha}.
 
 ${scope}
 

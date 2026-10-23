@@ -236,16 +236,22 @@ export async function queueBranchesAction(input: {
  * File chưa từng `git add` không vào được ảnh chụp — `stash create` không có
  * `--include-untracked`. Màn hình phải nói ra, không được im.
  */
-async function snapshotLocal(dir: string): Promise<{ sha: string; label: string; why: string }> {
+async function snapshotLocal(
+  dir: string,
+): Promise<{ sha: string; base: string; label: string; why: string }> {
   const on = await currentBranch(dir).catch(() => '')
+  const head = await revParse(dir, 'HEAD').catch(() => '')
+  if (!head)
+    return { sha: '', base: '', label: '', why: 'Không đọc được HEAD của clone làm việc.' }
   const dirty = await countDirty(dir).catch(() => 0)
   if (dirty > 0) {
     const sha = await snapshotUncommitted(dir).catch(() => '')
-    if (sha) return { sha, label: `${dirty} file chưa commit${on ? ` trên ${on}` : ''}`, why: '' }
+    // `stash create` dựng commit lơ lửng có cha là HEAD, nên hai đầu mút của
+    // lượt soi là HEAD → ảnh chụp: đúng phần đang gõ dở, không gì khác.
+    if (sha)
+      return { sha, base: head, label: `${dirty} file chưa commit${on ? ` trên ${on}` : ''}`, why: '' }
   }
-  const head = await revParse(dir, 'HEAD').catch(() => '')
-  if (!head) return { sha: '', label: '', why: 'Không đọc được HEAD của clone làm việc.' }
-  return { sha: head, label: on || 'HEAD', why: '' }
+  return { sha: head, base: head, label: on || 'HEAD', why: '' }
 }
 
 /** Nhánh trong clone làm việc, kèm có việc chưa commit hay không. */
@@ -277,11 +283,47 @@ export async function listWorkAction(
 }
 
 /**
+ * Chụp lại những link "dưới máy", chốt hai đầu mút cho từng cái.
+ *
+ * Cùng lý do với ảnh chụp của chính hồ sơ: giữa lúc bấm và lúc tới lượt có
+ * hàng đợi. Nếu vế kia chụp lúc chạy thì hai bên lệch nhau về thời gian, mà
+ * cả việc link là để đối chiếu hai bên ở **cùng một thời điểm**.
+ *
+ * Link không phải dưới máy (PR, cặp nhánh) đi qua đây nguyên vẹn —
+ * `prepareLinks` tự lấy chúng từ origin lúc chạy.
+ */
+async function snapshotLinks(links: PrLink[]): Promise<{ links?: PrLink[]; message?: string }> {
+  const out: PrLink[] = []
+  for (const l of links) {
+    if (!l.workPath) {
+      out.push(l)
+      continue
+    }
+    const repo = getRepo(l.repoId)
+    if (!repo) return { message: 'Một repo liên kết đã bị xoá khỏi Cấu hình.' }
+    if (!repo.workPaths.includes(l.workPath))
+      return { message: `Clone "${l.workPath}" không còn trong Cấu hình của ${repo.name}.` }
+    const snap = await snapshotLocal(l.workPath)
+    if (!snap.sha) return { message: `${repo.name}: ${snap.why}` }
+    if (snap.sha === snap.base)
+      return {
+        message: `${repo.name} không có thay đổi nào chưa commit — bỏ liên kết đó ra, hoặc liên kết PR của nó.`,
+      }
+    out.push({ ...l, headRef: snap.sha, baseRef: snap.base, title: `${repo.name} · ${snap.label}` })
+  }
+  return { links: out }
+}
+
+/**
  * Xếp hàng một lượt tự review.
  *
- * `headRef` chốt **ở đây**, không phải lúc chạy: giữa lúc bấm và lúc tới lượt
- * có hàng đợi, và bạn có thể đã gõ tiếp. Review phải soi đúng thứ bạn nhìn
- * thấy lúc bấm, nếu không thì finding trỏ vào những dòng đã đổi.
+ * Soi **thay đổi trước → sau**, không so với nhánh nền: vòng 1 là HEAD → phần
+ * đang gõ dở, vòng sau là lần sửa trước → lần sửa này. Nhánh nền kéo cả lịch
+ * sử nhánh vào mỗi lượt, và phần bạn vừa sửa chìm trong đó.
+ *
+ * Cả hai đầu mút chốt **ở đây**, không phải lúc chạy: giữa lúc bấm và lúc tới
+ * lượt có hàng đợi, và bạn có thể đã gõ tiếp. Review phải soi đúng thứ bạn
+ * nhìn thấy lúc bấm, nếu không thì finding trỏ vào những dòng đã đổi.
  *
  * Với việc chưa commit, cái chốt được là một commit lơ lửng do `git stash
  * create` dựng — xem {@link snapshotUncommitted}. Nó không đụng cây làm việc,
@@ -291,10 +333,11 @@ export async function queueSelfAction(input: {
   repoId: string
   /** Clone làm việc đã chọn. Phải là một trong những cái repo đã khai. */
   workPath: string
-  baseRef: string
   title: string
   note: string
   docs?: DocFile[]
+  /** Vế kia của một thay đổi hai repo — xem {@link snapshotLinks}. */
+  links?: PrLink[]
 }): Promise<Result & { itemId?: number }> {
   const blocked = await ready()
   if (blocked) return blocked
@@ -304,24 +347,38 @@ export async function queueSelfAction(input: {
   if (!repo) return { ok: false, message: 'Không thấy repo.' }
   const dir = repo.workPaths.includes(input.workPath) ? input.workPath : repo.workPaths[0]
   if (!dir) return { ok: false, message: 'Repo này chưa khai clone làm việc.' }
-  if (!input.baseRef.trim()) return { ok: false, message: 'Chọn nhánh nền để so.' }
 
   const snap = await snapshotLocal(dir)
   if (!snap.sha) return { ok: false, message: snap.why }
+  // Cây sạch thì hai đầu mút trùng nhau và lượt soi rỗng. Nói thẳng ở đây,
+  // chứ chạy một lượt rỗng rồi trả về "không thấy gì" thì đọc thành "code
+  // sạch" — một câu trả lời sai về đúng thứ người dùng muốn biết.
+  if (snap.sha === snap.base)
+    return {
+      ok: false,
+      message:
+        'Chưa có thay đổi nào để soi — cây làm việc đang sạch. Sửa code rồi bấm lại, hoặc dùng “Nhánh” nếu muốn soi cả nhánh.',
+    }
   const head = snap.sha
   const label = snap.label
+
+  const linked = await snapshotLinks(input.links ?? [])
+  if (!linked.links) return { ok: false, message: linked.message! }
 
   const itemId = createItem({
     kind: 'self',
     repoId: input.repoId,
     workPath: dir,
-    title: input.title.trim() || `${label} → ${input.baseRef.trim()}`,
+    title: input.title.trim() || label,
     prNumber: null,
-    baseRef: input.baseRef.trim(),
+    // Một sha, không phải tên nhánh: đây là mốc "trước" đã chốt, và tên nhánh
+    // thì lúc chạy có thể đã trỏ chỗ khác.
+    baseRef: snap.base,
     headRef: head,
     author: '',
     url: '',
     note: input.note.trim(),
+    links: linked.links,
   })
   queueRound(itemId, docs)
   ensureTicker()
@@ -371,6 +428,13 @@ export async function reReviewAction(itemId: number, note?: string, newDocs?: Do
     const snap = await snapshotLocal(dir)
     if (!snap.sha) return { ok: false, message: snap.why }
     patchItem(itemId, { headRef: snap.sha })
+    // Vế kia chụp lại cùng lúc, nếu không thì vòng sau đối chiếu code iOS mới
+    // với SDK của vòng trước — và chỗ lệch nó báo là chỗ bạn vừa sửa xong.
+    if (item.links.some((l) => l.workPath)) {
+      const relinked = await snapshotLinks(item.links)
+      if (!relinked.links) return { ok: false, message: relinked.message! }
+      setItemLinks(itemId, relinked.links)
+    }
   }
 
   queueRound(itemId, docs ?? carriedDocs(itemId))

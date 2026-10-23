@@ -28,6 +28,14 @@ import { statusRank, statusTone } from "@/lib/jira/types";
  * and can be renamed or reordered freely, so the rule cannot key off a name —
  * each step states its own expectation instead.
  */
+/** Một cặp của cột "PR đang mở" — xem {@link StageConfig.pairs}. */
+export interface StagePair {
+  /** Loại nhánh gửi PR. '' = mọi loại. */
+  from: string;
+  /** Loại nhánh mà PR nhắm vào. Rỗng thì cặp này bị bỏ qua. */
+  into: string;
+}
+
 export interface StageConfig {
   name: string;
   /** Status the ticket should have reached by this step. '' = no expectation. */
@@ -50,20 +58,23 @@ export interface StageConfig {
    */
   kind: string;
   /**
-   * Loại nhánh mà **PR của cột này nhắm vào** — vế thứ hai của một cặp.
+   * Những cặp mà cột "PR đang mở" này nhận — `nhánh loại X gửi PR vào loại Y`.
    *
-   * Chỉ có nghĩa trên cột `phase: "open"`. Một cột như vậy nói "nhánh loại X
-   * đang mở PR vào nhánh loại Y", ví dụ `bugfix → feature`: task sửa lỗi gửi
-   * vào nhánh tính năng, còn xa mới tới chỗ chạy được.
+   * Chỉ có nghĩa trên cột `phase: "open"`. Một cột như vậy thường phục vụ
+   * nhiều cặp cùng một bước việc — `task → feature` và `bugfix → feature` —
+   * nên đây là **danh sách**, không phải một cặp: hai cặp ấy là một cột chứ
+   * không phải hai cột trùng tên.
    *
-   * '' = cột **không nhận nhánh nào**, không phải "nhận tất cả". Trước đây cột
-   * `review` chỉ hỏi "có PR đang mở" và chạy đúng do may: PR nhắm vào môi
-   * trường đã bị cột môi trường giành trước, nên phần còn lại tình cờ đúng là
-   * PR vào nhánh feature. Khi luật là một cặp thì vế thiếu phải im, không được
-   * đoán — một cột chưa khai đủ cặp mà vẫn vơ hết là cách cũ quay lại qua cửa
-   * sau.
+   * `from` rỗng = mọi loại nhánh nguồn. `into` **phải có**, nếu không cặp ấy
+   * bị bỏ qua.
+   *
+   * Danh sách rỗng = cột **không nhận nhánh nào**, không phải nhận tất cả.
+   * Trước đây cột `review` chỉ hỏi "có PR đang mở" và chạy đúng do may: PR
+   * nhắm vào môi trường đã bị cột môi trường giành ở vòng trên, nên phần còn
+   * lại tình cờ đúng là PR vào nhánh feature. Khi luật là những cặp thì chưa
+   * khai phải im, không được đoán.
    */
-  intoKind: string;
+  pairs: StagePair[];
   /**
    * For a step that names a branch, how far into that environment the work is.
    *
@@ -96,7 +107,128 @@ const env = (
   branch: string,
   reach: StageConfig["reach"],
   expects: StageConfig["expects"],
-): StageConfig => ({ name, expects, branch, phase: "", reach, kind: "", intoKind: "" });
+): StageConfig => ({ name, expects, branch, phase: "", reach, kind: "", pairs: [] });
+
+const EXPECTS = new Set(["", "prog", "test", "done"]);
+const PHASES = new Set(["", "nopr", "open"]);
+const REACHES = new Set(["queued", "merged", "built", "gone"]);
+
+/**
+ * Đọc cột từ ô JSON trong bảng settings.
+ *
+ * Sống ở đây chứ không ở `config.ts` để test chạm được: phần dễ sai nhất của
+ * nó là đọc lại cấu hình lưu theo hình dạng cũ, mà `config.ts` thì kéo theo
+ * `server-only` và cả cái database.
+ */
+export function parseStages(raw: string): StageConfig[] {
+  try {
+    const arr = JSON.parse(raw);
+    if (!Array.isArray(arr)) return [];
+    return arr
+      .filter((s) => s && typeof s === "object")
+      .map((s) => ({
+        name: String(s.name ?? "").trim(),
+        // An unknown value means "no expectation" rather than a crash: this is
+        // hand-editable JSON in a settings row.
+        expects: (EXPECTS.has(String(s.expects))
+          ? String(s.expects)
+          : "") as StageConfig["expects"],
+        branch: String(s.branch ?? "").trim(),
+        phase: (PHASES.has(String(s.phase))
+          ? String(s.phase)
+          : "") as StageConfig["phase"],
+        // `merged: true` is how the previous shape spelled it; read it so a
+        // pipeline saved before the build step parses rather than silently
+        // collapsing every environment to "queued".
+        reach: (REACHES.has(String(s.reach))
+          ? String(s.reach)
+          : s.merged
+            ? "merged"
+            : "queued") as StageConfig["reach"],
+        // Thiếu hẳn là bình thường: mọi cấu hình lưu trước khi có cột theo loại
+        // đều không có trường này, và '' nghĩa là không kén — đúng hành vi cũ.
+        kind: String(s.kind ?? "").trim(),
+        // Cấu hình lưu trước khi cột review nhận nhiều cặp chỉ có một cặp,
+        // viết thành hai ô `kind`/`intoKind`. Đọc nó lên thành danh sách một
+        // phần tử để bảng của người đã khai cặp ấy chạy y nguyên.
+        pairs: Array.isArray(s.pairs)
+          ? s.pairs
+              .filter((r: unknown) => r && typeof r === "object")
+              .map((r: { from?: unknown; into?: unknown }) => ({
+                from: String(r.from ?? "").trim(),
+                into: String(r.into ?? "").trim(),
+              }))
+              .filter((r: StagePair) => r.into)
+          : String(s.intoKind ?? "").trim()
+            ? [
+                {
+                  from: String(s.kind ?? "").trim(),
+                  into: String(s.intoKind).trim(),
+                },
+              ]
+            : [],
+      }))
+      .filter((s) => s.name);
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Dọn danh sách cột trước khi ghi xuống settings.
+ *
+ * Đi cặp với {@link parseStages} và sống cạnh nó vì cùng một lý do: đây là
+ * chỗ một trường mới dễ bị bỏ quên nhất — hàm dựng lại từng cột theo từng
+ * trường, nên trường nào không được nhắc tên là mất khi lưu.
+ */
+export function cleanStages(list: StageConfig[]): StageConfig[] {
+  return list
+    .map((s) => ({
+      name: s.name.trim(),
+      expects: (EXPECTS.has(s.expects)
+        ? s.expects
+        : "") as StageConfig["expects"],
+      branch: s.branch.trim(),
+      // A step with a branch is decided by containment, and the terminal step
+      // by the branch being gone — a PR phase on either would be dead
+      // configuration that still looks meaningful on screen.
+      phase: (s.branch.trim() || s.reach === "gone"
+        ? ""
+        : PHASES.has(s.phase)
+          ? s.phase
+          : "") as StageConfig["phase"],
+      // Only a step with a branch can be merged into or built from. The
+      // terminal step is the exception: it has no branch precisely because
+      // what it records is the branch being gone.
+      reach: (s.branch.trim()
+        ? s.reach
+        : s.reach === "gone"
+          ? "gone"
+          : "queued") as StageConfig["reach"],
+      // Loại nhánh chỉ có nghĩa ở cột điểm bắt đầu — chỗ một nhánh chưa mở
+      // PR. Trên cột môi trường thì nó là cấu hình chết mà vẫn trông như còn
+      // tác dụng, và trên cột "PR đang mở" thì `pairs` đã thay chỗ nó.
+      //
+      // Điều kiện ở đây KHÔNG phải `phase === "nopr"`: cột `resolve` mặc định
+      // là `phase: ""` ("không khớp cột nào khác") mà vẫn kén loại nhánh, nên
+      // bản cũ xoá mất nó — bấm Lưu một lần là mọi nhánh resolve nhảy sang
+      // cột task.
+      kind:
+        !s.branch.trim() && s.phase !== "open" && s.reach !== "gone"
+          ? s.kind.trim()
+          : "",
+      // Cặp chỉ có nghĩa ở cột "PR đang mở", cùng lý do với `kind` ở trên. Một
+      // cặp thiếu vế đích không khai được điều gì nên bỏ luôn, thay vì giữ lại
+      // một dòng rỗng mà cột vẫn không nhận thêm nhánh nào.
+      pairs:
+        !s.branch.trim() && s.phase === "open" && s.reach !== "gone"
+          ? s.pairs
+              .map((r) => ({ from: r.from.trim(), into: r.into.trim() }))
+              .filter((r) => r.into)
+          : [],
+    }))
+    .filter((s) => s.name);
+}
 
 export const DEFAULT_STAGES: StageConfig[] = [
   // Bốn cột trước khi code đi đâu, xếp theo mức việc chứ không theo thời gian:
@@ -129,7 +261,7 @@ export const DEFAULT_STAGES: StageConfig[] = [
     // là nhánh feature nó chở.
     phase: "",
     reach: "queued",
-    intoKind: "",
+    pairs: [],
     kind: "resolve",
   },
   {
@@ -138,7 +270,7 @@ export const DEFAULT_STAGES: StageConfig[] = [
     branch: "",
     phase: "nopr",
     reach: "queued",
-    intoKind: "",
+    pairs: [],
     kind: "task",
   },
   {
@@ -147,7 +279,7 @@ export const DEFAULT_STAGES: StageConfig[] = [
     branch: "",
     phase: "nopr",
     reach: "queued",
-    intoKind: "",
+    pairs: [],
     kind: "bugfix",
   },
   {
@@ -156,7 +288,7 @@ export const DEFAULT_STAGES: StageConfig[] = [
     branch: "",
     phase: "nopr",
     reach: "queued",
-    intoKind: "",
+    pairs: [],
     kind: "feature",
   },
   /**
@@ -179,7 +311,7 @@ export const DEFAULT_STAGES: StageConfig[] = [
     branch: "",
     phase: "open",
     reach: "queued",
-    intoKind: "",
+    pairs: [],
     kind: "",
   },
 
@@ -226,7 +358,7 @@ export const DEFAULT_STAGES: StageConfig[] = [
     branch: "master",
     phase: "",
     reach: "gone",
-    intoKind: "",
+    pairs: [],
     kind: "",
   },
 ];
