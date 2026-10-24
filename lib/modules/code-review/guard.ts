@@ -3,7 +3,7 @@
  * allowlists, so "review and comment, nothing else" is a property of the code
  * rather than a habit of whoever edits it next.
  *
- * Three layers (plus Confluence, 1b), each enough on its own:
+ * Three layers (plus Confluence, 1b, and Jira, 1c), each enough on its own:
  *
  *   1. GitHub: the token may be able to merge, push, delete branches. The app
  *      may only POST to the four endpoints that create comments / reviews, and
@@ -97,6 +97,22 @@ export function assertConfluenceRequest(method: string, pathname: string) {
   if (!CONFLUENCE_WRITES.some((re) => re.test(bare))) {
     throw new ForbiddenAction(`Chặn: ${bare} không nằm trong danh sách được phép (chỉ comment trên Confluence).`)
   }
+}
+
+/* ── 1c. Jira ───────────────────────────────────────────────────────────── */
+
+/**
+ * A PR review reads the tickets it implements — and only reads: the same
+ * token logs work, moves cards and edits tickets elsewhere in this app, none
+ * of which a review may do. GET on one issue (and its remote links), nothing
+ * else.
+ */
+const JIRA_READS: RegExp[] = [/^\/rest\/api\/3\/issue\/[A-Z][A-Z0-9_]*-\d+$/, /^\/rest\/api\/3\/issue\/[A-Z][A-Z0-9_]*-\d+\/remotelink$/]
+
+export function assertJiraRequest(method: string, pathname: string) {
+  const bare = pathname.split('?')[0]
+  if (method !== 'GET') throw new ForbiddenAction(`Chặn: review chỉ được đọc Jira, không được ${method}.`)
+  if (!JIRA_READS.some((re) => re.test(bare))) throw new ForbiddenAction(`Chặn: ${bare} không nằm trong danh sách được đọc (chỉ đọc ticket).`)
 }
 
 /* ── 2. Git run by the app ─────────────────────────────────────────────── */

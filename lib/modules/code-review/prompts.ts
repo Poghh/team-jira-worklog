@@ -251,17 +251,56 @@ Finding vẫn chỉ gắn vào file / dòng của PR ĐANG review (repo hiện t
 
 const ROLE_NAME = { spec: 'Mô tả chức năng', tdd: 'TDD', other: 'Tài liệu liên quan' } as const
 
-function docsBlock(docs: DocFile[], changed: boolean): string {
-  if (!docs.length) return ''
-  const list = docs.map((d) => `- [${ROLE_NAME[d.role] ?? 'Tài liệu'}] ${d.name}: ${d.path}`).join('\n')
+/** What a PR is checked against, beyond its own code: Jira tickets, Confluence pages, PDFs. */
+export interface CodeContext {
+  /** Pasted tickets that could not be read. */
+  problems: string[]
+  /** Confluence pages the tickets link to that were not attached. */
+  unreadPages: string[]
+}
+
+function docsBlock(docs: DocFile[], changed: boolean, ctx?: CodeContext): string {
+  const problems = ctx?.problems ?? []
+  if (!docs.length && !problems.length) return ''
+  const tickets = docs.filter((d) => d.ticket)
+  const pages = docs.filter((d) => d.source)
+  const pdfs = docs.filter((d) => !d.ticket && !d.source)
+  const sections = [
+    tickets.length &&
+      `Ticket Jira (yêu cầu PR này thực hiện):\n${tickets
+        .map((d) => `- ${d.name}${d.ticket!.auto ? ' (tự nhận từ tên nhánh / tiêu đề / mô tả PR)' : ''}: ${d.path}`)
+        .join('\n')}`,
+    pages.length &&
+      `Trang Confluence:\n${pages
+        .map((d) => `- [${ROLE_NAME[d.role] ?? 'Tài liệu'}] "${d.name}"${d.source!.trail.length ? ` (trang con, dưới: ${d.source!.trail.join(' › ')})` : ''} · phiên bản ${d.source!.version}: ${d.path}`)
+        .join('\n')}`,
+    pdfs.length && `PDF:\n${pdfs.map((d) => `- [${ROLE_NAME[d.role] ?? 'Tài liệu'}] ${d.name}: ${d.path}`).join('\n')}`,
+  ].filter(Boolean)
+  const howToRead = [
+    pdfs.length && 'PDF đọc bằng Read (tài liệu dài thì đọc theo khoảng trang)',
+    (tickets.length || pages.length) && 'ticket Jira và trang Confluence đã được chuyển sang Markdown (.md) — đọc bằng Read',
+    pages.length && 'hình / sơ đồ trong trang Confluence là file ảnh có đường dẫn tuyệt đối trong cú pháp ![…](…), mở bằng Read khi nội dung phụ thuộc vào hình',
+  ].filter(Boolean)
+  const ticketNotes = tickets.length
+    ? `
+- Ticket: mô tả, tiêu chí chấp nhận / DoD (nếu có) và comment trên ticket đều là yêu cầu — comment mới hơn có thể đã làm rõ hoặc thay đổi mô tả; ticket là subtask thì yêu cầu thường nằm ở ticket cha (có trong file).${
+        tickets.some((d) => d.ticket!.auto)
+          ? ' Ticket tự nhận theo tên nhánh / mô tả có thể không phải ticket của PR này: nếu nó rõ ràng không liên quan thì bỏ qua và nói một câu trong `reviewer_note`.'
+          : ''
+      }`
+    : ''
+  const unread = ctx?.unreadPages.length
+    ? `\nTicket có link tới các trang Confluence sau nhưng chưa được đính kèm (bạn KHÔNG đọc được): ${ctx.unreadPages.slice(0, 8).join(' · ')}. Nếu yêu cầu trong ticket chưa đủ để đánh giá mà có vẻ nằm ở các trang này, nói rõ trong \`reviewer_note\` để người review đính kèm.`
+    : ''
+  const failed = problems.length ? `\nKhông đọc được: ${problems.join('; ')}.` : ''
   return `
-## Tài liệu đính kèm — đối chiếu implement với tài liệu
-${list}
-Đọc các PDF trên bằng Read (tài liệu dài thì đọc theo khoảng trang).${changed ? ' Tài liệu đã được cập nhật so với vòng trước — đọc lại bản này.' : ''} Ngoài review chất lượng code, kiểm tra thêm:
-- PR có implement đúng các yêu cầu / luồng / edge case trong tài liệu mà thuộc phạm vi PR này không; chỗ nào làm sai hoặc khác tài liệu.
+## Yêu cầu & tài liệu — đối chiếu implement với chúng
+${sections.join('\n\n') || '(không có)'}${failed}${unread}
+${howToRead.length ? `Cách đọc: ${howToRead.join('; ')}.` : ''}${changed ? ' Yêu cầu / tài liệu đã thay đổi so với vòng trước — đọc lại bản này.' : ''} Ngoài review chất lượng code, kiểm tra thêm:
+- PR có implement đúng các yêu cầu / luồng / edge case trong ticket và tài liệu mà thuộc phạm vi PR này không; chỗ nào làm sai hoặc khác.
 - Yêu cầu nào trong phạm vi PR mà code chưa làm (thiếu).
-- Code có làm khác thiết kế trong TDD (API, luồng, lưu trữ, threading, tên gọi) không.
-Với những vấn đề này: \`category\` = "Lệch tài liệu" (làm khác) hoặc "Thiếu so với tài liệu" (chưa làm); comment nêu rõ tài liệu nào, mục/trang nào nói gì, code đang làm gì; gắn vào dòng code liên quan nhất (chỗ nên sửa hoặc nên thêm). Không bắt lỗi những yêu cầu rõ ràng nằm ngoài phạm vi PR. Nếu chính tài liệu có điểm sai / không hợp lý, hoặc cần member xác nhận yêu cầu, thì tạo một comment rời (không file / dòng) nêu rõ.
+- Code có làm khác thiết kế trong TDD (API, luồng, lưu trữ, threading, tên gọi) không.${ticketNotes}
+Với những vấn đề này: \`category\` = "Lệch tài liệu" (làm khác) hoặc "Thiếu so với tài liệu" (chưa làm); comment nêu rõ ticket / tài liệu nào, mục/trang nào nói gì, code đang làm gì; gắn vào dòng code liên quan nhất (chỗ nên sửa hoặc nên thêm). Không bắt lỗi những yêu cầu rõ ràng nằm ngoài phạm vi PR. Nếu chính yêu cầu có điểm sai / mâu thuẫn / không hợp lý, hoặc cần member xác nhận, thì tạo một comment rời (không file / dòng) nêu rõ.
 `
 }
 
@@ -288,6 +327,8 @@ export function codePrompt(input: {
   /** Spec / TDD attached to the PR — the implementation is checked against them. */
   docs: DocFile[]
   docsChanged: boolean
+  /** What could not be read, and the linked pages that were not attached. */
+  context?: CodeContext
   /** PRs in other repos this one goes with (SDK ↔ iOS). */
   links: RoundLink[]
   addressee: Addressee | null
@@ -333,7 +374,7 @@ ${addressBlock(input.addressee)}
 \`\`\`
 ${input.diffStat.slice(0, 6000)}
 \`\`\`
-${linksBlock(input.links)}${docsBlock(input.docs, input.docsChanged)}${input.prBody.trim() ? `\n## Mô tả PR\n${input.prBody.trim().slice(0, 4000)}\n` : ''}${input.note.trim() ? `\n## Ghi chú của người review\n${input.note.trim()}\n` : ''}${rulesBlock(input.globalRules, input.repoRules)}${commentsBlock(input.comments)}${previousBlock(input.previous, 'code', input.talk)}
+${linksBlock(input.links)}${docsBlock(input.docs, input.docsChanged, input.context)}${input.prBody.trim() ? `\n## Mô tả PR\n${input.prBody.trim().slice(0, 4000)}\n` : ''}${input.note.trim() ? `\n## Ghi chú của người review\n${input.note.trim()}\n` : ''}${rulesBlock(input.globalRules, input.repoRules)}${commentsBlock(input.comments)}${previousBlock(input.previous, 'code', input.talk)}
 Khi xong, trả kết quả qua structured output theo schema.`
 }
 

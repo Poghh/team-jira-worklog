@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation'
 import { useCallback, useEffect, useMemo, useRef, useState, useTransition } from 'react'
 
 import type { ClaudeCheck } from '@/lib/modules/code-review/claude'
+import type { TicketPreview } from '@/lib/modules/code-review/jira'
 import {
   DOC_ROLE_LABEL,
   type DocFile,
@@ -13,7 +14,11 @@ import {
   type ItemSummary,
   guessRole,
   guessTemplate,
+  detectJiraKeys,
+  type JiraContext,
   LIVE_STATES,
+  NO_JIRA,
+  parseJiraKeys,
   type SubpageChoice,
   type SubpageInfo,
   type PrLink,
@@ -31,6 +36,7 @@ import {
   confluencePreviewAction,
   dashboardAction,
   deleteItemAction,
+  jiraPreviewAction,
   listBranchesAction,
   listPullsAction,
   queueBranchesAction,
@@ -313,6 +319,7 @@ function NewPr({
   const [note, setNote] = useState('')
   const [msg, setMsg] = useState('')
   const [loading, setLoading] = useState(false)
+  const [context, setContext] = useState<PrContext>(EMPTY_CONTEXT)
   const [busy, start] = useTransition()
 
   const load = useCallback(async () => {
@@ -359,10 +366,11 @@ function NewPr({
       const docs = await attach.upload()
       if (!docs) return
       const chosen = pulls.filter((p) => picked.has(p.number))
-      const r = await queuePullsAction({ repoId, pulls: chosen, note, docs, links })
+      const r = await queuePullsAction({ repoId, pulls: chosen, note, docs, links, ...contextPayload(context) })
       setMsg(r.message)
       if (r.ok) {
         attach.clear()
+        setContext(EMPTY_CONTEXT)
         onDone()
       }
     })
@@ -440,6 +448,12 @@ function NewPr({
               placeholder="Ghi chú cho Claude (không bắt buộc) — vd: tập trung phần xử lý token, PR này fix bug KAN-123…"
               className={INPUT + ' mt-3'}
             />
+            <ContextPicker
+              value={context}
+              onChange={setContext}
+              detected={pulls.filter((p) => picked.has(p.number)).flatMap((p) => detectJiraKeys({ branch: p.headRef, title: p.title }))}
+              scope="Áp dụng cho mọi PR đang chọn; các vòng Review tiếp tự lấy bản mới nhất."
+            />
             {attach.section(
               'Mô tả chức năng, TDD… Claude sẽ kiểm tra PR có làm đúng và đủ theo tài liệu không. Áp dụng cho mọi PR đang chọn; các vòng Review tiếp tự dùng lại.',
             )}
@@ -453,7 +467,7 @@ function NewPr({
               <LinkPicker repos={repos} value={links} onChange={setLinks} preferNot={repoId} />
             </details>
             <div className="mt-2 flex items-center gap-2">
-              <button type="button" className={BTN_PRI} disabled={busy || !canRun || picked.size === 0} onClick={submit}>
+              <button type="button" className={BTN_PRI} disabled={busy || !canRun || picked.size === 0 || !contextReady(context)} onClick={submit}>
                 {busy && attach.count ? 'Đang tải tài liệu…' : `Review ${picked.size || ''} PR`}
               </button>
               {!canRun && <span className="text-[12px] text-crit">Claude CLI chưa sẵn sàng.</span>}
@@ -477,6 +491,7 @@ function BranchForm({ repo, repos, canRun, onDone }: { repo: RepoPreset; repos: 
   const [title, setTitle] = useState('')
   const [note, setNote] = useState('')
   const [msg, setMsg] = useState('')
+  const [context, setContext] = useState<PrContext>(EMPTY_CONTEXT)
   const [busy, start] = useTransition()
   const attach = useAttachments()
 
@@ -517,6 +532,7 @@ function BranchForm({ repo, repos, canRun, onDone }: { repo: RepoPreset; repos: 
       </div>
       <input value={title} onChange={(e) => setTitle(e.target.value)} className={INPUT + ' mt-2'} placeholder="Tên hồ sơ (không bắt buộc)" />
       <textarea value={note} onChange={(e) => setNote(e.target.value)} rows={2} className={INPUT + ' mt-2'} placeholder="Ghi chú cho Claude (không bắt buộc)" />
+      <ContextPicker value={context} onChange={setContext} detected={head ? detectJiraKeys({ branch: head, title }) : []} />
       {attach.section('Mô tả chức năng, TDD… Claude sẽ kiểm tra code trên nhánh có làm đúng và đủ theo tài liệu không.')}
       <details className="mt-2 rounded-md border border-line px-3 py-2" open={links.length > 0}>
         <summary className="cursor-pointer text-[12.5px] text-ink-2">
@@ -530,15 +546,16 @@ function BranchForm({ repo, repos, canRun, onDone }: { repo: RepoPreset; repos: 
         <button
           type="button"
           className={BTN_PRI}
-          disabled={busy || !canRun || !head || !base}
+          disabled={busy || !canRun || !head || !base || !contextReady(context)}
           onClick={() =>
             start(async () => {
               const docs = await attach.upload()
               if (!docs) return
-              const r = await queueBranchesAction({ repoId: repo.id, baseRef: base, headRef: head, title, note, docs, links })
+              const r = await queueBranchesAction({ repoId: repo.id, baseRef: base, headRef: head, title, note, docs, links, ...contextPayload(context) })
               setMsg(r.message)
               if (r.ok) {
                 attach.clear()
+                setContext(EMPTY_CONTEXT)
                 onDone()
               }
             })
@@ -863,6 +880,7 @@ function RoleTemplate({
   onRole,
   onTemplate,
   disabled,
+  noTemplate,
 }: {
   role: DocRole
   templateId: string
@@ -870,6 +888,8 @@ function RoleTemplate({
   onRole: (r: DocRole) => void
   onTemplate: (t: string) => void
   disabled?: boolean
+  /** PR reviews: pages are requirements, not documents held to a template. */
+  noTemplate?: boolean
 }) {
   return (
     <>
@@ -885,20 +905,22 @@ function RoleTemplate({
           </option>
         ))}
       </select>
-      <select
-        value={templateId}
-        disabled={disabled}
-        onChange={(e) => onTemplate(e.target.value)}
-        className="max-w-[180px] rounded-md border border-line bg-ground px-1.5 py-0.5 text-[12px] disabled:opacity-50"
-        title="Mẫu tài liệu trang này phải theo"
-      >
-        <option value="">📐 Không mẫu</option>
-        {templates.map((t) => (
-          <option key={t.id} value={t.id}>
-            📐 {t.name}
-          </option>
-        ))}
-      </select>
+      {!noTemplate && (
+        <select
+          value={templateId}
+          disabled={disabled}
+          onChange={(e) => onTemplate(e.target.value)}
+          className="max-w-[180px] rounded-md border border-line bg-ground px-1.5 py-0.5 text-[12px] disabled:opacity-50"
+          title="Mẫu tài liệu trang này phải theo"
+        >
+          <option value="">📐 Không mẫu</option>
+          {templates.map((t) => (
+            <option key={t.id} value={t.id}>
+              📐 {t.name}
+            </option>
+          ))}
+        </select>
+      )}
     </>
   )
 }
@@ -914,11 +936,15 @@ export function SourceRows({
   onChange,
   templates,
   fallbackTemplate,
+  noTemplate,
+  hint,
 }: {
   value: SourceRow[]
   onChange: (v: SourceRow[]) => void
   templates: DocTemplate[]
   fallbackTemplate: string
+  noTemplate?: boolean
+  hint?: string
 }) {
   const [draft, setDraft] = useState('')
   const [loading, setLoading] = useState<Set<string>>(new Set())
@@ -987,7 +1013,8 @@ export function SourceRows({
   return (
     <div className="flex flex-col gap-1.5">
       <div className="text-[12px] text-ink-2">
-        🌐 Trang Confluence — dán một hoặc nhiều link (mỗi dòng một link). Trang có subpage thì Claude tự đọc luôn cả cây bên dưới; chọn loại / mẫu cho từng subpage ở danh sách hiện ra.
+        {hint ??
+          '🌐 Trang Confluence — dán một hoặc nhiều link (mỗi dòng một link). Trang có subpage thì Claude tự đọc luôn cả cây bên dưới; chọn loại / mẫu cho từng subpage ở danh sách hiện ra.'}
       </div>
       <textarea
         value={draft}
@@ -1024,6 +1051,7 @@ export function SourceRows({
                     role={v.role}
                     templateId={v.templateId}
                     templates={templates}
+                    noTemplate={noTemplate}
                     onRole={(role) => set(i, { role, templateId: v.touched ? v.templateId : guessT(v.title ?? '', role) })}
                     onTemplate={(templateId) => set(i, { templateId, touched: true })}
                   />
@@ -1086,6 +1114,7 @@ export function SourceRows({
                                 role={c.role}
                                 templateId={c.templateId}
                                 templates={templates}
+                                noTemplate={noTemplate}
                                 disabled={c.skip}
                                 onRole={(role) => setPage(i, p.pageId, { role, templateId: guessT(p.title, role) })}
                                 onTemplate={(templateId) => setPage(i, p.pageId, { templateId })}
@@ -1108,6 +1137,185 @@ export function SourceRows({
         </ul>
       )}
     </div>
+  )
+}
+
+/* ── requirements for a PR review: Jira tickets + Confluence pages ─────── */
+
+/** What a PR is checked against beyond PDFs — tickets and pages, both fetched afresh every round. */
+export interface PrContext {
+  jira: JiraContext
+  sources: SourceRow[]
+}
+
+export const EMPTY_CONTEXT: PrContext = { jira: NO_JIRA, sources: [] }
+
+/** Every pasted page has been read (its subpages are known), so the payload is final. */
+export const contextReady = (c: PrContext) => c.sources.every((s) => s.subpages || s.error)
+
+export const contextPayload = (c: PrContext) => ({
+  jira: c.jira,
+  ...(c.sources.length ? { sources: sourcePayload(c.sources.filter((s) => !s.error)) } : {}),
+})
+
+/**
+ * Jira tickets (pasted, and — unless turned off — the ones the branch / title
+ * / description names) and Confluence pages for Claude to check the code
+ * against. Each pasted ticket is read right away: its title proves the key,
+ * and the Confluence pages it links to are offered with one click.
+ */
+export function ContextPicker({
+  value,
+  onChange,
+  detected,
+  scope,
+}: {
+  value: PrContext
+  onChange: (v: PrContext) => void
+  /** Keys the picked PRs / branch name on their own. */
+  detected: string[]
+  scope?: string
+}) {
+  const [draft, setDraft] = useState('')
+  const [previews, setPreviews] = useState<Record<string, TicketPreview | 'loading'>>({})
+  const latest = useRef(value)
+  latest.current = value
+  const auto = value.jira.auto ? [...new Set(detected)].filter((k) => !value.jira.keys.includes(k)) : []
+  const shown = [...value.jira.keys, ...auto]
+
+  // Read every ticket on screen once — pasted or detected.
+  useEffect(() => {
+    const todo = shown.filter((k) => !previews[k]).slice(0, 10)
+    if (!todo.length) return
+    setPreviews((p) => ({ ...p, ...Object.fromEntries(todo.map((k) => [k, 'loading' as const])) }))
+    void jiraPreviewAction(todo).then((r) => {
+      setPreviews((p) => {
+        const next = { ...p }
+        for (const k of todo) {
+          const t = r.tickets.find((x) => x.key === k) ?? r.tickets.find((x) => !todo.includes(x.key) && x.ok)
+          next[k] = t ?? { key: k, ok: false, error: r.message || 'Không đọc được.' }
+        }
+        return next
+      })
+    })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [shown.join(' ')])
+
+  const setJira = (p: Partial<JiraContext>) => onChange({ ...latest.current, jira: { ...latest.current.jira, ...p } })
+  const add = (text: string) => {
+    const keys = parseJiraKeys(text.toUpperCase()).filter((k) => !value.jira.keys.includes(k))
+    if (keys.length) setJira({ keys: [...value.jira.keys, ...keys].slice(0, 10) })
+    setDraft('')
+  }
+  const addPage = (url: string) =>
+    onChange({ ...latest.current, sources: [...latest.current.sources, { url, children: true, role: guessRole(''), templateId: '' }] })
+
+  const pasted = new Set(value.sources.map((s) => s.url))
+  const suggested: Array<{ url: string; title: string; from: string }> = []
+  for (const k of shown) {
+    const t = previews[k]
+    if (!t || t === 'loading' || !t.ok) continue
+    for (const pg of t.pages ?? []) if (!pasted.has(pg.url) && !suggested.some((x) => x.url === pg.url)) suggested.push({ ...pg, from: t.key })
+  }
+  const count = value.jira.keys.length + value.sources.length
+
+  return (
+    <details className="mt-2 rounded-md border border-line px-3 py-2" open>
+      <summary className="cursor-pointer text-[12.5px] text-ink-2">
+        🎫 Ticket Jira · 🌐 trang Confluence — để Claude đối chiếu code với yêu cầu{count ? ` · ${count}` : ' (không bắt buộc)'}
+      </summary>
+      <div className="mt-2 flex flex-col gap-3">
+        <div className="flex flex-col gap-1.5">
+          <div className="text-[12px] text-ink-2">
+            🎫 Ticket Jira — dán key hoặc link (vd <span className="font-mono">VTL-286</span>, nhiều cái cách nhau bởi dấu phẩy / xuống dòng). Claude đọc mô tả, tiêu chí chấp nhận, comment, subtask và ticket cha. Chỉ đọc, không sửa gì trên Jira.
+            {scope && <span className="text-ink-3"> {scope}</span>}
+          </div>
+          <input
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') {
+                e.preventDefault()
+                add(draft)
+              }
+            }}
+            onPaste={(e) => {
+              e.preventDefault()
+              add(draft + ' ' + e.clipboardData.getData('text'))
+            }}
+            onBlur={() => draft.trim() && add(draft)}
+            className={INPUT}
+            placeholder="VTL-286, https://….atlassian.net/browse/VTL-610"
+          />
+          <label className="flex items-center gap-1.5 text-[12px] text-ink-2">
+            <input type="checkbox" checked={value.jira.auto} onChange={(e) => setJira({ auto: e.target.checked })} />
+            Tự lấy ticket có key trong tên nhánh / tiêu đề / mô tả PR
+          </label>
+          {shown.length > 0 && (
+            <ul className="flex flex-col gap-1">
+              {shown.map((k) => {
+                const t = previews[k]
+                const isAuto = !value.jira.keys.includes(k)
+                return (
+                  <li key={k} className="flex flex-wrap items-center gap-2 text-[12.5px]">
+                    <span className="font-mono font-medium">{t && t !== 'loading' && t.ok ? t.key : k}</span>
+                    {isAuto && <span className="rounded bg-surface-2 px-1 text-[10.5px] text-ink-3">tự nhận</span>}
+                    {t === 'loading' || !t ? (
+                      <span className="text-ink-3">Đang đọc…</span>
+                    ) : t.ok ? (
+                      <>
+                        <span className="min-w-0 flex-1 truncate">{t.summary}</span>
+                        <span className="text-[11.5px] text-ink-3">
+                          {t.type} · {t.status}
+                        </span>
+                        <a href={t.url} target="_blank" rel="noreferrer" className="text-ink-3 hover:text-accent-ink">
+                          ↗
+                        </a>
+                      </>
+                    ) : (
+                      <span className={'min-w-0 flex-1 truncate ' + (isAuto ? 'text-ink-3' : 'text-crit')} title={t.error}>
+                        {isAuto ? 'Không thấy trên Jira — sẽ bỏ qua' : t.error}
+                      </span>
+                    )}
+                    {!isAuto && (
+                      <button type="button" className="text-ink-3 hover:text-crit" onClick={() => setJira({ keys: value.jira.keys.filter((x) => x !== k) })}>
+                        ✕
+                      </button>
+                    )}
+                  </li>
+                )
+              })}
+            </ul>
+          )}
+        </div>
+        {suggested.length > 0 && (
+          <div className="rounded-md border border-dashed border-line-strong px-2.5 py-1.5 text-[12px] text-ink-2">
+            Ticket (hoặc ticket cha) có link tới trang Confluence — thêm để Claude đọc luôn:
+            <ul className="mt-1 flex flex-col gap-0.5">
+              {suggested.map((pg) => (
+                <li key={pg.url} className="flex items-center gap-2">
+                  <button type="button" className={BTN} onClick={() => addPage(pg.url)}>
+                    + Thêm
+                  </button>
+                  <a href={pg.url} target="_blank" rel="noreferrer" className="min-w-0 flex-1 truncate text-accent-ink hover:underline" title={pg.url}>
+                    {pg.title || pg.url}
+                  </a>
+                  <span className="shrink-0 font-mono text-[11px] text-ink-3">từ {pg.from}</span>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+        <SourceRows
+          value={value.sources}
+          onChange={(sources) => onChange({ ...latest.current, sources })}
+          templates={[]}
+          fallbackTemplate=""
+          noTemplate
+          hint="🌐 Trang Confluence (mô tả chức năng, TDD…) — dán một hoặc nhiều link. Trang có subpage thì Claude đọc cả cây bên dưới; bỏ tick những subpage không liên quan tới PR."
+        />
+      </div>
+    </details>
   )
 }
 

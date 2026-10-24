@@ -15,6 +15,8 @@ import {
   LIVE_STATES,
   type Addressee,
   type ConfluenceRef,
+  type JiraContext,
+  NO_JIRA,
   type PrLink,
   type RoundLink,
   type TestSuggestion,
@@ -62,6 +64,16 @@ function parseDocs(raw: string): DocFile[] {
   }
 }
 
+function parseJira(raw: string): JiraContext {
+  try {
+    const v = raw ? JSON.parse(raw) : null
+    if (!v || typeof v !== 'object') return { ...NO_JIRA }
+    return { keys: Array.isArray(v.keys) ? v.keys.map(String) : [], auto: v.auto !== false }
+  } catch {
+    return { ...NO_JIRA }
+  }
+}
+
 const toItem = (r: typeof reviewItems.$inferSelect): ItemView => ({
   id: r.id,
   kind: r.kind as ItemKind,
@@ -79,6 +91,7 @@ const toItem = (r: typeof reviewItems.$inferSelect): ItemView => ({
   addressee: parseAddressee(r.addressee),
   templateId: r.templateId,
   sources: parseJsonArray<ConfluenceRef>(r.sources),
+  jira: parseJira(r.jira),
   updatedAt: r.updatedAt,
 })
 
@@ -153,16 +166,17 @@ export function findPrItem(repoId: string, prNumber: number): ItemView | null {
 }
 
 export function createItem(
-  input: Omit<ItemView, 'id' | 'status' | 'updatedAt' | 'seenAt' | 'links' | 'addressee' | 'templateId' | 'sources'> & {
+  input: Omit<ItemView, 'id' | 'status' | 'updatedAt' | 'seenAt' | 'links' | 'addressee' | 'templateId' | 'sources' | 'jira'> & {
     links?: PrLink[]
     templateId?: string
     sources?: ConfluenceRef[]
+    jira?: JiraContext
   },
 ): number {
-  const { links, sources, ...rest } = input
+  const { links, sources, jira, ...rest } = input
   return db
     .insert(reviewItems)
-    .values({ ...rest, links: JSON.stringify(links ?? []), sources: JSON.stringify(sources ?? []) })
+    .values({ ...rest, links: JSON.stringify(links ?? []), sources: JSON.stringify(sources ?? []), jira: jira ? JSON.stringify(jira) : '' })
     .returning({ id: reviewItems.id })
     .get().id
 }
@@ -175,7 +189,11 @@ export function setItemSources(id: number, sources: ConfluenceRef[]) {
   db.update(reviewItems).set({ sources: JSON.stringify(sources) }).where(eq(reviewItems.id, id)).run()
 }
 
-export function patchItem(id: number, patch: Partial<Omit<ItemView, 'id' | 'links' | 'addressee' | 'templateId' | 'sources'>>) {
+export function setItemJira(id: number, jira: JiraContext) {
+  db.update(reviewItems).set({ jira: JSON.stringify(jira) }).where(eq(reviewItems.id, id)).run()
+}
+
+export function patchItem(id: number, patch: Partial<Omit<ItemView, 'id' | 'links' | 'addressee' | 'templateId' | 'sources' | 'jira'>>) {
   db.update(reviewItems).set({ ...patch, updatedAt: nowSql }).where(eq(reviewItems.id, id)).run()
 }
 

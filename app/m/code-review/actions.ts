@@ -33,7 +33,8 @@ import {
   resolveSources,
 } from '@/lib/modules/code-review/confluence'
 import { ForbiddenAction } from '@/lib/modules/code-review/guard'
-import { confluencePages, type SubpageInfo, type Addressee, type DocFile, type DocTemplate, type FindingStatus, HONORIFICS, type PrLink, addressOf, anchorInDiff, cleanHandle, validHandle, type FindingView, type ItemSummary, type RepoPreset, type RoundView, where } from '@/lib/modules/code-review/model'
+import { type TicketPreview, previewTickets } from '@/lib/modules/code-review/jira'
+import { type ConfluenceRef, type JiraContext, NO_JIRA, parseJiraKeys, confluencePages, type SubpageInfo, type Addressee, type DocFile, type DocTemplate, type FindingStatus, HONORIFICS, type PrLink, addressOf, anchorInDiff, cleanHandle, validHandle, type FindingView, type ItemSummary, type RepoPreset, type RoundView, where } from '@/lib/modules/code-review/model'
 import { type LogLine, cancelRound, ensureTicker, tick, updateRoundSummary, viewLog } from '@/lib/modules/code-review/runner'
 import {
   createItem,
@@ -53,6 +54,7 @@ import {
   queueRound,
   setItemAddressee,
   setItemLinks,
+  setItemJira,
   setItemSources,
   setItemTemplate,
   toRound,
@@ -130,12 +132,19 @@ export async function queuePullsAction(input: {
   docs?: DocFile[]
   /** PRs in other repos to read alongside (SDK ↔ iOS). */
   links?: PrLink[]
+  /** Confluence pages to check the implementation against, as pasted. */
+  sources?: unknown
+  /** Jira tickets the PRs implement. */
+  jira?: JiraContext
 }): Promise<Result> {
   const blocked = await ready()
   if (blocked) return blocked
   const docs = await validDocs(input.docs ?? [])
   if (!docs) return { ok: false, message: 'Tài liệu đính kèm không hợp lệ — tải lên lại.' }
   if (!getRepo(input.repoId)) return { ok: false, message: 'Không thấy repo.' }
+  const sources = input.sources ? await resolveSources(input.sources) : []
+  if (typeof sources === 'string') return { ok: false, message: sources }
+  const jira = cleanJira(input.jira)
   let queued = 0
   let skipped = 0
   for (const p of input.pulls) {
@@ -152,8 +161,12 @@ export async function queuePullsAction(input: {
         author: p.author,
         url: p.url,
         note: input.note.trim(),
+        sources,
+        jira,
       })
     if (existing && input.note.trim()) patchItem(itemId, { note: input.note.trim() })
+    if (existing && sources.length) setItemSources(itemId, mergeSources(existing.sources, sources))
+    if (existing) setItemJira(itemId, { keys: [...new Set([...existing.jira.keys, ...jira.keys])], auto: jira.auto })
     if (input.links?.length) {
       const merged = [...(existing?.links ?? []), ...input.links]
       await setLinksAction(itemId, merged)
@@ -194,12 +207,16 @@ export async function queueBranchesAction(input: {
   note: string
   docs?: DocFile[]
   links?: PrLink[]
+  sources?: unknown
+  jira?: JiraContext
 }): Promise<Result & { itemId?: number }> {
   const blocked = await ready()
   if (blocked) return blocked
   const docs = await validDocs(input.docs ?? [])
   if (!docs) return { ok: false, message: 'Tài liệu đính kèm không hợp lệ — tải lên lại.' }
   if (!getRepo(input.repoId)) return { ok: false, message: 'Không thấy repo.' }
+  const sources = input.sources ? await resolveSources(input.sources) : []
+  if (typeof sources === 'string') return { ok: false, message: sources }
   if (!input.baseRef.trim() || !input.headRef.trim()) return { ok: false, message: 'Chọn nhánh nguồn và nhánh đích.' }
   const itemId = createItem({
     kind: 'pr',
@@ -211,6 +228,8 @@ export async function queueBranchesAction(input: {
     author: '',
     url: '',
     note: input.note.trim(),
+    sources,
+    jira: cleanJira(input.jira),
   })
   if (input.links?.length) await setLinksAction(itemId, input.links)
   queueRound(itemId, docs)
@@ -231,6 +250,18 @@ function carriedDocs(itemId: number): DocFile[] {
   } catch {
     return []
   }
+}
+
+/** Pasted tickets, as keys Jira could know — anything else in the input is dropped. */
+function cleanJira(input: JiraContext | undefined): JiraContext {
+  if (!input) return { ...NO_JIRA }
+  const keys = parseJiraKeys((Array.isArray(input.keys) ? input.keys : []).map(String).join(' ').toUpperCase()).slice(0, 10)
+  return { keys, auto: input.auto !== false }
+}
+
+/** Pages already on the item stay; newly pasted ones are added (a page pasted again takes its new choices). */
+function mergeSources(old: ConfluenceRef[], added: ConfluenceRef[]): ConfluenceRef[] {
+  return [...old.filter((o) => !added.some((a) => a.pageId === o.pageId)), ...added]
 }
 
 /**
@@ -896,11 +927,11 @@ export async function confluencePreviewAction(
   }
 }
 
-/** The pasted Confluence pages of a doc review — used from the next round on. */
+/** The pasted Confluence pages of a review (the documents of a doc review, context for a PR) — used from the next round on. */
 export async function setSourcesAction(itemId: number, input: unknown): Promise<Result> {
   if (!enabled()) return OFF
   const item = getItem(itemId)
-  if (!item || item.kind !== 'doc') return { ok: false, message: 'Không thấy hồ sơ tài liệu.' }
+  if (!item) return { ok: false, message: 'Không thấy hồ sơ.' }
   const sources = await resolveSources(input)
   if (typeof sources === 'string') return { ok: false, message: sources }
   for (const s of sources) if (s.templateId && !getTemplate(s.templateId)) return { ok: false, message: 'Mẫu tài liệu không còn trong Cấu hình.' }
@@ -934,4 +965,28 @@ export async function setDocReposAction(itemId: number, repos: Array<{ repoId: s
   )
   revalidatePath('/m/code-review')
   return { ok: true, message: picked.length ? `Đối chiếu với ${picked.length} repo — áp dụng từ vòng tiếp theo.` : 'Không đối chiếu code nữa.' }
+}
+
+/** Pasted ticket keys / links, read now: each one's title and status, and the Confluence pages it links to. */
+export async function jiraPreviewAction(keys: string[]): Promise<Result & { tickets: TicketPreview[] }> {
+  if (!enabled()) return { ...OFF, tickets: [] }
+  try {
+    return { ok: true, message: '', tickets: await previewTickets(cleanJira({ keys, auto: false }).keys) }
+  } catch (err) {
+    return { ...failure(err), tickets: [] }
+  }
+}
+
+/** The Jira tickets a PR review reads — used from the next round on. */
+export async function setJiraAction(itemId: number, input: JiraContext): Promise<Result> {
+  if (!enabled()) return OFF
+  const item = getItem(itemId)
+  if (!item || item.kind !== 'pr') return { ok: false, message: 'Không thấy hồ sơ PR.' }
+  const jira = cleanJira(input)
+  setItemJira(itemId, jira)
+  revalidatePath('/m/code-review')
+  return {
+    ok: true,
+    message: `${jira.keys.length ? `Đã lưu ${jira.keys.length} ticket` : 'Không có ticket dán tay'}${jira.auto ? ' · tự nhận ticket theo tên nhánh / tiêu đề / mô tả PR' : ''} — áp dụng từ vòng tiếp theo.`,
+  }
 }

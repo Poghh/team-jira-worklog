@@ -5,7 +5,9 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 
 import { reapChats } from './chat'
-import { pageCommentReplies, fetchPages } from './confluence'
+import { confluenceHost, pageCommentReplies, fetchPages } from './confluence'
+import { parsePageUrl } from './confluence-md'
+import { fetchTickets } from './jira'
 import { checkClaude } from './claude'
 import { getRepo, getReviewConfig, resolveAddressee, templatesForDocs } from './config'
 import {
@@ -26,7 +28,7 @@ import {
 import { type RawFinding, buildFreshRows } from './findings'
 import { getDiscussion, getPull, listPullComments } from './github'
 import { cleanupLinks, linkDirs, prepareLinks } from './links'
-import { type DocFile, type FindingStatus, confluencePages, type FindingView, type RoundLink, type TestSuggestion, anchorInDiff } from './model'
+import { type DocFile, type FindingStatus, confluencePages, type FindingView, type RoundLink, type TestSuggestion, anchorInDiff, isFetched, ticketPlan } from './model'
 import { ALLOWED_TOOLS, DISALLOWED_TOOLS, ISOLATION_FLAGS, reviewEnv } from './guard'
 import { CODE_SCHEMA, DOC_SCHEMA, type ThreadTalk, codePrompt, docPrompt } from './prompts'
 import { type LogLine, bootTime, lastResult, parseLog, pidAlive, readLog, strayLines } from './proc'
@@ -225,20 +227,32 @@ async function prepareAndSpawn(roundId: number) {
         (await commitExists(r.localPath, prevHeadSha)) &&
         (await isAncestor(r.localPath, prevHeadSha, headSha))
 
-      const docs = parseDocs(round.docs)
+      // Uploaded PDFs as queued; Jira tickets and Confluence pages fetched
+      // now, at their latest version — tickets first, they are the "what".
+      const docs = parseDocs(round.docs).filter((d) => !isFetched(d))
+      const tickets = await fetchTickets(item.id, ticketPlan(item.jira, { branch: item.headRef, title: item.title, body: prBody }))
+      docs.unshift(...tickets.docs)
+      if (item.sources.length) docs.push(...(await fetchPages(item.id, item.sources)))
+      updateRound(roundId, { docs: JSON.stringify(docs) })
+      const attached = new Set(confluencePages(docs).map((d) => d.source.pageId))
+      const host = confluenceHost()
+      const context = {
+        problems: tickets.problems,
+        unreadPages: tickets.pages.filter((u) => !attached.has(parsePageUrl(u, host) ?? '')),
+      }
       for (const d of docs) {
         const dir = path.dirname(d.path)
         if (!addDirs.includes(dir)) addDirs.push(dir)
       }
-      // Same files as last round, or a newer upload? A new version is worth
-      // a second look at requirements that were already checked.
-      const prevPaths = prev ? parseDocs(prev.docs).map((d) => d.path).sort().join('\n') : ''
-      const docsChanged = round.round > 1 && docs.map((d) => d.path).sort().join('\n') !== prevPaths
+      // Same requirements as last round, or have they moved? A new version
+      // is worth a second look at what was already checked.
+      const docsChanged = round.round > 1 && Boolean(prev) && docSignature(docs) !== docSignature(parseDocs(prev!.docs))
 
       prompt = codePrompt({
         repoName: r.name,
         docs,
         docsChanged,
+        context,
         links,
         addressee: resolveAddressee(item),
         talk,
@@ -429,6 +443,14 @@ function cleanTestPlan(plan: Output['test_plan']): TestSuggestion[] {
       expect: String(t.expect ?? '').trim(),
       findings: (t.findings ?? []).map(String).filter(Boolean),
     }))
+}
+
+/** One line per document and the version of it a round read — PDFs by file, pages by version, tickets by last update. */
+function docSignature(docs: DocFile[]): string {
+  return docs
+    .map((d) => (d.ticket ? `jira:${d.ticket.key}@${d.ticket.updated}` : d.source ? `page:${d.source.pageId}@${d.source.version}` : `file:${d.path}`))
+    .sort()
+    .join('\n')
 }
 
 function parseDocs(raw: string): DocFile[] {
