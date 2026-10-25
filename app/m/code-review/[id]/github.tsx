@@ -121,7 +121,7 @@ export function AccessNote({ onGithub }: { onGithub: boolean }) {
 }
 
 /** A button that asks once more before doing anything visible to other people. */
-function ConfirmButton({
+export function ConfirmButton({
   label,
   confirm,
   onConfirm,

@@ -7,9 +7,12 @@ import { type ClaudeCheck, checkClaude } from '@/lib/modules/code-review/claude'
 import type { WorkBranch } from '@/lib/modules/code-review/model'
 import { getRepo, getTemplate, rememberPerson, setRepos, setRunnerConfig, setTemplates } from '@/lib/modules/code-review/config'
 import {
+  changedPaths,
+  commitExists,
   countDirty,
   currentBranch,
   diffRanges,
+  diffText,
   fetchAll,
   gitSays,
   isRepo,
@@ -45,8 +48,11 @@ import {
   replyToPageComment,
   resolveSources,
 } from '@/lib/modules/code-review/confluence'
+import { type DiffFile, parseDiff } from '@/lib/modules/code-review/diff'
+import { buildFreshRows } from '@/lib/modules/code-review/findings'
 import { ForbiddenAction } from '@/lib/modules/code-review/guard'
-import { confluencePages, type SubpageInfo, type Addressee, type DocFile, type DocTemplate, type FindingStatus, HONORIFICS, type PrLink, addressOf, anchorInDiff, cleanHandle, validHandle, type FindingView, type ItemSummary, type RepoPreset, type RoundView, where } from '@/lib/modules/code-review/model'
+import { type TicketPreview, previewTickets } from '@/lib/modules/code-review/jira'
+import { type ConfluenceRef, type JiraContext, OWN_CATEGORY, SEVERITIES, type Severity, NO_JIRA, parseJiraKeys, confluencePages, type SubpageInfo, type Addressee, type DocFile, type DocTemplate, type FindingStatus, HONORIFICS, type PrLink, addressOf, anchorInDiff, cleanHandle, validHandle, type FindingView, type ItemSummary, type RepoPreset, type RoundView, where } from '@/lib/modules/code-review/model'
 import { type LogLine, cancelRound, ensureTicker, tick, updateRoundSummary, viewLog } from '@/lib/modules/code-review/runner'
 import {
   createItem,
@@ -56,6 +62,7 @@ import {
   getItem,
   getRound,
   hasLiveRound,
+  insertFindings,
   lastRound,
   listFindings,
   listItems,
@@ -66,6 +73,7 @@ import {
   queueRound,
   setItemAddressee,
   setItemLinks,
+  setItemJira,
   setItemSources,
   setItemTemplate,
   toRound,
@@ -143,12 +151,19 @@ export async function queuePullsAction(input: {
   docs?: DocFile[]
   /** PRs in other repos to read alongside (SDK ↔ iOS). */
   links?: PrLink[]
+  /** Confluence pages to check the implementation against, as pasted. */
+  sources?: unknown
+  /** Jira tickets the PRs implement. */
+  jira?: JiraContext
 }): Promise<Result> {
   const blocked = await ready()
   if (blocked) return blocked
   const docs = await validDocs(input.docs ?? [])
   if (!docs) return { ok: false, message: 'Tài liệu đính kèm không hợp lệ — tải lên lại.' }
   if (!getRepo(input.repoId)) return { ok: false, message: 'Không thấy repo.' }
+  const sources = input.sources ? await resolveSources(input.sources) : []
+  if (typeof sources === 'string') return { ok: false, message: sources }
+  const jira = cleanJira(input.jira)
   let queued = 0
   let skipped = 0
   for (const p of input.pulls) {
@@ -165,8 +180,12 @@ export async function queuePullsAction(input: {
         author: p.author,
         url: p.url,
         note: input.note.trim(),
+        sources,
+        jira,
       })
     if (existing && input.note.trim()) patchItem(itemId, { note: input.note.trim() })
+    if (existing && sources.length) setItemSources(itemId, mergeSources(existing.sources, sources))
+    if (existing) setItemJira(itemId, { keys: [...new Set([...existing.jira.keys, ...jira.keys])], auto: jira.auto })
     if (input.links?.length) {
       const merged = [...(existing?.links ?? []), ...input.links]
       await setLinksAction(itemId, merged)
@@ -207,12 +226,16 @@ export async function queueBranchesAction(input: {
   note: string
   docs?: DocFile[]
   links?: PrLink[]
+  sources?: unknown
+  jira?: JiraContext
 }): Promise<Result & { itemId?: number }> {
   const blocked = await ready()
   if (blocked) return blocked
   const docs = await validDocs(input.docs ?? [])
   if (!docs) return { ok: false, message: 'Tài liệu đính kèm không hợp lệ — tải lên lại.' }
   if (!getRepo(input.repoId)) return { ok: false, message: 'Không thấy repo.' }
+  const sources = input.sources ? await resolveSources(input.sources) : []
+  if (typeof sources === 'string') return { ok: false, message: sources }
   if (!input.baseRef.trim() || !input.headRef.trim()) return { ok: false, message: 'Chọn nhánh nguồn và nhánh đích.' }
   const itemId = createItem({
     kind: 'pr',
@@ -224,6 +247,8 @@ export async function queueBranchesAction(input: {
     author: '',
     url: '',
     note: input.note.trim(),
+    sources,
+    jira: cleanJira(input.jira),
   })
   if (input.links?.length) await setLinksAction(itemId, input.links)
   queueRound(itemId, docs)
@@ -410,6 +435,18 @@ function carriedDocs(itemId: number): DocFile[] {
   } catch {
     return []
   }
+}
+
+/** Pasted tickets, as keys Jira could know — anything else in the input is dropped. */
+function cleanJira(input: JiraContext | undefined): JiraContext {
+  if (!input) return { ...NO_JIRA }
+  const keys = parseJiraKeys((Array.isArray(input.keys) ? input.keys : []).map(String).join(' ').toUpperCase()).slice(0, 10)
+  return { keys, auto: input.auto !== false }
+}
+
+/** Pages already on the item stay; newly pasted ones are added (a page pasted again takes its new choices). */
+function mergeSources(old: ConfluenceRef[], added: ConfluenceRef[]): ConfluenceRef[] {
+  return [...old.filter((o) => !added.some((a) => a.pageId === o.pageId)), ...added]
 }
 
 /**
@@ -753,6 +790,98 @@ export async function patchFindingAction(
   if (!enabled()) return OFF
   patchFinding(id, patch)
   return { ok: true, message: '' }
+}
+
+/* ── "Thay đổi code": the round's diff, and comments written on it ─────── */
+
+/** Beyond this the tab shows the first files only — a PR this big is not read line by line. */
+const MAX_DIFF = 6 * 1024 * 1024
+
+export interface RoundDiff extends Result {
+  files: DiffFile[]
+  from: string
+  to: string
+  truncated: boolean
+  /** A later round: files the member changed since the round before (marked in the full view). */
+  since: string[]
+}
+
+/**
+ * The code a round looked at, from the local clone: the whole PR
+ * (merge-base…head), or for a later round only what changed since the round
+ * before it.
+ */
+export async function roundDiffAction(roundId: number, scope: 'all' | 'since'): Promise<RoundDiff> {
+  const none = (message: string): RoundDiff => ({ ok: false, message, files: [], from: '', to: '', truncated: false, since: [] })
+  if (!enabled()) return none(OFF.message)
+  const round = getRound(roundId)
+  const item = round ? getItem(round.itemId) : null
+  if (!round || !item || item.kind !== 'pr') return none('Không thấy vòng review.')
+  const repo = item.repoId ? getRepo(item.repoId) : undefined
+  if (!repo) return none('Repo của hồ sơ này đã bị xoá khỏi Cấu hình.')
+  const from = scope === 'since' && round.prevHeadSha ? round.prevHeadSha : round.baseSha
+  const to = round.headSha
+  if (!from || !to) return none('Vòng này chưa có commit để so sánh.')
+  try {
+    if (!(await commitExists(repo.localPath, from)) || !(await commitExists(repo.localPath, to))) {
+      return none('Clone không còn commit của vòng này (PR bị force-push?) — chạy "Review tiếp" để lấy bản mới.')
+    }
+    let text = await diffText(repo.localPath, from, to)
+    const truncated = text.length > MAX_DIFF
+    if (truncated) text = text.slice(0, text.lastIndexOf('\ndiff --git ', MAX_DIFF))
+    const since = round.prevHeadSha && (await commitExists(repo.localPath, round.prevHeadSha)) ? await changedPaths(repo.localPath, round.prevHeadSha, to) : []
+    return { ok: true, message: '', files: parseDiff(text), from, to, truncated, since }
+  } catch (err) {
+    return none(`Không đọc được diff: ${gitSays(err)}`)
+  }
+}
+
+/**
+ * The reviewer's own comment on lines of the diff, kept as a finding of the
+ * round: it shows with Claude's, can be discussed with Claude, and is posted
+ * only by the same explicit "Gửi lên PR" as any other.
+ */
+export async function addOwnFindingAction(input: {
+  roundId: number
+  file: string
+  line: number
+  endLine?: number | null
+  severity: Severity
+  title?: string
+  body: string
+}): Promise<Result & { id?: number }> {
+  if (!enabled()) return OFF
+  const round = getRound(input.roundId)
+  const item = round ? getItem(round.itemId) : null
+  if (!round || !item || item.kind !== 'pr') return { ok: false, message: 'Không thấy vòng review.' }
+  if (round.state !== 'done') return { ok: false, message: 'Chỉ thêm comment được vào vòng review đã xong.' }
+  const body = input.body.trim()
+  if (!body) return { ok: false, message: 'Comment trống.' }
+  if (!input.file || !Number.isInteger(input.line) || input.line < 1) return { ok: false, message: 'Chưa chọn dòng code.' }
+  const repo = item.repoId ? getRepo(item.repoId) : undefined
+  const ranges = repo && round.baseSha && round.headSha ? await diffRanges(repo.localPath, round.baseSha, round.headSha).catch(() => null) : null
+  const title = (input.title ?? '').trim() || body.split('\n')[0].replace(/[*_`#>]/g, '').trim().slice(0, 90)
+  const rows = await buildFreshRows(
+    round,
+    'pr',
+    repo,
+    [
+      {
+        file: input.file,
+        line: input.line,
+        end_line: input.endLine && input.endLine > input.line ? input.endLine : undefined,
+        severity: SEVERITIES.includes(input.severity) ? input.severity : 'minor',
+        category: OWN_CATEGORY,
+        title,
+        comment: body,
+      },
+    ],
+    ranges,
+    20_000 + listFindings(round.id).length,
+  )
+  insertFindings(rows)
+  const mine = listFindings(round.id).filter((f) => f.category === OWN_CATEGORY && f.file === rows[0].file && f.line === rows[0].line)
+  return { ok: true, message: 'Đã lưu comment — bấm "Gửi lên PR" trên comment khi muốn đăng.', id: mine.at(-1)?.id }
 }
 
 export async function updateSummaryAction(roundId: number, summary: string): Promise<Result> {
@@ -1114,11 +1243,11 @@ export async function confluencePreviewAction(
   }
 }
 
-/** The pasted Confluence pages of a doc review — used from the next round on. */
+/** The pasted Confluence pages of a review (the documents of a doc review, context for a PR) — used from the next round on. */
 export async function setSourcesAction(itemId: number, input: unknown): Promise<Result> {
   if (!enabled()) return OFF
   const item = getItem(itemId)
-  if (!item || item.kind !== 'doc') return { ok: false, message: 'Không thấy hồ sơ tài liệu.' }
+  if (!item) return { ok: false, message: 'Không thấy hồ sơ.' }
   const sources = await resolveSources(input)
   if (typeof sources === 'string') return { ok: false, message: sources }
   for (const s of sources) if (s.templateId && !getTemplate(s.templateId)) return { ok: false, message: 'Mẫu tài liệu không còn trong Cấu hình.' }
@@ -1152,4 +1281,28 @@ export async function setDocReposAction(itemId: number, repos: Array<{ repoId: s
   )
   revalidatePath('/m/code-review')
   return { ok: true, message: picked.length ? `Đối chiếu với ${picked.length} repo — áp dụng từ vòng tiếp theo.` : 'Không đối chiếu code nữa.' }
+}
+
+/** Pasted ticket keys / links, read now: each one's title and status, and the Confluence pages it links to. */
+export async function jiraPreviewAction(keys: string[]): Promise<Result & { tickets: TicketPreview[] }> {
+  if (!enabled()) return { ...OFF, tickets: [] }
+  try {
+    return { ok: true, message: '', tickets: await previewTickets(cleanJira({ keys, auto: false }).keys) }
+  } catch (err) {
+    return { ...failure(err), tickets: [] }
+  }
+}
+
+/** The Jira tickets a PR review reads — used from the next round on. */
+export async function setJiraAction(itemId: number, input: JiraContext): Promise<Result> {
+  if (!enabled()) return OFF
+  const item = getItem(itemId)
+  if (!item || item.kind !== 'pr') return { ok: false, message: 'Không thấy hồ sơ PR.' }
+  const jira = cleanJira(input)
+  setItemJira(itemId, jira)
+  revalidatePath('/m/code-review')
+  return {
+    ok: true,
+    message: `${jira.keys.length ? `Đã lưu ${jira.keys.length} ticket` : 'Không có ticket dán tay'}${jira.auto ? ' · tự nhận ticket theo tên nhánh / tiêu đề / mô tả PR' : ''} — áp dụng từ vòng tiếp theo.`,
+  }
 }

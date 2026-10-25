@@ -487,6 +487,8 @@ export const reviewItems = sqliteTable(
     templateId: text("template_id").notNull().default(""),
     /** JSON: Confluence pages (doc reviews) re-fetched by every round. */
     sources: text("sources").notNull().default("[]"),
+    /** JSON {keys, auto}: Jira tickets a PR review reads; '' = none pasted, auto-detect on. */
+    jira: text("jira").notNull().default(""),
     createdAt: integer("created_at").notNull().default(now),
     updatedAt: integer("updated_at").notNull().default(now),
   },

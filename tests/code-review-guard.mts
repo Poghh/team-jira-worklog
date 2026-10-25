@@ -12,6 +12,7 @@ import {
   DISALLOWED_TOOLS,
   ISOLATION_FLAGS,
   assertConfluenceRequest,
+  assertJiraRequest,
   assertGitArgs,
   assertGithubRequest,
   assertGraphql,
@@ -156,6 +157,17 @@ no(() => assertConfluenceRequest('DELETE', '/wiki/api/v2/inline-comments/9'), 'd
 no(() => assertConfluenceRequest('POST', '/wiki/rest/api/content/123/child/attachment'), 'upload an attachment')
 no(() => assertConfluenceRequest('POST', '/wiki/api/v2/footer-comments/../pages'), 'path trick')
 no(() => assertConfluenceRequest('GET', '/rest/api/3/issue/X-1'), 'not Confluence')
+
+// Jira: read one ticket and its links — never edit, transition, log work or comment.
+ok(() => assertJiraRequest('GET', '/rest/api/3/issue/VTL-286?fields=summary'), 'read a ticket')
+ok(() => assertJiraRequest('GET', '/rest/api/3/issue/VTL-286/remotelink'), 'read its links')
+no(() => assertJiraRequest('PUT', '/rest/api/3/issue/VTL-286'), 'edit a ticket')
+no(() => assertJiraRequest('POST', '/rest/api/3/issue/VTL-286/transitions'), 'move a card')
+no(() => assertJiraRequest('POST', '/rest/api/3/issue/VTL-286/worklog'), 'log work')
+no(() => assertJiraRequest('POST', '/rest/api/3/issue/VTL-286/comment'), 'comment')
+no(() => assertJiraRequest('DELETE', '/rest/api/3/issue/VTL-286'), 'delete')
+no(() => assertJiraRequest('GET', '/rest/api/3/search/jql'), 'search everything')
+no(() => assertJiraRequest('GET', '/rest/api/3/issue/VTL-286/../../myself'), 'path trick')
 
 console.log(bad ? `${bad}/${n} failed` : `code-review guard: ${n} ok`)
 process.exit(bad ? 1 : 0)
