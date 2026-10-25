@@ -2,7 +2,7 @@ import 'server-only'
 
 import type { PullComment } from './github'
 import type { TemplateUse } from './config'
-import { type Addressee, type DocFile, type FindingView, type RoundLink, addressOf } from './model'
+import { type Addressee, type DocFile, type FindingView, OWN_CATEGORY, type RoundLink, addressOf } from './model'
 
 /**
  * What Claude is asked, and the shape it must answer in.
@@ -547,7 +547,7 @@ export function chatPrompt(input: {
     ? input.findings
         .map((f) => {
           const loc = input.kind === 'doc' ? f.location || f.file : `${f.file}${f.line ? `:${f.line}` : ''}`
-          return `- id ${f.id} [${f.severity}] (${f.status}) ${loc} — ${f.title}\n  ${f.body.replace(/\n+/g, ' ').slice(0, 500)}`
+          return `- id ${f.id} [${f.severity}] (${f.status})${f.category === OWN_CATEGORY ? ' (người review tự viết)' : ''} ${loc} — ${f.title}\n  ${f.body.replace(/\n+/g, ' ').slice(0, 500)}`
         })
         .join('\n')
     : '(không có finding nào)'

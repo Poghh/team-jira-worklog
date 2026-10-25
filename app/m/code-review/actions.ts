@@ -5,7 +5,7 @@ import { revalidatePath } from 'next/cache'
 import { type ChatMessage, applyChanges, cancelChat, listChat, sendChat } from '@/lib/modules/code-review/chat'
 import { type ClaudeCheck, checkClaude } from '@/lib/modules/code-review/claude'
 import { getRepo, getTemplate, rememberPerson, setRepos, setRunnerConfig, setTemplates } from '@/lib/modules/code-review/config'
-import { diffRanges, isRepo, listRemoteBranches, fetchAll, gitSays, withRepoLock } from '@/lib/modules/code-review/git'
+import { changedPaths, commitExists, diffRanges, diffText, isRepo, listRemoteBranches, fetchAll, gitSays, withRepoLock } from '@/lib/modules/code-review/git'
 import {
   type Discussion,
   type GithubAccess,
@@ -32,9 +32,11 @@ import {
   replyToPageComment,
   resolveSources,
 } from '@/lib/modules/code-review/confluence'
+import { type DiffFile, parseDiff } from '@/lib/modules/code-review/diff'
+import { buildFreshRows } from '@/lib/modules/code-review/findings'
 import { ForbiddenAction } from '@/lib/modules/code-review/guard'
 import { type TicketPreview, previewTickets } from '@/lib/modules/code-review/jira'
-import { type ConfluenceRef, type JiraContext, NO_JIRA, parseJiraKeys, confluencePages, type SubpageInfo, type Addressee, type DocFile, type DocTemplate, type FindingStatus, HONORIFICS, type PrLink, addressOf, anchorInDiff, cleanHandle, validHandle, type FindingView, type ItemSummary, type RepoPreset, type RoundView, where } from '@/lib/modules/code-review/model'
+import { type ConfluenceRef, type JiraContext, OWN_CATEGORY, SEVERITIES, type Severity, NO_JIRA, parseJiraKeys, confluencePages, type SubpageInfo, type Addressee, type DocFile, type DocTemplate, type FindingStatus, HONORIFICS, type PrLink, addressOf, anchorInDiff, cleanHandle, validHandle, type FindingView, type ItemSummary, type RepoPreset, type RoundView, where } from '@/lib/modules/code-review/model'
 import { type LogLine, cancelRound, ensureTicker, tick, updateRoundSummary, viewLog } from '@/lib/modules/code-review/runner'
 import {
   createItem,
@@ -44,6 +46,7 @@ import {
   getItem,
   getRound,
   hasLiveRound,
+  insertFindings,
   lastRound,
   listFindings,
   listItems,
@@ -583,6 +586,98 @@ export async function patchFindingAction(
   if (!enabled()) return OFF
   patchFinding(id, patch)
   return { ok: true, message: '' }
+}
+
+/* ── "Thay đổi code": the round's diff, and comments written on it ─────── */
+
+/** Beyond this the tab shows the first files only — a PR this big is not read line by line. */
+const MAX_DIFF = 6 * 1024 * 1024
+
+export interface RoundDiff extends Result {
+  files: DiffFile[]
+  from: string
+  to: string
+  truncated: boolean
+  /** A later round: files the member changed since the round before (marked in the full view). */
+  since: string[]
+}
+
+/**
+ * The code a round looked at, from the local clone: the whole PR
+ * (merge-base…head), or for a later round only what changed since the round
+ * before it.
+ */
+export async function roundDiffAction(roundId: number, scope: 'all' | 'since'): Promise<RoundDiff> {
+  const none = (message: string): RoundDiff => ({ ok: false, message, files: [], from: '', to: '', truncated: false, since: [] })
+  if (!enabled()) return none(OFF.message)
+  const round = getRound(roundId)
+  const item = round ? getItem(round.itemId) : null
+  if (!round || !item || item.kind !== 'pr') return none('Không thấy vòng review.')
+  const repo = item.repoId ? getRepo(item.repoId) : undefined
+  if (!repo) return none('Repo của hồ sơ này đã bị xoá khỏi Cấu hình.')
+  const from = scope === 'since' && round.prevHeadSha ? round.prevHeadSha : round.baseSha
+  const to = round.headSha
+  if (!from || !to) return none('Vòng này chưa có commit để so sánh.')
+  try {
+    if (!(await commitExists(repo.localPath, from)) || !(await commitExists(repo.localPath, to))) {
+      return none('Clone không còn commit của vòng này (PR bị force-push?) — chạy "Review tiếp" để lấy bản mới.')
+    }
+    let text = await diffText(repo.localPath, from, to)
+    const truncated = text.length > MAX_DIFF
+    if (truncated) text = text.slice(0, text.lastIndexOf('\ndiff --git ', MAX_DIFF))
+    const since = round.prevHeadSha && (await commitExists(repo.localPath, round.prevHeadSha)) ? await changedPaths(repo.localPath, round.prevHeadSha, to) : []
+    return { ok: true, message: '', files: parseDiff(text), from, to, truncated, since }
+  } catch (err) {
+    return none(`Không đọc được diff: ${gitSays(err)}`)
+  }
+}
+
+/**
+ * The reviewer's own comment on lines of the diff, kept as a finding of the
+ * round: it shows with Claude's, can be discussed with Claude, and is posted
+ * only by the same explicit "Gửi lên PR" as any other.
+ */
+export async function addOwnFindingAction(input: {
+  roundId: number
+  file: string
+  line: number
+  endLine?: number | null
+  severity: Severity
+  title?: string
+  body: string
+}): Promise<Result & { id?: number }> {
+  if (!enabled()) return OFF
+  const round = getRound(input.roundId)
+  const item = round ? getItem(round.itemId) : null
+  if (!round || !item || item.kind !== 'pr') return { ok: false, message: 'Không thấy vòng review.' }
+  if (round.state !== 'done') return { ok: false, message: 'Chỉ thêm comment được vào vòng review đã xong.' }
+  const body = input.body.trim()
+  if (!body) return { ok: false, message: 'Comment trống.' }
+  if (!input.file || !Number.isInteger(input.line) || input.line < 1) return { ok: false, message: 'Chưa chọn dòng code.' }
+  const repo = item.repoId ? getRepo(item.repoId) : undefined
+  const ranges = repo && round.baseSha && round.headSha ? await diffRanges(repo.localPath, round.baseSha, round.headSha).catch(() => null) : null
+  const title = (input.title ?? '').trim() || body.split('\n')[0].replace(/[*_`#>]/g, '').trim().slice(0, 90)
+  const rows = await buildFreshRows(
+    round,
+    'pr',
+    repo,
+    [
+      {
+        file: input.file,
+        line: input.line,
+        end_line: input.endLine && input.endLine > input.line ? input.endLine : undefined,
+        severity: SEVERITIES.includes(input.severity) ? input.severity : 'minor',
+        category: OWN_CATEGORY,
+        title,
+        comment: body,
+      },
+    ],
+    ranges,
+    20_000 + listFindings(round.id).length,
+  )
+  insertFindings(rows)
+  const mine = listFindings(round.id).filter((f) => f.category === OWN_CATEGORY && f.file === rows[0].file && f.line === rows[0].line)
+  return { ok: true, message: 'Đã lưu comment — bấm "Gửi lên PR" trên comment khi muốn đăng.', id: mine.at(-1)?.id }
 }
 
 export async function updateSummaryAction(roundId: number, summary: string): Promise<Result> {

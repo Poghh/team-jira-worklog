@@ -325,6 +325,9 @@ export interface TestSuggestion {
   findings: string[]
 }
 
+/** Category of a finding the reviewer wrote on a line in "Thay đổi code", not Claude. */
+export const OWN_CATEGORY = 'Bạn viết'
+
 export interface FindingView {
   id: number
   roundId: number

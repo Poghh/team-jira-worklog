@@ -34,6 +34,7 @@ import {
   detectJiraKeys,
   isFetched,
   jiraTickets,
+  OWN_CATEGORY,
   type DocFile,
   findingClipboard,
   shortSha,
@@ -57,6 +58,7 @@ import {
 import { ContextPicker, type DocRepo, LinkPicker, type PrContext, RepoRows, type SourceRow, SourceRows, contextReady, sourcePayload, useAttachments, useDocUpload } from '../review'
 import { CfAccessNote, CfProvider, FindingConfluence, SendAllConfluence } from './confluence'
 import { type ChatHandle, ChatPanel, ChatShortcut } from './chat'
+import { CodeTab } from './diff'
 import { AccessNote, DiscussionPanel, FindingGithub, GhProvider, ReplyWithBody, SubmitReview, useGh } from './github'
 import {
   BTN,
@@ -73,6 +75,8 @@ import {
   Ago,
   Elapsed,
 } from '../ui'
+
+type Tab = 'review' | 'code' | 'discussion'
 
 export function ReviewDetail({
   item,
@@ -91,7 +95,7 @@ export function ReviewDetail({
   repoName: string
   githubRepo: string
   claude: ClaudeCheck
-  initialTab: 'review' | 'discussion'
+  initialTab: Tab
   access: GithubAccess
   /** Doc reviews on Confluence: whether the account may comment on the pages. */
   cfAccess: ConfluenceAccess
@@ -104,7 +108,8 @@ export function ReviewDetail({
 }) {
   const [claude, setClaude] = useState(initialClaude)
   const onGithub = item.kind === 'pr' && Boolean(item.prNumber) && Boolean(githubRepo)
-  const [tab, setTab] = useState<'review' | 'discussion'>(onGithub && access.read ? initialTab : 'review')
+  const tabs: Tab[] = item.kind === 'pr' ? ['review', 'code', ...(onGithub && access.read ? (['discussion'] as const) : [])] : ['review']
+  const [tab, setTab] = useState<Tab>(tabs.includes(initialTab) ? initialTab : 'review')
   const [detail, setDetail] = useState<ItemDetail>({ rounds: [], findings: {}, log: [], logRoundId: null })
   const [selected, setSelected] = useState<number | null>(null)
   const [loaded, setLoaded] = useState(false)
@@ -184,14 +189,19 @@ export function ReviewDetail({
 
       <ClaudeBanner check={claude} onChange={setClaude} />
 
-      {onGithub && access.read && (
+      {tabs.length > 1 && (
         <div className="mb-3 flex w-fit overflow-hidden rounded-md border border-line-strong text-[12.5px]">
           <TabBtn on={tab === 'review'} onClick={() => setTab('review')}>
             Kết quả review
           </TabBtn>
-          <TabBtn on={tab === 'discussion'} onClick={() => setTab('discussion')}>
-            <DiscussionLabel />
+          <TabBtn on={tab === 'code'} onClick={() => setTab('code')}>
+            Thay đổi code
           </TabBtn>
+          {tabs.includes('discussion') && (
+            <TabBtn on={tab === 'discussion'} onClick={() => setTab('discussion')}>
+              <DiscussionLabel />
+            </TabBtn>
+          )}
         </div>
       )}
 
@@ -222,6 +232,29 @@ export function ReviewDetail({
         <div className={CARD + ' text-[12.5px] text-ink-3'}>Đang tải…</div>
       ) : !current ? (
         <div className={CARD + ' text-[12.5px] text-ink-2'}>Chưa có vòng review nào.</div>
+      ) : tab === 'code' ? (
+        <CodeTab
+          key={current.id}
+          item={item}
+          round={current}
+          findings={detail.findings[current.id] ?? []}
+          githubRepo={githubRepo}
+          canRun={claude.ok}
+          addressee={addressee}
+          onChanged={() => refresh(current.id)}
+          renderFinding={(f, onAsk) => (
+            <FindingCard
+              f={f}
+              kind="pr"
+              docs={current.docs}
+              link={blobUrl(githubRepo, current.headSha, f)}
+              compact
+              onPatch={(p) => void patchFindingAction(f.id, { body: p.body, status: p.status }).then(() => refresh(current.id))}
+              onPosted={() => refresh(current.id)}
+              onAsk={onAsk}
+            />
+          )}
+        />
       ) : (
         <RoundPanel
           key={current.id}
@@ -238,7 +271,7 @@ export function ReviewDetail({
         />
       )}
 
-      {loaded && !live && (
+      {loaded && !live && tab === 'review' && (
         <NextRound item={item} latest={latest} canRun={claude.ok} templates={templates} onQueued={() => refresh()} />
       )}
         </>
@@ -997,11 +1030,14 @@ function FindingCard({
   onPatch,
   onPosted,
   onAsk,
+  compact,
 }: {
   f: FindingView
   kind: ItemView['kind']
   docs: DocFile[]
   link: string
+  /** Shown under its line in the diff: no code snippet of its own. */
+  compact?: boolean
   onPatch: (p: Partial<FindingView>) => void
   onPosted: () => void
   onAsk: () => void
@@ -1025,7 +1061,9 @@ function FindingCard({
         <span className="text-[13px] font-medium">{f.title}</span>
         {kind === 'pr' &&
           f.category &&
-          (/tài liệu/i.test(f.category) ? (
+          (f.category === OWN_CATEGORY ? (
+            <span className="rounded bg-accent-soft px-1.5 py-[1px] text-[11px] font-medium text-accent-ink">✍️ Bạn viết</span>
+          ) : /tài liệu/i.test(f.category) ? (
             <span className="rounded bg-epic-soft px-1.5 py-[1px] text-[11px] font-medium text-epic-ink">📎 {f.category}</span>
           ) : (
             <span className="text-[11px] text-ink-3">· {f.category}</span>
@@ -1055,7 +1093,7 @@ function FindingCard({
           )}
         </div>
       )}
-      {f.snippet && (
+      {f.snippet && !compact && (
         <pre className="mt-2 overflow-x-auto rounded-md bg-ground p-2 font-mono text-[11.5px] leading-[1.55]">
           {f.snippet.split('\n').map((line, i) => {
             const n = f.snippetStart + i

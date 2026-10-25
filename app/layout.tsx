@@ -51,8 +51,10 @@ export default async function RootLayout({
           {/* `min-w-0`: the column is `1fr`, i.e. `minmax(auto, 1fr)`, so without
               it one long unbreakable line — a code snippet in a review, a long
               branch name — widens `main` past the viewport and the whole page
-              scrolls sideways. With it, that content scrolls in its own box. */}
-          <main className="min-w-0 max-w-[1340px] px-6 pb-12 pt-5">{children}</main>
+              scrolls sideways. With it, that content scrolls in its own box.
+              A page that needs the whole screen (a code diff) drops the cap by
+              rendering an element with `data-wide`. */}
+          <main className="min-w-0 max-w-[1340px] px-6 pb-12 pt-5 has-[[data-wide]]:max-w-none">{children}</main>
         </div>
       </body>
     </html>

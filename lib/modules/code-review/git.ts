@@ -160,6 +160,13 @@ export async function diffText(repoPath: string, from: string, to: string): Prom
   return git(repoPath, ['diff', '--no-color', '--no-ext-diff', from, to], 120_000)
 }
 
+/** Paths that differ between two commits — which files a later round's push touched. */
+export async function changedPaths(repoPath: string, from: string, to: string): Promise<string[]> {
+  // -z: raw paths, not C-quoted, so they match the parsed diff's.
+  const out = await git(repoPath, ['diff', '--name-only', '-z', from, to], 60_000)
+  return out.split('\0').filter(Boolean)
+}
+
 export async function diffStat(repoPath: string, from: string, to: string): Promise<string> {
   return (await git(repoPath, ['diff', '--stat=120', from, to])).trim()
 }

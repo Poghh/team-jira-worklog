@@ -13,6 +13,8 @@ export interface ChatHandle {
   ask: (f: FindingView) => void
   /** Puts a ready-made message (e.g. a test-result template) in the box and focuses it. */
   prefill: (text: string, caret?: number) => void
+  /** Sends a message as is — a question built from lines picked in the diff. */
+  send: (text: string) => void
 }
 
 /**
@@ -70,6 +72,7 @@ export const ChatPanel = forwardRef<
           el.setSelectionRange(at, at)
         }, 300)
       },
+      send: (value) => send(value),
     }))
 
     const send = (override?: string) =>
