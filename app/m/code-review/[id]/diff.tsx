@@ -96,7 +96,6 @@ export function CodeTab({
       if (stale) return
       setDiff(d)
       if (d.ok && later) setSinceCount(d.since.length)
-      setActive(d.files[0]?.path ?? '')
       const seen = new Set(readViewed(viewedKey))
       setCollapsed(new Set(d.files.filter((f) => f.status === 'deleted' || rowCount(f) > LARGE_FILE_ROWS || seen.has(f.path)).map((f) => f.path)))
     })
@@ -105,7 +104,11 @@ export function CodeTab({
     }
   }, [round.id, scope, viewedKey, later])
 
-  const files = useMemo(() => diff?.files ?? [], [diff])
+  // One order for both columns: the tree's (folders first, by name), not git's
+  // byte order, which puts "Cargo.lock" before "bindings/".
+  const tree = useMemo(() => buildTree(diff?.files ?? []), [diff])
+  const files = useMemo(() => treeOrder(tree), [tree])
+  useEffect(() => setActive(files[0]?.path ?? ''), [files])
   // Marked only in the full view — in "since" every file is new by definition.
   const fresh = useMemo(() => new Set(scope === 'all' ? (diff?.since ?? []) : []), [diff, scope])
 
@@ -288,7 +291,7 @@ export function CodeTab({
         <div className={CARD + ' text-[12.5px] text-crit'}>{diff.message}</div>
       ) : (
         <div className="flex items-start gap-3">
-          {files.length > 0 && <FileTree files={files} active={active} viewed={viewed} fresh={fresh} byFile={byFile} onPick={jump} />}
+          {files.length > 0 && <FileTree files={files} tree={tree} active={active} viewed={viewed} fresh={fresh} byFile={byFile} onPick={jump} />}
           <div className="flex min-w-0 flex-1 flex-col gap-3">
             {diff.truncated && <div className={CARD + ' !py-2 text-[12px] text-warn'}>Diff quá lớn — chỉ hiện {files.length} file đầu.</div>}
             {files.length === 0 && <div className={CARD + ' text-[12.5px] text-ink-2'}>Không có thay đổi nào.</div>}
@@ -399,11 +402,24 @@ function buildTree(files: DiffFile[]): Dir {
     }
     return d
   }
+  const byName = (a: string, b: string) => a.localeCompare(b, undefined, { sensitivity: 'base', numeric: true })
+  const sort = (d: Dir) => {
+    d.dirs.sort((a, b) => byName(a.name, b.name))
+    d.files.sort((a, b) => byName(a.path.split('/').at(-1)!, b.path.split('/').at(-1)!))
+    d.dirs.forEach(sort)
+  }
+  sort(root)
   return squash(root)
+}
+
+/** The files in the order the tree lists them. */
+function treeOrder(d: Dir): DiffFile[] {
+  return [...d.dirs.flatMap(treeOrder), ...d.files]
 }
 
 const FileTree = memo(function FileTree({
   files,
+  tree,
   active,
   viewed,
   fresh,
@@ -411,6 +427,7 @@ const FileTree = memo(function FileTree({
   onPick,
 }: {
   files: DiffFile[]
+  tree: Dir
   active: string
   viewed: Set<string>
   fresh: Set<string>
@@ -419,7 +436,6 @@ const FileTree = memo(function FileTree({
 }) {
   const [query, setQuery] = useState('')
   const [closed, setClosed] = useState<Set<string>>(new Set())
-  const tree = useMemo(() => buildTree(files), [files])
   const box = useRef<HTMLDivElement>(null)
   const q = query.trim().toLowerCase()
   const matches = useMemo(() => (q ? files.filter((f) => f.path.toLowerCase().includes(q)) : []), [files, q])
@@ -429,7 +445,8 @@ const FileTree = memo(function FileTree({
     const el = box.current?.querySelector<HTMLElement>(`[data-path="${CSS.escape(active)}"]`)
     const b = box.current
     if (!el || !b) return
-    const top = el.offsetTop - b.offsetTop
+    // The box is `relative`, so offsetTop is already measured from its top.
+    const top = el.offsetTop
     if (top < b.scrollTop + 40 || top > b.scrollTop + b.clientHeight - 40) b.scrollTop = top - b.clientHeight / 2
   }, [active])
 
@@ -584,6 +601,7 @@ const FileDiff = memo(function FileDiff({
             file.path
           )}
         </span>
+        <CopyPath path={file.path} />
         <span className="font-mono text-[11.5px]">
           <span className="text-good">+{file.additions}</span> <span className="text-crit">−{file.deletions}</span>
         </span>
@@ -613,6 +631,31 @@ const FileDiff = memo(function FileDiff({
     </section>
   )
 })
+
+function CopyPath({ path }: { path: string }) {
+  const [done, setDone] = useState(false)
+  return (
+    <button
+      type="button"
+      title={done ? 'Đã copy' : 'Copy đường dẫn file'}
+      className={'shrink-0 rounded px-1 text-[12px] hover:bg-surface-2 ' + (done ? 'text-good' : 'text-ink-3 hover:text-ink')}
+      onClick={async () => {
+        try {
+          await navigator.clipboard.writeText(path)
+          setDone(true)
+          setTimeout(() => setDone(false), 1500)
+        } catch {}
+      }}
+    >
+      {done ? '✓' : (
+        <svg width="13" height="13" viewBox="0 0 16 16" fill="currentColor" aria-hidden>
+          <path d="M0 6.75C0 5.784.784 5 1.75 5h1.5a.75.75 0 0 1 0 1.5h-1.5a.25.25 0 0 0-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 0 0 .25-.25v-1.5a.75.75 0 0 1 1.5 0v1.5A1.75 1.75 0 0 1 9.25 16h-7.5A1.75 1.75 0 0 1 0 14.25Z" />
+          <path d="M5 1.75C5 .784 5.784 0 6.75 0h7.5C15.216 0 16 .784 16 1.75v7.5A1.75 1.75 0 0 1 14.25 11h-7.5A1.75 1.75 0 0 1 5 9.25Zm1.75-.25a.25.25 0 0 0-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 0 0 .25-.25v-7.5a.25.25 0 0 0-.25-.25Z" />
+        </svg>
+      )}
+    </button>
+  )
+}
 
 function FileBody({
   file,
