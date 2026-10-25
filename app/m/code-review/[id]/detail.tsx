@@ -31,10 +31,15 @@ import {
   allClipboard,
   blobUrl,
   confluencePages,
+  detectJiraKeys,
+  isFetched,
+  jiraTickets,
+  OWN_CATEGORY,
   type DocFile,
   findingClipboard,
   shortSha,
   where,
+  isCode,
 } from '@/lib/modules/code-review/model'
 
 import {
@@ -45,14 +50,16 @@ import {
   reReviewAction,
   setAddresseeAction,
   setDocReposAction,
+  setJiraAction,
   setLinksAction,
   setSourcesAction,
   setTemplateAction,
   updateSummaryAction,
 } from '../actions'
-import { type DocRepo, LinkPicker, RepoRows, type SourceRow, SourceRows, sourcePayload, useAttachments, useDocUpload } from '../review'
+import { ContextPicker, type DocRepo, LinkPicker, type PrContext, RepoRows, type SourceRow, SourceRows, contextReady, sourcePayload, useAttachments, useDocUpload } from '../review'
 import { CfAccessNote, CfProvider, FindingConfluence, SendAllConfluence } from './confluence'
 import { type ChatHandle, ChatPanel, ChatShortcut } from './chat'
+import { CodeTab } from './diff'
 import { AccessNote, DiscussionPanel, FindingGithub, GhProvider, ReplyWithBody, SubmitReview, useGh } from './github'
 import {
   BTN,
@@ -69,6 +76,8 @@ import {
   Ago,
   Elapsed,
 } from '../ui'
+
+type Tab = 'review' | 'code' | 'discussion'
 
 export function ReviewDetail({
   item,
@@ -87,7 +96,7 @@ export function ReviewDetail({
   repoName: string
   githubRepo: string
   claude: ClaudeCheck
-  initialTab: 'review' | 'discussion'
+  initialTab: Tab
   access: GithubAccess
   /** Doc reviews on Confluence: whether the account may comment on the pages. */
   cfAccess: ConfluenceAccess
@@ -100,7 +109,13 @@ export function ReviewDetail({
 }) {
   const [claude, setClaude] = useState(initialClaude)
   const onGithub = item.kind === 'pr' && Boolean(item.prNumber) && Boolean(githubRepo)
-  const [tab, setTab] = useState<'review' | 'discussion'>(onGithub && access.read ? initialTab : 'review')
+  // Tab "Thay đổi code" hỏi `isCode`, không phải `kind === 'pr'`: tự review là
+  // code và cũng có baseSha/headSha, nên nó xem được diff. Tab "Thảo luận" thì
+  // đúng là chỉ PR mới có — nó đã có cổng riêng là `onGithub`.
+  const tabs: Tab[] = isCode(item.kind)
+    ? ['review', 'code', ...(onGithub && access.read ? (['discussion'] as const) : [])]
+    : ['review']
+  const [tab, setTab] = useState<Tab>(tabs.includes(initialTab) ? initialTab : 'review')
   const [detail, setDetail] = useState<ItemDetail>({ rounds: [], findings: {}, log: [], logRoundId: null })
   const [selected, setSelected] = useState<number | null>(null)
   const [loaded, setLoaded] = useState(false)
@@ -176,17 +191,23 @@ export function ReviewDetail({
       {item.kind === 'doc' && <TemplateBar item={item} templates={templates} />}
       {item.kind === 'doc' && <DocSourcesBar item={item} repos={repos} templates={templates} />}
       {item.kind === 'pr' && <LinksBar item={item} repos={repos} linkedItems={linkedItems} />}
+      {item.kind === 'pr' && <PrContextBar item={item} />}
 
       <ClaudeBanner check={claude} onChange={setClaude} />
 
-      {onGithub && access.read && (
+      {tabs.length > 1 && (
         <div className="mb-3 flex w-fit overflow-hidden rounded-md border border-line-strong text-[12.5px]">
           <TabBtn on={tab === 'review'} onClick={() => setTab('review')}>
             Kết quả review
           </TabBtn>
-          <TabBtn on={tab === 'discussion'} onClick={() => setTab('discussion')}>
-            <DiscussionLabel />
+          <TabBtn on={tab === 'code'} onClick={() => setTab('code')}>
+            Thay đổi code
           </TabBtn>
+          {tabs.includes('discussion') && (
+            <TabBtn on={tab === 'discussion'} onClick={() => setTab('discussion')}>
+              <DiscussionLabel />
+            </TabBtn>
+          )}
         </div>
       )}
 
@@ -217,6 +238,29 @@ export function ReviewDetail({
         <div className={CARD + ' text-[12.5px] text-ink-3'}>Đang tải…</div>
       ) : !current ? (
         <div className={CARD + ' text-[12.5px] text-ink-2'}>Chưa có vòng review nào.</div>
+      ) : tab === 'code' ? (
+        <CodeTab
+          key={current.id}
+          item={item}
+          round={current}
+          findings={detail.findings[current.id] ?? []}
+          githubRepo={githubRepo}
+          canRun={claude.ok}
+          addressee={addressee}
+          onChanged={() => refresh(current.id)}
+          renderFinding={(f, onAsk) => (
+            <FindingCard
+              f={f}
+              kind="pr"
+              docs={current.docs}
+              link={blobUrl(githubRepo, current.headSha, f)}
+              compact
+              onPatch={(p) => void patchFindingAction(f.id, { body: p.body, status: p.status }).then(() => refresh(current.id))}
+              onPosted={() => refresh(current.id)}
+              onAsk={onAsk}
+            />
+          )}
+        />
       ) : (
         <RoundPanel
           key={current.id}
@@ -233,7 +277,7 @@ export function ReviewDetail({
         />
       )}
 
-      {loaded && !live && (
+      {loaded && !live && tab === 'review' && (
         <NextRound item={item} latest={latest} canRun={claude.ok} templates={templates} onQueued={() => refresh()} />
       )}
         </>
@@ -252,8 +296,7 @@ function DocSourcesBar({ item, repos, templates }: { item: ItemView; repos: Repo
   const router = useRouter()
   const initialRepos = (): DocRepo[] =>
     item.repoId ? [{ repoId: item.repoId, ref: item.headRef }, ...item.links.map((l) => ({ repoId: l.repoId, ref: l.headRef }))] : []
-  const initialSources = (): SourceRow[] =>
-    item.sources.map((s) => ({ url: s.url, children: s.children, role: s.role, templateId: s.templateId, pages: s.pages, title: s.title, touched: true }))
+  const initialSources = () => savedSources(item)
   const [open, setOpen] = useState(false)
   const [docRepos, setDocRepos] = useState(initialRepos)
   const [sources, setSources] = useState(initialSources)
@@ -308,6 +351,94 @@ function DocSourcesBar({ item, repos, templates }: { item: ItemView; repos: Repo
               {busy ? 'Đang kiểm tra link…' : 'Lưu'}
             </button>
             <span className="text-ink-3">Áp dụng từ vòng review tiếp theo.</span>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+const savedSources = (item: ItemView): SourceRow[] =>
+  item.sources.map((s) => ({ url: s.url, children: s.children, role: s.role, templateId: s.templateId, pages: s.pages, title: s.title, touched: true }))
+
+/**
+ * The Jira tickets and Confluence pages a PR review checks the code against —
+ * fetched afresh every round. Changes apply from the next round.
+ */
+function PrContextBar({ item }: { item: ItemView }) {
+  const router = useRouter()
+  const initial = (): PrContext => ({ jira: item.jira, sources: savedSources(item) })
+  const [open, setOpen] = useState(false)
+  const [value, setValue] = useState(initial)
+  const [msg, setMsg] = useState('')
+  const [busy, start] = useTransition()
+  const detected = detectJiraKeys({ branch: item.headRef, title: item.title })
+
+  return (
+    <div className="-mt-2 mb-4 text-[12px]">
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="text-ink-3">🎫 Ticket:</span>
+        {item.jira.keys.length === 0 && !(item.jira.auto && detected.length) && <span className="text-ink-3">chưa có</span>}
+        {item.jira.keys.map((k) => (
+          <span key={k} className="rounded-md border border-line bg-surface px-2 py-0.5 font-mono">
+            {k}
+          </span>
+        ))}
+        {item.jira.auto && (
+          <span className="text-ink-3" title="Ticket có key trong tên nhánh / tiêu đề / mô tả PR được đọc thêm mỗi vòng">
+            {detected.filter((k) => !item.jira.keys.includes(k)).length
+              ? `+ tự nhận: ${detected.filter((k) => !item.jira.keys.includes(k)).join(', ')}`
+              : '+ tự nhận theo nhánh / mô tả PR'}
+          </span>
+        )}
+        {item.sources.length > 0 && (
+          <span className="text-ink-2">
+            · 🌐{' '}
+            {item.sources.map((s, i) => (
+              <span key={s.pageId}>
+                {i > 0 && ' · '}
+                <a href={s.url} target="_blank" rel="noreferrer" className="text-accent-ink hover:underline">
+                  {s.title}
+                </a>
+                {s.children && <span className="text-ink-3"> (+ subpage)</span>}
+              </span>
+            ))}
+          </span>
+        )}
+        <button
+          type="button"
+          className="text-ink-3 underline-offset-2 hover:text-ink hover:underline"
+          onClick={() => {
+            if (!open) setValue(initial())
+            setOpen((v) => !v)
+          }}
+        >
+          {open ? 'Đóng' : 'Sửa ticket / Confluence'}
+        </button>
+        {msg && <span className="text-ink-2">{msg}</span>}
+      </div>
+      {open && (
+        <div className={CARD + ' mt-2 !p-3'}>
+          <ContextPicker value={value} onChange={setValue} detected={detected} scope="Có hiệu lực từ vòng review tiếp theo." />
+          <div className="mt-2 flex items-center gap-2">
+            <button
+              type="button"
+              className={BTN_PRI}
+              disabled={busy || !contextReady(value)}
+              onClick={() =>
+                start(async () => {
+                  const a = await setJiraAction(item.id, value.jira)
+                  const b = a.ok ? await setSourcesAction(item.id, sourcePayload(value.sources.filter((s) => !s.error))) : a
+                  setMsg(b.ok ? 'Đã lưu — áp dụng từ vòng tiếp theo.' : b.message)
+                  if (a.ok && b.ok) {
+                    setOpen(false)
+                    router.refresh()
+                  }
+                })
+              }
+            >
+              {busy ? 'Đang kiểm tra link…' : 'Lưu'}
+            </button>
           </div>
         </div>
       )}
@@ -626,10 +757,23 @@ function RoundPanel({
               🌐 {confluencePages(round.docs).length} trang Confluence
             </span>
           )}
-          {round.docs.some((d) => !d.source) && (
+          {jiraTickets(round.docs).length > 0 && (
+            <span>
+              🎫{' '}
+              {jiraTickets(round.docs).map((d, i) => (
+                <span key={d.ticket.key}>
+                  {i > 0 && ', '}
+                  <a href={d.ticket.url} target="_blank" rel="noreferrer" className="hover:text-accent-ink hover:underline" title={d.name + (d.ticket.auto ? ' · tự nhận' : '')}>
+                    {d.ticket.key}
+                  </a>
+                </span>
+              ))}
+            </span>
+          )}
+          {round.docs.some((d) => !isFetched(d)) && (
             <span>
               {round.docs
-                .filter((d) => !d.source)
+                .filter((d) => !isFetched(d))
                 .map((d) => {
                   const t = templates.find((x) => x.id === (d.templateId || (d.role === 'spec' ? '' : item.templateId)))
                   return `${DOC_ROLE_LABEL[d.role]}: ${d.name}${t ? ` (📐 ${t.name})` : ''}`
@@ -892,11 +1036,14 @@ function FindingCard({
   onPatch,
   onPosted,
   onAsk,
+  compact,
 }: {
   f: FindingView
   kind: ItemView['kind']
   docs: DocFile[]
   link: string
+  /** Shown under its line in the diff: no code snippet of its own. */
+  compact?: boolean
   onPatch: (p: Partial<FindingView>) => void
   onPosted: () => void
   onAsk: () => void
@@ -920,7 +1067,9 @@ function FindingCard({
         <span className="text-[13px] font-medium">{f.title}</span>
         {kind === 'pr' &&
           f.category &&
-          (/tài liệu/i.test(f.category) ? (
+          (f.category === OWN_CATEGORY ? (
+            <span className="rounded bg-accent-soft px-1.5 py-[1px] text-[11px] font-medium text-accent-ink">✍️ Bạn viết</span>
+          ) : /tài liệu/i.test(f.category) ? (
             <span className="rounded bg-epic-soft px-1.5 py-[1px] text-[11px] font-medium text-epic-ink">📎 {f.category}</span>
           ) : (
             <span className="text-[11px] text-ink-3">· {f.category}</span>
@@ -950,7 +1099,7 @@ function FindingCard({
           )}
         </div>
       )}
-      {f.snippet && (
+      {f.snippet && !compact && (
         <pre className="mt-2 overflow-x-auto rounded-md bg-ground p-2 font-mono text-[11.5px] leading-[1.55]">
           {f.snippet.split('\n').map((line, i) => {
             const n = f.snippetStart + i
@@ -1051,7 +1200,8 @@ function NextRound({
   })
   const attach = useAttachments()
   const done = latest?.state === 'done'
-  const current = latest?.docs ?? []
+  // Tickets and Confluence pages are fetched afresh; only uploaded files carry over as they are.
+  const current = (latest?.docs ?? []).filter((d) => item.kind === 'doc' || !isFetched(d))
 
   const again = () =>
     start(async () => {
@@ -1072,7 +1222,7 @@ function NextRound({
       <p className="mb-2 text-[12px] text-ink-2">
         {item.kind === 'pr'
           ? done
-            ? 'Claude sẽ lấy commit mới nhất, xem phần vừa sửa so với vòng trước, đánh giá lại từng điểm còn mở và chỉ tìm vấn đề mới trong code vừa đổi.'
+            ? `Claude sẽ lấy commit mới nhất, xem phần vừa sửa so với vòng trước, đánh giá lại từng điểm còn mở và chỉ tìm vấn đề mới trong code vừa đổi.${(latest?.docs ?? []).some(isFetched) || item.jira.keys.length || item.sources.length ? ' Ticket Jira / trang Confluence được đọc lại bản mới nhất.' : ''}`
             : 'Vòng trước không ra kết quả — chạy lại với commit mới nhất.'
           : item.sources.length
             ? 'Claude sẽ lấy bản mới nhất của các trang Confluence (cả subpage), so với bản vòng trước, đánh giá lại từng điểm còn mở và đọc thêm trả lời dưới các comment đã gửi. PDF (nếu có) giữ như cũ, hoặc chọn bản mới bên dưới.'

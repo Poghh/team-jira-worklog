@@ -9,7 +9,7 @@ import { getRepo, getReviewConfig, resolveAddressee, templatesForDocs } from './
 import { type RawFinding, buildFreshRows, cleanSeverity } from './findings'
 import { addWorktree, diffRanges, gitSays, removeWorktree, withRepoLock } from './git'
 import { ALLOWED_TOOLS, DISALLOWED_TOOLS, ISOLATION_FLAGS, reviewEnv } from './guard'
-import type { DocFile, FindingView } from './model'
+import { type DocFile, type FindingView, isCode } from './model'
 import { type LogLine, bootTime, lastResult, parseLog, pidAlive, readLog, strayLines } from './proc'
 import { cleanupLinks, linkDirs, restoreLinks } from './links'
 import { CHAT_SCHEMA, chatPrompt } from './prompts'
@@ -334,7 +334,10 @@ export async function applyChanges(messageId: number): Promise<{ ok: boolean; me
   if (changes.add?.length) {
     const repo = item.repoId ? getRepo(item.repoId) : undefined
     const ranges =
-      item.kind === 'pr' && repo && round.baseSha && round.headSha
+      // `isCode`, không phải `kind === 'pr'`: câu hỏi ở đây là "có diff để neo
+      // finding vào không", và tự review là code dù không có PR. `runner.ts`
+      // đã hỏi đúng câu này ở chỗ tương đương; chỗ này là bản cũ còn sót.
+      isCode(item.kind) && repo && round.baseSha && round.headSha
         ? await diffRanges(repo.localPath, round.baseSha, round.headSha).catch(() => null)
         : null
     // After everything the review itself produced, in the order accepted.

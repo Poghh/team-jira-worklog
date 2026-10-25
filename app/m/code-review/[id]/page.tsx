@@ -49,7 +49,7 @@ export default async function ReviewItemPage({
         repoName={repo?.name ?? ''}
         githubRepo={repo?.githubRepo ?? ''}
         claude={await checkClaude()}
-        initialTab={tab === 'discussion' ? 'discussion' : 'review'}
+        initialTab={tab === 'discussion' || tab === 'code' ? tab : 'review'}
         access={access}
         cfAccess={cfAccess}
         addressee={resolveAddressee(item)}

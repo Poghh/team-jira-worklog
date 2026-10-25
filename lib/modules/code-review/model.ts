@@ -4,6 +4,8 @@
  * server uses.
  */
 
+import { extractIssueKeys } from '@/lib/jira/branch-keys'
+
 export type ItemKind = 'pr' | 'doc' | 'self'
 
 /**
@@ -93,7 +95,70 @@ export interface DocFile {
   templateId?: string
   /** Set when the file is a Confluence page, saved as Markdown for this round. */
   source?: ConfluencePage
+  /** Set when the file is a Jira ticket, saved as Markdown for this round. */
+  ticket?: JiraTicket
 }
+
+/** One Jira ticket, as a round saw it. */
+export interface JiraTicket {
+  key: string
+  url: string
+  /** The ticket's `updated` timestamp — a change means the requirements may have moved. */
+  updated: string
+  /** Read because its key was in the branch / title / PR description, not pasted. */
+  auto?: boolean
+}
+
+/** The Jira tickets a code review reads, fetched afresh by every round. */
+export interface JiraContext {
+  /** Pasted by the reviewer. */
+  keys: string[]
+  /** Also read the tickets named in the branch, the title and the PR description. */
+  auto: boolean
+}
+
+export const NO_JIRA: JiraContext = { keys: [], auto: true }
+
+/** Things shaped like a ticket key that never are one. */
+const NOT_TICKETS = new Set(['UTF', 'ISO', 'SHA', 'RFC', 'HTTP', 'TLS', 'SSL', 'AES', 'RSA', 'IPV', 'MD', 'CVE', 'GMT', 'UTC', 'COVID', 'ES', 'PR'])
+
+/**
+ * Ticket keys in pasted text: Jira links (…/browse/KEY-1, ?selectedIssue=KEY-1)
+ * and bare keys. Strict upper case, so prose like "step-2" is not a ticket.
+ */
+export function parseJiraKeys(text: string): string[] {
+  const out: string[] = []
+  for (const m of text.matchAll(/(?:^|[^A-Za-z0-9])([A-Z][A-Z0-9]{1,9})-(\d{1,7})(?![0-9])/g)) {
+    if (NOT_TICKETS.has(m[1])) continue
+    const key = `${m[1]}-${m[2]}`
+    if (!out.includes(key)) out.push(key)
+  }
+  return out
+}
+
+/**
+ * The tickets a PR names on its own: the branch (`feature/VTL-286_login`,
+ * any case) first, then the title and the description. A guess — whatever
+ * Jira does not know is dropped quietly when the round fetches them.
+ */
+export function detectJiraKeys(input: { branch: string; title: string; body?: string }): string[] {
+  const out = extractIssueKeys(input.branch, []).filter((k) => !NOT_TICKETS.has(k.split('-')[0]))
+  for (const k of [...parseJiraKeys(input.title), ...parseJiraKeys(input.body ?? '')]) if (!out.includes(k)) out.push(k)
+  return out.slice(0, 6)
+}
+
+/** Every ticket a round would read for this PR — pasted ones first. */
+export function ticketPlan(jira: JiraContext, pr: { branch: string; title: string; body?: string }): Array<{ key: string; auto: boolean }> {
+  const out = jira.keys.slice(0, 10).map((key) => ({ key, auto: false }))
+  if (jira.auto) for (const key of detectJiraKeys(pr)) if (!out.some((o) => o.key === key)) out.push({ key, auto: true })
+  return out
+}
+
+/** The Jira tickets of a round. */
+export const jiraTickets = (docs: DocFile[]) => docs.filter((d): d is DocFile & { ticket: JiraTicket } => Boolean(d.ticket))
+
+/** Fetched afresh every round (Confluence page or Jira ticket), as opposed to an uploaded file. */
+export const isFetched = (d: DocFile) => Boolean(d.source || d.ticket)
 
 /**
  * A Confluence page the reviewer pasted a link to. A round fetches it (and,
@@ -315,6 +380,9 @@ export interface TestSuggestion {
   findings: string[]
 }
 
+/** Category of a finding the reviewer wrote on a line in "Thay đổi code", not Claude. */
+export const OWN_CATEGORY = 'Bạn viết'
+
 export interface FindingView {
   id: number
   roundId: number
@@ -393,8 +461,10 @@ export interface ItemView {
   addressee: Addressee | null
   /** Doc reviews: the template it is checked against; '' = none. */
   templateId: string
-  /** Doc reviews: Confluence pages fetched afresh by every round. */
+  /** Confluence pages fetched afresh by every round (doc reviews, and PR reviews as context). */
   sources: ConfluenceRef[]
+  /** PR reviews: Jira tickets to read as requirements. */
+  jira: JiraContext
   updatedAt: number
 }
 
