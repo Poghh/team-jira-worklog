@@ -186,3 +186,30 @@ export function templatesForDocs(docs: DocFile[], fallbackId: string): TemplateU
   }
   return [...out.values()]
 }
+
+/**
+ * Dọn danh sách repo đối chiếu của một hồ sơ tài liệu, hoặc trả về câu báo lỗi.
+ *
+ * Dùng chung với route tải tài liệu lên: hai chỗ cùng nhận đúng một thứ từ
+ * trình duyệt, và luật kiểm `workPath` chỉ nên có một bản. Đường dẫn clone
+ * phải nằm trong Cấu hình của chính repo ấy — nếu không, ô chọn nhánh thành
+ * cách đọc bất kỳ repo nào trên máy.
+ */
+export function pickDocRepos(
+  repos: Array<{ repoId?: string; ref?: string; workPath?: string }>,
+): Array<{ repoId: string; ref: string; workPath: string }> | string {
+  const picked: Array<{ repoId: string; ref: string; workPath: string }> = []
+  for (const r of (Array.isArray(repos) ? repos : []).slice(0, 6)) {
+    const id = String(r?.repoId ?? '').trim()
+    const ref = String(r?.ref ?? '').trim()
+    const work = String(r?.workPath ?? '').trim()
+    if (!id) continue
+    const repo = getRepo(id)
+    if (!repo) return 'Không thấy repo.'
+    if (!ref) return `Chọn nhánh code để đối chiếu cho ${repo.name}.`
+    if (work && !repo.workPaths.includes(work))
+      return `Clone "${work}" không còn trong Cấu hình của ${repo.name}.`
+    if (!picked.some((p) => p.repoId === id && p.ref === ref)) picked.push({ repoId: id, ref, workPath: work })
+  }
+  return picked
+}

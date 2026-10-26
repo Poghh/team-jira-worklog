@@ -388,8 +388,17 @@ async function prepareAndSpawn(roundId: number) {
 
       if (repo) {
         await withRepoLock(repo.localPath, async () => {
-          await fetchAll(repo.localPath)
-          headSha = await revParse(repo.localPath, `origin/${item.headRef}`)
+          // Nhánh chưa push thì `origin/<nhánh>` không tồn tại — chỉ clone làm
+          // việc mới có nó. Vẫn đối chiếu với Cấu hình: đường dẫn này tới từ
+          // trình duyệt lúc xếp hàng, và một đường dẫn tuỳ ý sẽ biến ô chọn
+          // nhánh thành cách đọc bất kỳ repo nào trên máy.
+          headSha =
+            item.workPath && repo.workPaths.includes(item.workPath)
+              ? await fetchFromWork(repo.localPath, item.workPath, item.headRef, `doc-${roundId}-head`)
+              : await (async () => {
+                  await fetchAll(repo.localPath)
+                  return revParse(repo.localPath, `origin/${item.headRef}`)
+                })()
           workdir = await addWorktree(repo.localPath, `r${roundId}`, headSha)
         })
         // More repos to check against (SDK + iOS…): read-only worktrees, no diff.
