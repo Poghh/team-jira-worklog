@@ -545,6 +545,7 @@ function SelfForm({
   const [dirty, setDirty] = useState(0)
   const [head, setHead] = useState('')
   const [links, setLinks] = useState<PrLink[]>([])
+  const [sources, setSources] = useState<SourceRow[]>([])
   const [title, setTitle] = useState('')
   const [note, setNote] = useState('')
   const [msg, setMsg] = useState('')
@@ -641,13 +642,26 @@ function SelfForm({
 
       <input value={title} onChange={(e) => setTitle(e.target.value)} className={INPUT + ' mt-2'} placeholder="Tên hồ sơ (không bắt buộc)" />
       <textarea value={note} onChange={(e) => setNote(e.target.value)} rows={2} className={INPUT + ' mt-2'} placeholder="Ghi chú cho Claude (không bắt buộc)" />
-      {attach.section('Mô tả chức năng, TDD… Claude sẽ kiểm code có làm đúng và đủ theo tài liệu không.')}
+      {attach.section(
+        'Mô tả chức năng, TDD… Claude sẽ kiểm code có làm đúng và đủ theo tài liệu không.',
+        <div className="mt-2 border-t border-line pt-2">
+          <SourceRows
+            value={sources}
+            onChange={setSources}
+            templates={[]}
+            fallbackTemplate=""
+            noTemplate
+            hint="Hoặc dán link Confluence — mỗi dòng một link. Trang có subpage thì Claude đọc luôn cả cây bên dưới. Mỗi vòng review đọc lại bản mới nhất."
+          />
+        </div>,
+        sources.length,
+      )}
 
       <div className="mt-2 flex items-center gap-2">
         <button
           type="button"
           className={BTN_PRI}
-          disabled={busy || !canRun || dirty === 0}
+          disabled={busy || !canRun || dirty === 0 || !contextReady({ jira: NO_JIRA, sources })}
           onClick={() =>
             start(async () => {
               const docs = await attach.upload()
@@ -659,11 +673,13 @@ function SelfForm({
                 note,
                 docs,
                 links,
+                ...(sources.length ? { sources: sourcePayload(sources.filter((x) => !x.error)) } : {}),
               })
               setMsg(r.message)
               if (r.ok) {
                 attach.clear()
                 setLinks([])
+                setSources([])
                 onDone()
               }
             })
@@ -897,13 +913,24 @@ export function useAttachments() {
     clear: () => setDocs([]),
     upload,
     msg,
-    section: (hint: string) => (
-      <details className="mt-3 rounded-md border border-line px-3 py-2" open={docs.length > 0}>
+    /**
+     * `extra` nằm **trong** cùng ô gập này, không phải một ô riêng bên cạnh.
+     *
+     * PDF và link Confluence trả lời đúng một câu — "đối chiếu code với tài
+     * liệu nào" — nên tách làm hai ô gập thì người dùng phải mở cả hai mới
+     * biết mình đã đính kèm những gì.
+     */
+    section: (hint: string, extra?: React.ReactNode, extraCount = 0) => (
+      <details className="mt-3 rounded-md border border-line px-3 py-2" open={docs.length > 0 || extraCount > 0}>
         <summary className="cursor-pointer text-[12.5px] text-ink-2">
-          📎 Đính kèm tài liệu để đối chiếu với code{docs.length ? ` · ${docs.length} file` : ' (không bắt buộc)'}
+          📎 Đính kèm tài liệu để đối chiếu với code
+          {docs.length || extraCount
+            ? ` · ${[docs.length && `${docs.length} file`, extraCount && `${extraCount} trang Confluence`].filter(Boolean).join(' · ')}`
+            : ' (không bắt buộc)'}
         </summary>
         <p className="mb-2 mt-1 text-[11.5px] text-ink-3">{hint}</p>
         <DocPicker docs={docs} setDocs={setDocs} />
+        {extra}
         {msg && <p className="mt-1 text-[12px] text-crit">{msg}</p>}
       </details>
     ),

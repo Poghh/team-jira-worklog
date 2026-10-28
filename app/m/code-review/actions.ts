@@ -401,6 +401,8 @@ export async function queueSelfAction(input: {
   docs?: DocFile[]
   /** Vế kia của một thay đổi hai repo — xem {@link snapshotLinks}. */
   links?: PrLink[]
+  /** Trang Confluence để đối chiếu code với tài liệu. */
+  sources?: unknown
 }): Promise<Result & { itemId?: number }> {
   const blocked = await ready()
   if (blocked) return blocked
@@ -428,6 +430,10 @@ export async function queueSelfAction(input: {
   const linked = await snapshotLinks(input.links ?? [])
   if (!linked.links) return { ok: false, message: linked.message! }
 
+  // Chỉ giữ địa chỉ trang, không giữ nội dung: mỗi vòng đọc lại bản mới nhất.
+  const sources = input.sources ? await resolveSources(input.sources) : []
+  if (typeof sources === 'string') return { ok: false, message: sources }
+
   const itemId = createItem({
     kind: 'self',
     repoId: input.repoId,
@@ -442,6 +448,7 @@ export async function queueSelfAction(input: {
     url: '',
     note: input.note.trim(),
     links: linked.links,
+    sources,
   })
   queueRound(itemId, docs)
   ensureTicker()

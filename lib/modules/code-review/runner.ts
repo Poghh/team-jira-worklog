@@ -232,7 +232,18 @@ async function prepareAndSpawn(roundId: number) {
         workdir = await addWorktree(r.localPath, `r${roundId}`, headSha)
       })
 
-      const docs = parseDocs(round.docs)
+      /**
+       * PDF giữ nguyên như lúc xếp hàng; trang Confluence đọc **lại bây giờ**.
+       *
+       * `filter(!isFetched)` bỏ bản đã kéo ở vòng trước đi rồi kéo lại: tài
+       * liệu sống, và vòng sau mà vẫn đối chiếu với bản cũ thì nó bắt lỗi
+       * đúng những chỗ người viết tài liệu vừa sửa.
+       */
+      const docs = parseDocs(round.docs).filter((d) => !isFetched(d))
+      if (item.sources.length) {
+        docs.push(...(await fetchPages(item.id, item.sources)))
+        updateRound(roundId, { docs: JSON.stringify(docs) })
+      }
       for (const d of docs) {
         const dir = path.dirname(d.path)
         if (!addDirs.includes(dir)) addDirs.push(dir)
