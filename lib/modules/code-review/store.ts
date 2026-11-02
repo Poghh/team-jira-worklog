@@ -79,6 +79,7 @@ const toItem = (r: typeof reviewItems.$inferSelect): ItemView => ({
   kind: r.kind as ItemKind,
   repoId: r.repoId,
   workPath: r.workPath,
+  headBranch: r.headBranch,
   title: r.title,
   prNumber: r.prNumber,
   baseRef: r.baseRef,
@@ -170,12 +171,14 @@ export function findPrItem(repoId: string, prNumber: number): ItemView | null {
 export function createItem(
   input: Omit<
     ItemView,
-    'id' | 'status' | 'updatedAt' | 'seenAt' | 'links' | 'addressee' | 'templateId' | 'workPath' | 'sources' | 'jira'
+    'id' | 'status' | 'updatedAt' | 'seenAt' | 'links' | 'addressee' | 'templateId' | 'workPath' | 'headBranch' | 'sources' | 'jira'
   > & {
     links?: PrLink[]
     templateId?: string
     /** Chỉ hồ sơ tự review điền — xem {@link ItemView.workPath}. */
     workPath?: string
+    /** Chỉ hồ sơ tự review điền — xem {@link ItemView.headBranch}. */
+    headBranch?: string
     sources?: ConfluenceRef[]
     jira?: JiraContext
   },

@@ -190,8 +190,10 @@ export function ReviewDetail({
       {item.kind === 'pr' && <AddresseeBar item={item} addressee={addressee} />}
       {item.kind === 'doc' && <TemplateBar item={item} templates={templates} />}
       {item.kind === 'doc' && <DocSourcesBar item={item} repos={repos} templates={templates} />}
-      {item.kind === 'pr' && <LinksBar item={item} repos={repos} linkedItems={linkedItems} />}
-      {item.kind === 'pr' && <PrContextBar item={item} />}
+      {/* `isCode`: tự review cũng nối được repo khác và cũng đọc ticket Jira.
+          Chỉ hồ sơ tài liệu là không có hai khái niệm này. */}
+      {isCode(item.kind) && <LinksBar item={item} repos={repos} linkedItems={linkedItems} />}
+      {isCode(item.kind) && <PrContextBar item={item} />}
 
       <ClaudeBanner check={claude} onChange={setClaude} />
 
@@ -1034,7 +1036,7 @@ function DoneRound({
   return (
     <>
       <div className="flex flex-wrap items-center gap-2">
-        {round.round > 1 && item.kind === 'pr' && (
+        {round.round > 1 && isCode(item.kind) && (
           <span className="text-[12px] text-ink-2">
             Vòng {round.round}: <span className="text-good">✓ {tally.fixed} đã sửa</span>
             {tally.partial > 0 && <span className="text-warn"> · ◐ {tally.partial} sửa chưa hết</span>}
@@ -1060,7 +1062,7 @@ function DoneRound({
         </div>
       )}
 
-      {item.kind === 'pr' && round.testPlan.length > 0 && (
+      {isCode(item.kind) && round.testPlan.length > 0 && (
         <TestPlanCard
           item={item}
           round={round}
@@ -1304,8 +1306,8 @@ function NextRound({
 
   const again = () =>
     start(async () => {
-      // PR: newly attached PDFs replace the old ones; none attached = keep them.
-      const docs = item.kind === 'pr' ? await attach.upload() : []
+      // Review code: PDF mới đính kèm thay bản cũ; không đính kèm gì thì giữ.
+      const docs = isCode(item.kind) ? await attach.upload() : []
       if (!docs) return
       const r = await reReviewAction(item.id, note, docs)
       setMsg(r.message)
@@ -1319,27 +1321,27 @@ function NextRound({
     <div className={CARD + ' mt-4'}>
       <div className={CTITLE + ' mb-1'}>{done ? 'Member đã sửa xong? Review tiếp' : 'Chạy lại'}</div>
       <p className="mb-2 text-[12px] text-ink-2">
-        {item.kind === 'pr'
+        {isCode(item.kind)
           ? done
-            ? `Claude sẽ lấy commit mới nhất, xem phần vừa sửa so với vòng trước, đánh giá lại từng điểm còn mở và chỉ tìm vấn đề mới trong code vừa đổi.${(latest?.docs ?? []).some(isFetched) || item.jira.keys.length || item.sources.length ? ' Ticket Jira / trang Confluence được đọc lại bản mới nhất.' : ''}`
-            : 'Vòng trước không ra kết quả — chạy lại với commit mới nhất.'
+            ? `Claude sẽ lấy ${item.kind === 'self' ? 'ảnh chụp' : 'commit'} mới nhất, xem phần vừa sửa so với vòng trước, đánh giá lại từng điểm còn mở và chỉ tìm vấn đề mới trong code vừa đổi.${(latest?.docs ?? []).some(isFetched) || item.jira.keys.length || item.sources.length ? ' Ticket Jira / trang Confluence được đọc lại bản mới nhất.' : ''}`
+            : `Vòng trước không ra kết quả — chạy lại với ${item.kind === 'self' ? 'ảnh chụp' : 'commit'} mới nhất.`
           : item.sources.length
             ? 'Claude sẽ lấy bản mới nhất của các trang Confluence (cả subpage), so với bản vòng trước, đánh giá lại từng điểm còn mở và đọc thêm trả lời dưới các comment đã gửi. PDF (nếu có) giữ như cũ, hoặc chọn bản mới bên dưới.'
             : 'Tải bản PDF mới lên để Claude so với bản trước và kiểm tra các điểm còn mở — hoặc chạy lại với đúng tài liệu cũ.'}
       </p>
       {item.kind === 'doc' && <div className="mb-2">{up.picker}</div>}
-      {item.kind === 'pr' && current.length > 0 && (
+      {isCode(item.kind) && current.length > 0 && (
         <p className="mb-2 text-[12px] text-ink-2">
           📎 Vòng sau vẫn đối chiếu với: {current.map((d) => `${DOC_ROLE_LABEL[d.role]}: ${d.name}`).join(' · ')}
           {attach.count > 0 && <span className="text-warn"> — sẽ được thay bằng {attach.count} file mới bên dưới</span>}
         </p>
       )}
       <textarea value={note} onChange={(e) => setNote(e.target.value)} rows={2} className={INPUT} placeholder="Ghi chú cho Claude (không bắt buộc)" />
-      {item.kind === 'pr' &&
+      {isCode(item.kind) &&
         attach.section(
           current.length
             ? 'Tài liệu đã cập nhật? Chọn bản mới — sẽ thay toàn bộ tài liệu cũ cho vòng này và các vòng sau.'
-            : 'Mô tả chức năng, TDD… để Claude kiểm tra PR có làm đúng và đủ theo tài liệu không.',
+            : 'Mô tả chức năng, TDD… để Claude kiểm tra code có làm đúng và đủ theo tài liệu không.',
         )}
       <div className="mt-2 flex flex-wrap items-center gap-2">
         {item.kind === 'doc' && (
@@ -1347,8 +1349,8 @@ function NextRound({
             {up.busy ? 'Đang tải lên…' : item.sources.length ? 'Review tiếp với PDF mới + Confluence' : 'Review tiếp với bản mới'}
           </button>
         )}
-        <button type="button" className={item.kind === 'pr' || item.sources.length ? BTN_PRI : BTN} disabled={busy || !canRun} onClick={again}>
-          {item.kind === 'pr'
+        <button type="button" className={isCode(item.kind) || item.sources.length ? BTN_PRI : BTN} disabled={busy || !canRun} onClick={again}>
+          {isCode(item.kind)
             ? busy && attach.count
               ? 'Đang tải tài liệu…'
               : done

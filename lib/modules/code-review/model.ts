@@ -472,6 +472,14 @@ export interface ItemView {
    * vòng review sau phải soi đúng cái clone vòng trước đã soi.
    */
   workPath: string
+  /**
+   * Tự review: tên nhánh clone làm việc đang đứng lúc xếp hàng.
+   *
+   * `headRef` của tự review là một sha, nên tên nhánh phải giữ riêng — đó là
+   * chỗ `detectJiraKeys` tìm mã ticket. Rỗng với PR và tài liệu, vốn đã có
+   * `headRef` là tên nhánh.
+   */
+  headBranch: string
   note: string
   status: 'open' | 'archived'
   seenAt: number | null
