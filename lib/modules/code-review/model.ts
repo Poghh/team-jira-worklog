@@ -436,6 +436,8 @@ export interface RoundView {
   state: RoundState
   baseSha: string
   headSha: string
+  /** Branch `headSha` came from (origin/<ref>, fetched for the round); '' for rounds before this was kept. */
+  headRef: string
   prevHeadSha: string
   docs: DocFile[]
   links: RoundLink[]

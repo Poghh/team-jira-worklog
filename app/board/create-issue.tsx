@@ -9,6 +9,7 @@ import { todayIn } from '@/lib/time'
 
 import { DateInput } from '../date-input'
 import { Spinner, Working } from '../spinner'
+import { MARKDOWN_HINT, MarkdownPreview, pasteSplitsDod } from './adf-view'
 import { useNav } from './navigation'
 
 interface Template {
@@ -443,24 +444,28 @@ function CreateIssueModal({
                   )}
                 </Field>
 
-                <Field label="Description">
+                <Field label="Description" hint="Markdown · dán cả task có “Definition of Done” sẽ tự tách">
                   <textarea
                     rows={6}
                     value={description}
                     onChange={(e) => setDescription(e.target.value)}
-                    placeholder="- Gemini sẽ điền, sửa lại thoải mái"
+                    onPaste={(e) => pasteSplitsDod(e, setDescription, dod, setDod)}
+                    title={MARKDOWN_HINT}
+                    placeholder="Gemini sẽ điền, hoặc tự viết / dán Markdown — # tiêu đề, **đậm**, `code`, danh sách, bảng…"
                     className="w-full resize-y rounded-md border border-line bg-ground px-2.5 py-1.5 font-mono text-[12px] leading-relaxed"
                   />
                 </Field>
 
-                <Field label="Definition of Done" hint="mỗi dòng một gạch đầu dòng">
+                <Field label="Definition of Done" hint="Markdown · mỗi dòng “- ” một gạch đầu dòng">
                   <textarea
                     rows={4}
                     value={dod}
                     onChange={(e) => setDod(e.target.value)}
+                    title={MARKDOWN_HINT}
                     placeholder="- Test chạy xanh trên CI"
                     className="w-full resize-y rounded-md border border-line bg-ground px-2.5 py-1.5 font-mono text-[12px] leading-relaxed"
                   />
+                  <MarkdownPreview description={description} dod={dod} />
                 </Field>
               </div>
 

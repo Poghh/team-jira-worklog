@@ -1,171 +1,23 @@
 /**
- * Jira's Atlassian Document Format → Markdown, for Claude to read a ticket.
+ * A Jira ticket as Markdown, for Claude to read.
  *
- * Unlike lib/jira/adf.ts (six node types, for the board's detail panel) this
- * keeps what a review needs from a requirement: tables, code, links, mentions,
- * nesting — and collects every link, so the Confluence pages a ticket points
- * at can be offered as more context. Unknown nodes fall back to their text.
+ * The ADF conversion itself lives in lib/jira/markdown.ts (shared with task
+ * creation); this keeps what a review needs from a requirement — tables,
+ * code, links, mentions, nesting — and collects every link, so the Confluence
+ * pages a ticket points at can be offered as more context.
  *
  * Pure — no server imports — so tests/code-review-jira.mts can run it.
  */
 
-export interface AdfNode {
-  type?: string
-  text?: string
-  attrs?: Record<string, unknown>
-  marks?: Array<{ type?: string; attrs?: Record<string, unknown> }>
-  content?: AdfNode[]
-}
+import { type AdfNode, adfToMarkdown as toMarkdown } from '@/lib/jira/markdown'
 
-interface Ctx {
-  links: string[]
-}
+export type { AdfNode }
 
-const str = (v: unknown) => (typeof v === 'string' ? v : '')
-
-function addLink(ctx: Ctx, url: string) {
-  if (/^https?:\/\//.test(url) && !ctx.links.includes(url)) ctx.links.push(url)
-}
-
-function inline(nodes: AdfNode[] | undefined, ctx: Ctx): string {
-  return (nodes ?? []).map((n) => inlineNode(n, ctx)).join('')
-}
-
-function inlineNode(n: AdfNode, ctx: Ctx): string {
-  switch (n.type) {
-    case 'text': {
-      let t = n.text ?? ''
-      let href = ''
-      for (const m of n.marks ?? []) {
-        if (m.type === 'code') t = '`' + t + '`'
-        else if (m.type === 'strong') t = `**${t}**`
-        else if (m.type === 'em') t = `_${t}_`
-        else if (m.type === 'strike') t = `~~${t}~~`
-        else if (m.type === 'link') href = str(m.attrs?.href)
-      }
-      if (href) {
-        addLink(ctx, href)
-        return t === href ? href : `[${t}](${href})`
-      }
-      return t
-    }
-    case 'hardBreak':
-      return '\n'
-    case 'mention':
-      return str(n.attrs?.text) || '@người dùng'
-    case 'emoji':
-      return str(n.attrs?.text) || str(n.attrs?.shortName)
-    case 'date': {
-      const ts = Number(n.attrs?.timestamp)
-      return Number.isFinite(ts) && ts > 0 ? new Date(ts).toISOString().slice(0, 10) : ''
-    }
-    case 'status':
-      return `[${str(n.attrs?.text)}]`
-    case 'inlineCard':
-    case 'blockCard':
-    case 'embedCard': {
-      const url = str(n.attrs?.url)
-      addLink(ctx, url)
-      return url
-    }
-    case 'media':
-    case 'mediaInline':
-      return `[đính kèm${str(n.attrs?.alt) ? `: ${str(n.attrs?.alt)}` : ''}]`
-    default:
-      return n.text ?? inline(n.content, ctx)
-  }
-}
-
-const indent = (s: string, pad: string) =>
-  s
-    .split('\n')
-    .map((l, i) => (i === 0 || !l ? l : pad + l))
-    .join('\n')
-
-function list(n: AdfNode, ctx: Ctx, ordered: boolean): string {
-  const start = Number(n.attrs?.order) || 1
-  return (n.content ?? [])
-    .map((li, i) => {
-      const mark = ordered ? `${start + i}.` : '-'
-      const body = blocks(li.content, ctx).trim()
-      return `${mark} ${indent(body, ' '.repeat(mark.length + 1))}`
-    })
-    .join('\n')
-}
-
-function cell(n: AdfNode, ctx: Ctx): string {
-  return blocks(n.content, ctx).trim().replace(/\n+/g, ' <br> ').replace(/\|/g, '\\|')
-}
-
-function table(n: AdfNode, ctx: Ctx): string {
-  const rows = (n.content ?? []).filter((r) => r.type === 'tableRow').map((r) => (r.content ?? []).map((c) => cell(c, ctx)))
-  if (!rows.length) return ''
-  const width = Math.max(...rows.map((r) => r.length))
-  const line = (r: string[]) => `| ${[...r, ...Array(width - r.length).fill('')].join(' | ')} |`
-  return [line(rows[0]), `|${' --- |'.repeat(width)}`, ...rows.slice(1).map(line)].join('\n')
-}
-
-function block(n: AdfNode, ctx: Ctx): string {
-  switch (n.type) {
-    case 'paragraph':
-      return inline(n.content, ctx)
-    case 'heading':
-      return `${'#'.repeat(Math.min(6, Math.max(1, Number(n.attrs?.level) || 3)) + 1)} ${inline(n.content, ctx)}`
-    case 'bulletList':
-      return list(n, ctx, false)
-    case 'orderedList':
-      return list(n, ctx, true)
-    case 'taskList':
-      return (n.content ?? [])
-        .map((t) => `- [${t.attrs?.state === 'DONE' ? 'x' : ' '}] ${inline(t.content, ctx)}`)
-        .join('\n')
-    case 'codeBlock':
-      return '```' + str(n.attrs?.language) + '\n' + (n.content ?? []).map((t) => t.text ?? '').join('') + '\n```'
-    case 'blockquote':
-      return blocks(n.content, ctx)
-        .split('\n')
-        .map((l) => `> ${l}`)
-        .join('\n')
-    case 'panel': {
-      const kind = str(n.attrs?.panelType)
-      return blocks(n.content, ctx)
-        .split('\n')
-        .map((l, i) => (i === 0 && kind ? `> **[${kind}]** ${l}` : `> ${l}`))
-        .join('\n')
-    }
-    case 'expand':
-    case 'nestedExpand':
-      return `**${str(n.attrs?.title) || 'Mở rộng'}**\n\n${blocks(n.content, ctx)}`
-    case 'rule':
-      return '---'
-    case 'table':
-      return table(n, ctx)
-    case 'mediaSingle':
-    case 'mediaGroup':
-      return inline(n.content, ctx)
-    case 'blockCard':
-    case 'embedCard':
-      return inlineNode(n, ctx)
-    default:
-      return n.content ? blocks(n.content, ctx) : inlineNode(n, ctx)
-  }
-}
-
-function blocks(nodes: AdfNode[] | undefined, ctx: Ctx): string {
-  return (nodes ?? [])
-    .map((n) => block(n, ctx))
-    .filter((s) => s.trim())
-    .join('\n\n')
-}
-
-/** A document (description, comment) as Markdown, plus every link in it. */
-export function adfToMarkdown(doc: unknown): { markdown: string; links: string[] } {
-  const ctx: Ctx = { links: [] }
-  if (typeof doc === 'string') return { markdown: doc, links: [...doc.matchAll(/https?:\/\/[^\s)\]>"']+/g)].map((m) => m[0]) }
-  const root = doc as AdfNode | null
-  if (!root || typeof root !== 'object') return { markdown: '', links: [] }
-  return { markdown: blocks(root.content, ctx).trim(), links: ctx.links }
-}
+/**
+ * A document (description, comment) as Markdown, plus every link in it.
+ * Headings drop one level: the ticket sits under its own `#` title.
+ */
+export const adfToMarkdown = (doc: unknown) => toMarkdown(doc, { headingShift: 1 })
 
 /* ── a whole ticket ─────────────────────────────────────────────────────── */
 

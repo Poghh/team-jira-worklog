@@ -48,11 +48,6 @@ export function CapacityBar({
         {quota > 0 && <span className="font-mono text-[12px] text-ink-3">/ {quotaHours}h</span>}
 
         <span className="ml-auto">
-          {isWeekend && quota === 0 && (
-            <span className="rounded-full bg-ot-soft px-2 py-[2px] text-[11px] font-medium text-ot">
-              OT cuối tuần
-            </span>
-          )}
           {short && (
             <span className="rounded-full bg-warn-soft px-2 py-[2px] text-[11px] font-medium text-warn">
               thiếu {formatDuration(remaining)}

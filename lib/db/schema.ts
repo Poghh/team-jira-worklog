@@ -505,6 +505,8 @@ export const reviewRounds = sqliteTable(
     state: text("state").notNull().default("queued"),
     baseSha: text("base_sha").notNull().default(""),
     headSha: text("head_sha").notNull().default(""),
+    /** Branch `headSha` was read from (origin/<ref>) when the round ran; '' before then / for older rounds. */
+    headRef: text("head_ref").notNull().default(""),
     /** Head reviewed by the previous round — the start of the incremental diff. */
     prevHeadSha: text("prev_head_sha").notNull().default(""),
     /** JSON: [{name, role, path}] — the PDFs for a doc round. */

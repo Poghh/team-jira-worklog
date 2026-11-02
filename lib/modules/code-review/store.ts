@@ -103,6 +103,7 @@ export const toRound = (r: typeof reviewRounds.$inferSelect): RoundView => ({
   state: r.state as RoundState,
   baseSha: r.baseSha,
   headSha: r.headSha,
+  headRef: r.headRef,
   prevHeadSha: r.prevHeadSha,
   docs: parseDocs(r.docs),
   links: parseJsonArray<RoundLink>(r.links),

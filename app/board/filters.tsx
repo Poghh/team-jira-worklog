@@ -3,6 +3,7 @@
 import { useSearchParams } from 'next/navigation'
 import { useEffect, useState } from 'react'
 
+import { sprintForDay } from '@/lib/sprint-name'
 import { todayIn } from '@/lib/time'
 
 import { NavSpinner, useNav } from './navigation'
@@ -133,9 +134,8 @@ export function BoardFilters({
 
     const sprint = sprints.find((s) => String(s.id) === value)
     const today = todayIn()
-    const coversToday = Boolean(
-      sprint?.start && sprint?.end && today >= sprint.start && today <= sprint.end,
-    )
+    // Includes the days just after its end that still count for it.
+    const coversToday = Boolean(sprint && sprintForDay(sprints, today)?.sprint.id === sprint.id)
 
     // No `date` param means today, so deleting it is how we select today.
     if (!sprint || coversToday) q.delete('date')
