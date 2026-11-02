@@ -56,7 +56,7 @@ function doc(...content: unknown[]) {
   )
   has(r.markdown, '### Luồng', 'heading one level below the ticket title')
   has(r.markdown, 'Gọi `login()` rồi xem [spec](https://x.atlassian.net/wiki/spaces/A/pages/123/Spec)', 'marks and links')
-  has(r.markdown, '- một\n- hai\n\n  - hai.một', 'nested list')
+  has(r.markdown, '- một\n- hai\n  - hai.một', 'nested list')
   has(r.markdown, '3. ba', 'ordered list start')
   has(r.markdown, '```swift\nlet a = 1\n```', 'code block')
   has(r.markdown, '| Mã | Ý nghĩa |\n| --- | --- |\n| 401 | hết a\\|b |', 'table, pipes escaped')

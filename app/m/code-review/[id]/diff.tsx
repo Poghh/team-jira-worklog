@@ -2,7 +2,8 @@
 
 import { Fragment, type ReactNode, memo, useCallback, useEffect, useMemo, useRef, useState, useTransition } from 'react'
 
-import { type DiffFile, type DiffLine, LARGE_FILE_ROWS, rowCount } from '@/lib/modules/code-review/diff'
+import { type DiffFile, type DiffLine, LARGE_FILE_ROWS, generatedReason, rowCount } from '@/lib/modules/code-review/diff'
+import { highlightDiff } from '@/lib/modules/code-review/highlight'
 import { type Addressee, type FindingView, type ItemView, type RoundView, SEVERITIES, SEVERITY_LABEL, type Severity, shortSha } from '@/lib/modules/code-review/model'
 
 import { type RoundDiff, addOwnFindingAction, postFindingAction, roundDiffAction } from '../actions'
@@ -97,7 +98,11 @@ export function CodeTab({
       setDiff(d)
       if (d.ok && later) setSinceCount(d.since.length)
       const seen = new Set(readViewed(viewedKey))
-      setCollapsed(new Set(d.files.filter((f) => f.status === 'deleted' || rowCount(f) > LARGE_FILE_ROWS || seen.has(f.path)).map((f) => f.path)))
+      // Deleted, huge, machine-written (lock files, generated code) or already
+      // viewed: start closed, one click away.
+      setCollapsed(
+        new Set(d.files.filter((f) => f.status === 'deleted' || rowCount(f) > LARGE_FILE_ROWS || generatedReason(f) || seen.has(f.path)).map((f) => f.path)),
+      )
     })
     return () => {
       stale = true
@@ -109,6 +114,7 @@ export function CodeTab({
   const tree = useMemo(() => buildTree(diff?.files ?? []), [diff])
   const files = useMemo(() => treeOrder(tree), [tree])
   useEffect(() => setActive(files[0]?.path ?? ''), [files])
+  const generated = useMemo(() => new Map(files.map((f) => [f.path, generatedReason(f)] as const).filter(([, r]) => r)), [files])
   // Marked only in the full view — in "since" every file is new by definition.
   const fresh = useMemo(() => new Set(scope === 'all' ? (diff?.since ?? []) : []), [diff, scope])
 
@@ -236,8 +242,8 @@ export function CodeTab({
 
   return (
     <>
-      {/* Lets the app's main column use the full screen width, like GitHub's diff. */}
-      <span data-wide hidden />
+      {/* Lets the app's main column use the full screen width, like GitHub's diff (globals.css). */}
+      <span className="wide-page" hidden />
       <div className="mb-3 flex flex-wrap items-center gap-2 text-[12.5px]">
         {later && (
           <div className="flex overflow-hidden rounded-md border border-line-strong">
@@ -291,7 +297,7 @@ export function CodeTab({
         <div className={CARD + ' text-[12.5px] text-crit'}>{diff.message}</div>
       ) : (
         <div className="flex items-start gap-3">
-          {files.length > 0 && <FileTree files={files} tree={tree} active={active} viewed={viewed} fresh={fresh} byFile={byFile} onPick={jump} />}
+          {files.length > 0 && <FileTree files={files} tree={tree} active={active} viewed={viewed} fresh={fresh} generated={generated} byFile={byFile} onPick={jump} />}
           <div className="flex min-w-0 flex-1 flex-col gap-3">
             {diff.truncated && <div className={CARD + ' !py-2 text-[12px] text-warn'}>Diff quá lớn — chỉ hiện {files.length} file đầu.</div>}
             {files.length === 0 && <div className={CARD + ' text-[12.5px] text-ink-2'}>Không có thay đổi nào.</div>}
@@ -303,6 +309,7 @@ export function CodeTab({
                 open={!collapsed.has(f.path)}
                 viewed={viewed.has(f.path)}
                 fresh={fresh.has(f.path)}
+                generated={generated.get(f.path) ?? ''}
                 blob={githubRepo && f.status !== 'deleted' ? `https://github.com/${githubRepo}/blob/${round.headSha}/${f.path}` : ''}
                 sel={sel?.file === f.path ? sel : null}
                 roundId={round.id}
@@ -423,6 +430,7 @@ const FileTree = memo(function FileTree({
   active,
   viewed,
   fresh,
+  generated,
   byFile,
   onPick,
 }: {
@@ -431,6 +439,7 @@ const FileTree = memo(function FileTree({
   active: string
   viewed: Set<string>
   fresh: Set<string>
+  generated: Map<string, string>
   byFile: Map<string, FindingView[]>
   onPick: (path: string) => void
 }) {
@@ -463,11 +472,16 @@ const FileTree = memo(function FileTree({
         style={{ paddingLeft: 8 + depth * 12 }}
         className={
           'flex w-full items-center gap-1.5 rounded py-[3px] pr-2 text-left ' +
-          (on ? 'bg-accent-soft font-semibold text-accent-ink' : viewed.has(f.path) ? 'text-ink-3 hover:bg-surface-2' : 'text-ink-2 hover:bg-surface-2')
+          (on ? 'bg-accent-soft font-semibold text-accent-ink' : viewed.has(f.path) || generated.has(f.path) ? 'text-ink-3 hover:bg-surface-2' : 'text-ink-2 hover:bg-surface-2')
         }
       >
         <span className={'shrink-0 text-[9px] ' + STATUS_DOT[f.status]}>●</span>
         <span className={'min-w-0 flex-1 truncate ' + (f.status === 'deleted' ? 'line-through' : '')}>{full ? f.path : f.path.split('/').at(-1)}</span>
+        {generated.has(f.path) && (
+          <span className="shrink-0 font-sans text-[10px] text-ink-3" title={`Tự sinh: ${generated.get(f.path)}`}>
+            tự sinh
+          </span>
+        )}
         {fresh.has(f.path) && <span className="shrink-0 rounded bg-blue-soft px-1 font-sans text-[10px] text-blue-ink" title="Member đã sửa file này sau vòng trước">mới đổi</span>}
         {n > 0 && <span className="shrink-0 rounded bg-warn-soft px-1 text-[10px] text-warn">{n}</span>}
         {viewed.has(f.path) && <span className="shrink-0 text-good">✓</span>}
@@ -531,6 +545,7 @@ const FileDiff = memo(function FileDiff({
   open,
   viewed,
   fresh,
+  generated,
   blob,
   sel,
   roundId,
@@ -550,6 +565,8 @@ const FileDiff = memo(function FileDiff({
   open: boolean
   viewed: boolean
   fresh: boolean
+  /** Why the file is machine-written ('' = it is not). */
+  generated: string
   blob: string
   sel: Selection | null
   roundId: number
@@ -605,6 +622,11 @@ const FileDiff = memo(function FileDiff({
         <span className="font-mono text-[11.5px]">
           <span className="text-good">+{file.additions}</span> <span className="text-crit">−{file.deletions}</span>
         </span>
+        {generated && (
+          <span className="rounded bg-surface-2 px-1.5 py-[1px] text-[11px] text-ink-3" title="File máy sinh ra — thu gọn sẵn, bấm ▸ để xem">
+            tự sinh · {generated}
+          </span>
+        )}
         {fresh && <span className="rounded bg-blue-soft px-1.5 py-[1px] text-[11px] text-blue-ink" title="Member đã sửa file này sau vòng trước">mới đổi từ vòng trước</span>}
         {findings.length > 0 && <span className="rounded bg-warn-soft px-1.5 py-[1px] text-[11px] text-warn">{findings.length} finding</span>}
         <span className="ml-auto flex items-center gap-3 text-[12px] text-ink-2">
@@ -696,6 +718,8 @@ function FileBody({
     }
     return { rows, lines }
   }, [file])
+  // Coloured once per file while it is mounted; null = plain text.
+  const html = useMemo(() => highlightDiff(file), [file])
 
   // Each finding goes under the last line it covers, or its first when that is shown.
   const { at, outside } = useMemo(() => {
@@ -748,7 +772,7 @@ function FileBody({
       ) : rows.length === 0 ? (
         <div className="p-3 text-[12px] text-ink-3">{file.status === 'renamed' ? 'Chỉ đổi tên, nội dung giữ nguyên.' : 'Không có dòng thay đổi.'}</div>
       ) : (
-        <table ref={table} onMouseUp={pick} className="w-full border-collapse font-mono text-[12px] leading-[1.6]">
+        <table ref={table} onMouseUp={pick} className="code-hl w-full border-collapse font-mono text-[12px] leading-[1.6]">
           <tbody>
             {rows.map((r, k) => {
               if (r.kind === 'hunk') {
@@ -774,7 +798,7 @@ function FileBody({
                     </td>
                     <td className="whitespace-pre-wrap break-all px-2 align-top [tab-size:4]">
                       <span className="select-none text-ink-3">{l.t === ' ' ? ' ' : l.t}</span>
-                      {l.s}
+                      {html ? <span dangerouslySetInnerHTML={{ __html: html[r.i] }} /> : l.s}
                     </td>
                   </tr>
                   {r.i === hi && (

@@ -3,7 +3,9 @@
 import { useCallback, useEffect, useRef, useState, useTransition } from 'react'
 import { createPortal } from 'react-dom'
 
-import { type AdfBlock, adfToBlocks, splitDod, textToAdf } from '@/lib/jira/adf'
+import { splitDod, textToAdf } from '@/lib/jira/adf'
+
+import { AdfView, MARKDOWN_HINT, MarkdownPreview, pasteSplitsDod } from './adf-view'
 import { statusTone } from '@/lib/jira/types'
 import { formatDuration } from '@/lib/time'
 
@@ -436,7 +438,8 @@ function EditableDescription({
     onEditingChange(editing)
   }, [editing, onEditingChange])
 
-  const blocks: AdfBlock[] = adfToBlocks(doc)
+  const saved = splitDod(doc)
+  const hasText = Boolean(saved.description || saved.dod)
 
   function open() {
     const parts = splitDod(doc)
@@ -486,8 +489,8 @@ function EditableDescription({
             ✎ sửa
           </button>
         </div>
-        {blocks.length > 0 ? (
-          blocks.map((b, i) => <Block key={i} block={b} />)
+        {hasText ? (
+          <AdfView doc={doc} />
         ) : (
           <p className="text-[12.5px] text-ink-3">Task này chưa có mô tả.</p>
         )}
@@ -525,14 +528,17 @@ function EditableDescription({
       )}
 
       <label className="block">
-        <span className="text-[11px] text-ink-3">Nội dung — mỗi dòng bắt đầu bằng “- ” là một gạch đầu dòng</span>
+        <span className="text-[11px] text-ink-3" title={MARKDOWN_HINT}>
+          Nội dung — viết Markdown; dán cả task có heading “Definition of Done” sẽ tự tách sang ô dưới
+        </span>
         <textarea
           value={desc}
           rows={6}
           disabled={busy}
           onChange={(e) => setDesc(e.target.value)}
+          onPaste={(e) => pasteSplitsDod(e, setDesc, dod, setDod)}
           onKeyDown={onEscape}
-          className="mt-1 w-full resize-y rounded-md border border-line bg-ground px-2.5 py-1.5 text-[12.5px] leading-relaxed disabled:opacity-60"
+          className="mt-1 w-full resize-y rounded-md border border-line bg-ground px-2.5 py-1.5 font-mono text-[12px] leading-relaxed disabled:opacity-60"
         />
       </label>
 
@@ -544,9 +550,11 @@ function EditableDescription({
           disabled={busy}
           onChange={(e) => setDod(e.target.value)}
           onKeyDown={onEscape}
-          className="mt-1 w-full resize-y rounded-md border border-line bg-ground px-2.5 py-1.5 text-[12.5px] leading-relaxed disabled:opacity-60"
+          className="mt-1 w-full resize-y rounded-md border border-line bg-ground px-2.5 py-1.5 font-mono text-[12px] leading-relaxed disabled:opacity-60"
         />
       </label>
+
+      <MarkdownPreview description={desc} dod={dod} />
 
       <div className="mt-2 flex flex-wrap items-center gap-2">
         <button
@@ -596,24 +604,6 @@ function Row({ label, children }: { label: string; children: React.ReactNode }) 
       <dd className="min-w-0">{children}</dd>
     </>
   )
-}
-
-function Block({ block }: { block: AdfBlock }) {
-  if (block.kind === 'heading') {
-    return (
-      <h3 className="mb-1.5 mt-3 text-[13px] font-semibold first:mt-0">{block.text}</h3>
-    )
-  }
-  if (block.kind === 'bullets') {
-    return (
-      <ul className="mb-2.5 flex list-disc flex-col gap-1 pl-4 text-[12.5px] leading-relaxed">
-        {block.items.map((item, i) => (
-          <li key={i}>{item}</li>
-        ))}
-      </ul>
-    )
-  }
-  return <p className="mb-2.5 text-[12.5px] leading-relaxed">{block.text}</p>
 }
 
 /** Status colour for a pill rendered outside this file. */

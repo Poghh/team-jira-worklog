@@ -172,8 +172,8 @@
 /*
  * A page that needs the whole window says so, and `main` steps out of its own
  * 1340px cap. Done with :has() rather than a prop threaded through the layout
- * so the layout stays unaware of which pages are wide — the kanban is the only
- * one today, and it should not cost every other page a new prop to say so.
+ * so the layout stays unaware of which pages are wide — the kanban and the code
+ * review diff today, and it should not cost every other page a new prop to say so.
  */
 main:has(.wide-page) {
   max-width: none;
@@ -409,4 +409,104 @@ summary {
  */
 main:has([data-wide]) {
   max-width: none;
+}
+
+/*
+ * Syntax colours for code in a review diff (highlight.js classes), GitHub's
+ * palette. Same four-step theming as the tokens at the top of the file.
+ */
+:root {
+  --hl-keyword: #cf222e;
+  --hl-string: #0a3069;
+  --hl-comment: #6e7781;
+  --hl-function: #8250df;
+  --hl-type: #953800;
+  --hl-number: #0550ae;
+  --hl-meta: #8250df;
+  --hl-tag: #116329;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --hl-keyword: #ff7b72;
+    --hl-string: #a5d6ff;
+    --hl-comment: #8b949e;
+    --hl-function: #d2a8ff;
+    --hl-type: #ffa657;
+    --hl-number: #79c0ff;
+    --hl-meta: #d2a8ff;
+    --hl-tag: #7ee787;
+  }
+}
+:root[data-theme="light"] {
+  --hl-keyword: #cf222e;
+  --hl-string: #0a3069;
+  --hl-comment: #6e7781;
+  --hl-function: #8250df;
+  --hl-type: #953800;
+  --hl-number: #0550ae;
+  --hl-meta: #8250df;
+  --hl-tag: #116329;
+}
+:root[data-theme="dark"] {
+  --hl-keyword: #ff7b72;
+  --hl-string: #a5d6ff;
+  --hl-comment: #8b949e;
+  --hl-function: #d2a8ff;
+  --hl-type: #ffa657;
+  --hl-number: #79c0ff;
+  --hl-meta: #d2a8ff;
+  --hl-tag: #7ee787;
+}
+.code-hl .hljs-keyword,
+.code-hl .hljs-selector-tag,
+.code-hl .hljs-literal,
+.code-hl .hljs-doctag {
+  color: var(--hl-keyword);
+}
+.code-hl .hljs-string,
+.code-hl .hljs-regexp,
+.code-hl .hljs-char\:escape,
+.code-hl .hljs-subst {
+  color: var(--hl-string);
+}
+.code-hl .hljs-comment,
+.code-hl .hljs-quote {
+  color: var(--hl-comment);
+  font-style: italic;
+}
+.code-hl .hljs-title,
+.code-hl .hljs-section {
+  color: var(--hl-function);
+}
+.code-hl .hljs-type,
+.code-hl .hljs-built_in,
+.code-hl .hljs-title.class_,
+.code-hl .hljs-variable,
+.code-hl .hljs-template-variable,
+.code-hl .hljs-params {
+  color: var(--hl-type);
+}
+.code-hl .hljs-number,
+.code-hl .hljs-attr,
+.code-hl .hljs-attribute,
+.code-hl .hljs-property,
+.code-hl .hljs-symbol,
+.code-hl .hljs-bullet,
+.code-hl .hljs-selector-class,
+.code-hl .hljs-selector-id {
+  color: var(--hl-number);
+}
+.code-hl .hljs-meta,
+.code-hl .hljs-meta .hljs-keyword {
+  color: var(--hl-meta);
+}
+.code-hl .hljs-tag,
+.code-hl .hljs-name {
+  color: var(--hl-tag);
+}
+.code-hl .hljs-emphasis {
+  font-style: italic;
+}
+.code-hl .hljs-strong {
+  font-weight: 600;
 }

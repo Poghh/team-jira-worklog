@@ -420,6 +420,9 @@ function open() {
   ensureColumn(sqlite, "review_findings", "follow_sent_url", "follow_sent_url TEXT NOT NULL DEFAULT ''");
   // Tests Claude suggests the reviewer run by hand for a code round (never run by the app).
   ensureColumn(sqlite, "review_rounds", "test_plan", "test_plan TEXT NOT NULL DEFAULT '[]'");
+  // The branch the round fetched (origin/<ref>), kept per round so the reviewer
+  // can check what a doc was compared against even after the item's branch changes.
+  ensureColumn(sqlite, "review_rounds", "head_ref", "head_ref TEXT NOT NULL DEFAULT ''");
   // Doc reviews from Confluence: the pasted pages, and where each finding sits /
   // was posted (the comment id and link reuse gh_comment_id / gh_url).
   ensureColumn(sqlite, "review_items", "sources", "sources TEXT NOT NULL DEFAULT '[]'");

@@ -270,6 +270,7 @@ export function ReviewDetail({
           findings={detail.findings[current.id] ?? []}
           log={detail.logRoundId === current.id ? detail.log : []}
           githubRepo={githubRepo}
+          repos={repos}
           canRun={claude.ok}
           addressee={addressee}
           templates={templates}
@@ -713,6 +714,7 @@ function RoundPanel({
   findings,
   log,
   githubRepo,
+  repos,
   canRun,
   addressee,
   templates,
@@ -724,6 +726,7 @@ function RoundPanel({
   findings: FindingView[]
   log: ItemDetail['log']
   githubRepo: string
+  repos: RepoPreset[]
   canRun: boolean
   addressee: Addressee | null
   templates: DocTemplate[]
@@ -818,9 +821,98 @@ function RoundPanel({
         {showLog && <LogView lines={log} live={live} />}
       </div>
 
+      {item.kind === 'doc' && (item.repoId || round.links.length > 0) && <CodeChecked item={item} round={round} repos={repos} />}
+
       {round.state === 'done' && (
         <DoneRound item={item} round={round} findings={findings} githubRepo={githubRepo} isLatest={isLatest} canRun={canRun} addressee={addressee} onChanged={onChanged} />
       )}
+    </div>
+  )
+}
+
+/**
+ * Which branch and commit of each repo a doc round was checked against. The
+ * round fetches `origin` and reads the branch tip in its own worktree — never
+ * the local clone's checkout — and this card is how the reviewer verifies it.
+ */
+function CodeChecked({ item, round, repos }: { item: ItemView; round: RoundView; repos: RepoPreset[] }) {
+  const repo = repos.find((r) => r.id === item.repoId)
+  const pending = round.state === 'queued' || round.state === 'preparing'
+  const rows: Array<{ key: string; name: string; github: string; ref: string; sha: string; error: string; moved: string; guessed: boolean }> = []
+  if (repo) {
+    const ref = round.headRef || item.headRef
+    rows.push({
+      key: 'main',
+      name: repo.name,
+      github: repo.githubRepo,
+      ref,
+      sha: round.headSha,
+      error: '',
+      moved: round.headRef && round.headRef !== item.headRef ? item.headRef : '',
+      guessed: !round.headRef && Boolean(round.headSha),
+    })
+  }
+  for (const [i, l] of round.links.entries()) {
+    const now = item.links.find((x) => x.repoId === l.repoId)
+    rows.push({
+      key: `l${i}`,
+      name: l.repoName,
+      github: repos.find((r) => r.id === l.repoId)?.githubRepo ?? '',
+      ref: l.headRef,
+      sha: l.headSha,
+      error: l.error,
+      moved: now && now.headRef !== l.headRef ? now.headRef : '',
+      guessed: false,
+    })
+  }
+  // Repos added to the item after this round ran: not part of it.
+  const later = round.headSha || round.links.length ? item.links.filter((x) => !round.links.some((l) => l.repoId === x.repoId)) : []
+  return (
+    <div className={CARD}>
+      <div className="mb-1.5 flex flex-wrap items-center gap-2">
+        <span className={CTITLE}>🌿 Code đã đối chiếu</span>
+        <span className="text-[11px] text-ink-3">app fetch <code>origin</code> rồi đọc đúng commit đầu nhánh lúc chạy, trong worktree riêng — không dùng nhánh đang checkout ở clone local</span>
+      </div>
+      <ul className="flex flex-col gap-1 text-[12.5px]">
+        {rows.map((r) => (
+          <li key={r.key} className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
+            <span className="font-medium">{r.name}</span>
+            {r.key === 'main' && rows.length > 1 && <span className="rounded bg-surface-2 px-1 text-[10.5px] text-ink-3">repo chính</span>}
+            <span className="font-mono text-[12px]">
+              {r.github && r.ref ? (
+                <a href={`https://github.com/${r.github}/tree/${encodeURI(r.ref)}`} target="_blank" rel="noreferrer" className="hover:text-accent-ink hover:underline" title="Mở nhánh trên GitHub để so commit đầu nhánh">
+                  origin/{r.ref}
+                </a>
+              ) : (
+                `origin/${r.ref || '?'}`
+              )}
+            </span>
+            {r.sha ? (
+              <span className="font-mono text-[12px] text-ink-2">
+                @
+                {r.github ? (
+                  <a href={`https://github.com/${r.github}/commit/${r.sha}`} target="_blank" rel="noreferrer" className="hover:text-accent-ink hover:underline" title={r.sha}>
+                    {shortSha(r.sha)}
+                  </a>
+                ) : (
+                  <span title={r.sha}>{shortSha(r.sha)}</span>
+                )}
+              </span>
+            ) : r.error ? (
+              <span className="text-warn">không lấy được: {r.error}</span>
+            ) : (
+              <span className="text-ink-3">{pending ? 'đang lấy code…' : 'chưa có commit'}</span>
+            )}
+            {r.guessed && <span className="text-[11px] text-ink-3">(vòng cũ không lưu tên nhánh — đây là nhánh hiện tại của mục, commit là cái đã đọc)</span>}
+            {r.moved && <span className="text-[11.5px] text-warn">⚠ mục đã đổi sang nhánh {r.moved} — chạy vòng mới để đối chiếu nhánh này</span>}
+          </li>
+        ))}
+        {later.map((l) => (
+          <li key={`later:${l.repoId}`} className="text-[12px] text-ink-3">
+            {repos.find((r) => r.id === l.repoId)?.name ?? '?'} {l.headRef} — thêm sau vòng này, áp dụng từ vòng tiếp theo
+          </li>
+        ))}
+      </ul>
     </div>
   )
 }

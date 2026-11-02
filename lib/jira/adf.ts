@@ -1,122 +1,39 @@
 /**
- * Atlassian Document Format → simple blocks for display.
+ * A task's description and Definition of Done ↔ the one ADF document Jira
+ * keeps them in.
  *
- * Handles only what this project actually uses. A survey of the descriptions in
- * VT found six node types — doc, paragraph, text, bulletList, listItem, heading
- * — and no marks at all, so a full ADF renderer would be dead weight. Anything
- * unrecognised falls back to its text content rather than disappearing.
+ * Both boxes are Markdown (lib/jira/markdown.ts): written by hand, pasted from
+ * elsewhere, or generated — plain lines and `- ` bullets, as before, are just
+ * the simplest Markdown. The DoD goes under its own heading, and reading back
+ * cuts at that heading, so an edit gets the same two boxes it was created from.
  *
- * No server import: the detail panel renders these on the client.
+ * No server import: the detail panel builds and renders these on the client.
  */
 
-export type AdfBlock =
-  | { kind: 'heading'; level: number; text: string }
-  | { kind: 'paragraph'; text: string }
-  | { kind: 'bullets'; items: string[] }
-
-interface AdfNode {
-  type?: string
-  text?: string
-  attrs?: { level?: number }
-  content?: AdfNode[]
-}
-
-/** Concatenates every text leaf under a node. */
-function textOf(node: AdfNode | undefined): string {
-  if (!node) return ''
-  if (node.type === 'text') return node.text ?? ''
-  if (node.type === 'hardBreak') return '\n'
-  return (node.content ?? []).map(textOf).join('')
-}
-
-export function adfToBlocks(doc: unknown): AdfBlock[] {
-  const root = doc as AdfNode | null
-  if (!root || typeof root !== 'object' || !Array.isArray(root.content)) return []
-
-  const out: AdfBlock[] = []
-
-  for (const node of root.content) {
-    switch (node.type) {
-      case 'heading': {
-        const text = textOf(node).trim()
-        if (text) out.push({ kind: 'heading', level: node.attrs?.level ?? 3, text })
-        break
-      }
-      case 'bulletList':
-      case 'orderedList': {
-        const items = (node.content ?? [])
-          .map((li) => textOf(li).trim())
-          .filter(Boolean)
-        if (items.length) out.push({ kind: 'bullets', items })
-        break
-      }
-      default: {
-        const text = textOf(node).trim()
-        if (text) out.push({ kind: 'paragraph', text })
-      }
-    }
-  }
-
-  return out
-}
-
-/** Flattens back to plain text, for tooltips and copying. */
-export function adfToText(doc: unknown): string {
-  return adfToBlocks(doc)
-    .map((b) =>
-      b.kind === 'bullets' ? b.items.map((i) => `- ${i}`).join('\n') : b.text,
-    )
-    .join('\n\n')
-}
+import { type AdfNode, isDodTitle, markdownToAdf, nodesToMarkdown } from './markdown'
 
 /** Tiêu đề của khối Definition of Done, dùng chung cho cả ghi lẫn đọc ngược. */
 export const DOD_HEADING = 'Definition of Done'
 
 /**
- * Chữ dạng gạch đầu dòng → ADF. Chỉ bullet và đoạn văn, không hơn.
+ * Hai ô Markdown → một tài liệu ADF.
  *
- * Ở cạnh `adfToBlocks` vì hai hàm là một cặp: cái này ghi ra, cái kia đọc về,
+ * Ở cạnh `splitDod` vì hai hàm là một cặp: cái này ghi ra, cái kia đọc về,
  * và luật đặt khối Definition of Done phải giống nhau ở cả hai chiều — lệch
  * một chữ là sửa mô tả xong sẽ mất phần DoD.
  */
 export function textToAdf(description: string, dod: string) {
-  const content: unknown[] = []
+  const content: AdfNode[] = []
 
-  const pushBlock = (text: string) => {
-    const lines = text.split('\n').map((l) => l.trim()).filter(Boolean)
-    let bullets: string[] = []
-
-    const flush = () => {
-      if (!bullets.length) return
-      content.push({
-        type: 'bulletList',
-        content: bullets.map((b) => ({
-          type: 'listItem',
-          content: [{ type: 'paragraph', content: [{ type: 'text', text: b }] }],
-        })),
-      })
-      bullets = []
-    }
-
-    for (const line of lines) {
-      if (/^[-*•]\s+/.test(line)) bullets.push(line.replace(/^[-*•]\s+/, ''))
-      else {
-        flush()
-        content.push({ type: 'paragraph', content: [{ type: 'text', text: line }] })
-      }
-    }
-    flush()
-  }
-
-  if (description.trim()) pushBlock(description)
+  if (description.trim()) content.push(...markdownToAdf(description))
 
   if (dod.trim()) {
     content.push({
       type: 'heading',
       attrs: { level: 3 },
-      content: [{ type: 'text', text: 'Definition of Done' }],
+      content: [{ type: 'text', text: DOD_HEADING }],
     })
-    pushBlock(dod)
+    content.push(...markdownToAdf(dod))
   }
 
   if (!content.length) content.push({ type: 'paragraph', content: [] })
@@ -124,25 +41,20 @@ export function textToAdf(description: string, dod: string) {
   return { type: 'doc', version: 1, content }
 }
 
+const textOf = (n: AdfNode): string => (n.type === 'text' ? (n.text ?? '') : (n.content ?? []).map(textOf).join(''))
+
 /**
- * Tách mô tả đã lưu thành hai ô như lúc soạn: phần thân và phần DoD.
+ * Tách mô tả đã lưu thành hai ô Markdown như lúc soạn: phần thân và phần DoD.
  *
- * Cắt ở đúng heading mà {@link textToAdf} ghi ra. Không tìm thấy thì cả tài
- * liệu là phần thân — an toàn hơn đoán, vì đoán sai là người dùng bấm lưu rồi
- * mất nguyên khối DoD.
+ * Cắt ở heading Definition of Done (hoặc "DoD") ở cấp ngoài cùng — đúng chỗ
+ * {@link textToAdf} ghi ra. Không tìm thấy thì cả tài liệu là phần thân — an
+ * toàn hơn đoán, vì đoán sai là người dùng bấm lưu rồi mất nguyên khối DoD.
  */
 export function splitDod(doc: unknown): { description: string; dod: string } {
-  const blocks = adfToBlocks(doc)
-  const at = blocks.findIndex(
-    (b) => b.kind === 'heading' && b.text.trim().toLowerCase() === DOD_HEADING.toLowerCase(),
-  )
-  const asText = (list: AdfBlock[]) =>
-    list
-      .map((b) => (b.kind === 'bullets' ? b.items.map((i) => `- ${i}`).join('\n') : b.text))
-      .join('\n\n')
-      .trim()
-
+  const root = doc as AdfNode | null
+  const nodes = root && typeof root === 'object' && Array.isArray(root.content) ? root.content : []
+  const at = nodes.findIndex((n) => n.type === 'heading' && isDodTitle(textOf(n)))
   return at < 0
-    ? { description: asText(blocks), dod: '' }
-    : { description: asText(blocks.slice(0, at)), dod: asText(blocks.slice(at + 1)) }
+    ? { description: nodesToMarkdown(nodes), dod: '' }
+    : { description: nodesToMarkdown(nodes.slice(0, at)), dod: nodesToMarkdown(nodes.slice(at + 1)) }
 }

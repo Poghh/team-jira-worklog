@@ -493,6 +493,7 @@ async function prepareAndSpawn(roundId: number) {
       workdir,
       baseSha,
       headSha,
+      headRef: headSha ? item.headRef : '',
       prevHeadSha: prev?.headSha ?? '',
       bootAt: await bootTime(),
       startedAt: Math.floor(Date.now() / 1000),

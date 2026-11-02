@@ -8,6 +8,7 @@ import { todayIn } from '@/lib/time'
 
 import { DateInput } from '../date-input'
 import { createIssueAction, generateAction, saveDraftAction } from './actions'
+import { MARKDOWN_HINT, MarkdownPreview, pasteSplitsDod } from '../board/adf-view'
 import { LinkPending } from '../link-pending'
 import { type DraftSummary, DraftList } from './draft-list'
 import { type TaskTemplateSummary, TemplatePicker } from './template-picker'
@@ -307,23 +308,28 @@ export function Composer({
           )}
         </Field>
 
-        <Field label="Description">
+        <Field label="Description" hint="Markdown · dán cả task có “Definition of Done” sẽ tự tách">
           <textarea
             rows={6}
             value={description}
             onChange={(e) => setDescription(e.target.value)}
+            onPaste={(e) => pasteSplitsDod(e, setDescription, dod, setDod)}
+            title={MARKDOWN_HINT}
+            placeholder="Generate với Gemini, hoặc tự viết / dán Markdown — # tiêu đề, **đậm**, `code`, danh sách, bảng…"
             className="w-full resize-y rounded-md border border-line bg-ground px-[10px] py-[7px] font-mono text-[12.5px] leading-[1.6]"
           />
         </Field>
 
-        <Field label="Definition of Done" hint="mỗi dòng một gạch đầu dòng">
+        <Field label="Definition of Done" hint="Markdown · mỗi dòng “- ” một gạch đầu dòng">
           <textarea
             rows={5}
             value={dod}
             onChange={(e) => setDod(e.target.value)}
+            title={MARKDOWN_HINT}
             placeholder="- Gửi OTP thành công&#10;- OTP hết hạn sau 5 phút"
             className="w-full resize-y rounded-md border border-line bg-ground px-[10px] py-[7px] font-mono text-[12.5px] leading-[1.6]"
           />
+          <MarkdownPreview description={description} dod={dod} />
         </Field>
       </section>
 
