@@ -9,23 +9,24 @@ import type { ClaudeCheck } from '@/lib/modules/code-review/claude'
 import type { TicketPreview } from '@/lib/modules/code-review/jira'
 import {
   DOC_ROLE_LABEL,
+  LIVE_STATES,
+  NO_JIRA,
+  detectJiraKeys,
+  guessRole,
+  guessTemplate,
+  linkLabel,
+  parseJiraKeys,
+  shortSha,
   type DocFile,
   type DocRole,
   type DocTemplate,
   type ItemSummary,
-  guessRole,
-  guessTemplate,
-  detectJiraKeys,
   type JiraContext,
-  LIVE_STATES,
-  NO_JIRA,
-  parseJiraKeys,
+  type LocalBranch,
+  type PrLink,
+  type RepoPreset,
   type SubpageChoice,
   type SubpageInfo,
-  type PrLink,
-  linkLabel,
-  type RepoPreset,
-  shortSha,
 } from '@/lib/modules/code-review/model'
 
 import {
@@ -544,6 +545,7 @@ function SelfForm({
   const [dirty, setDirty] = useState(0)
   const [head, setHead] = useState('')
   const [links, setLinks] = useState<PrLink[]>([])
+  const [sources, setSources] = useState<SourceRow[]>([])
   const [title, setTitle] = useState('')
   const [note, setNote] = useState('')
   const [msg, setMsg] = useState('')
@@ -640,13 +642,26 @@ function SelfForm({
 
       <input value={title} onChange={(e) => setTitle(e.target.value)} className={INPUT + ' mt-2'} placeholder="Tên hồ sơ (không bắt buộc)" />
       <textarea value={note} onChange={(e) => setNote(e.target.value)} rows={2} className={INPUT + ' mt-2'} placeholder="Ghi chú cho Claude (không bắt buộc)" />
-      {attach.section('Mô tả chức năng, TDD… Claude sẽ kiểm code có làm đúng và đủ theo tài liệu không.')}
+      {attach.section(
+        'Mô tả chức năng, TDD… Claude sẽ kiểm code có làm đúng và đủ theo tài liệu không.',
+        <div className="mt-2 border-t border-line pt-2">
+          <SourceRows
+            value={sources}
+            onChange={setSources}
+            templates={[]}
+            fallbackTemplate=""
+            noTemplate
+            hint="Hoặc dán link Confluence — mỗi dòng một link. Trang có subpage thì Claude đọc luôn cả cây bên dưới. Mỗi vòng review đọc lại bản mới nhất."
+          />
+        </div>,
+        sources.length,
+      )}
 
       <div className="mt-2 flex items-center gap-2">
         <button
           type="button"
           className={BTN_PRI}
-          disabled={busy || !canRun || dirty === 0}
+          disabled={busy || !canRun || dirty === 0 || !contextReady({ jira: NO_JIRA, sources })}
           onClick={() =>
             start(async () => {
               const docs = await attach.upload()
@@ -658,11 +673,13 @@ function SelfForm({
                 note,
                 docs,
                 links,
+                ...(sources.length ? { sources: sourcePayload(sources.filter((x) => !x.error)) } : {}),
               })
               setMsg(r.message)
               if (r.ok) {
                 attach.clear()
                 setLinks([])
+                setSources([])
                 onDone()
               }
             })
@@ -896,13 +913,24 @@ export function useAttachments() {
     clear: () => setDocs([]),
     upload,
     msg,
-    section: (hint: string) => (
-      <details className="mt-3 rounded-md border border-line px-3 py-2" open={docs.length > 0}>
+    /**
+     * `extra` nằm **trong** cùng ô gập này, không phải một ô riêng bên cạnh.
+     *
+     * PDF và link Confluence trả lời đúng một câu — "đối chiếu code với tài
+     * liệu nào" — nên tách làm hai ô gập thì người dùng phải mở cả hai mới
+     * biết mình đã đính kèm những gì.
+     */
+    section: (hint: string, extra?: React.ReactNode, extraCount = 0) => (
+      <details className="mt-3 rounded-md border border-line px-3 py-2" open={docs.length > 0 || extraCount > 0}>
         <summary className="cursor-pointer text-[12.5px] text-ink-2">
-          📎 Đính kèm tài liệu để đối chiếu với code{docs.length ? ` · ${docs.length} file` : ' (không bắt buộc)'}
+          📎 Đính kèm tài liệu để đối chiếu với code
+          {docs.length || extraCount
+            ? ` · ${[docs.length && `${docs.length} file`, extraCount && `${extraCount} trang Confluence`].filter(Boolean).join(' · ')}`
+            : ' (không bắt buộc)'}
         </summary>
         <p className="mb-2 mt-1 text-[11.5px] text-ink-3">{hint}</p>
         <DocPicker docs={docs} setDocs={setDocs} />
+        {extra}
         {msg && <p className="mt-1 text-[12px] text-crit">{msg}</p>}
       </details>
     ),
@@ -977,6 +1005,12 @@ export function useDocUpload(opts: {
 export interface DocRepo {
   repoId: string
   ref: string
+  /**
+   * Clone làm việc đọc nhánh này ra — chỉ điền khi nhánh **chưa push**.
+   *
+   * Rỗng nghĩa là đọc từ `origin` của clone review, như cũ.
+   */
+  workPath?: string
 }
 
 /**
@@ -985,15 +1019,35 @@ export interface DocRepo {
  */
 export function RepoRows({ repos, value, onChange }: { repos: RepoPreset[]; value: DocRepo[]; onChange: (v: DocRepo[]) => void }) {
   const [branches, setBranches] = useState<Record<string, string[]>>({})
+  /** Nhánh chưa push, theo repo — tên nhánh → clone làm việc chứa nó. */
+  const [local, setLocal] = useState<Record<string, LocalBranch[]>>({})
   const ids = value.map((v) => v.repoId).filter(Boolean).join(',')
   useEffect(() => {
     for (const id of ids.split(',').filter(Boolean)) {
       if (branches[id]) continue
-      void listBranchesAction(id).then((r) => setBranches((b) => ({ ...b, [id]: r.branches })))
+      void listBranchesAction(id).then((r) => {
+        setBranches((b) => ({ ...b, [id]: r.branches }))
+        setLocal((l) => ({ ...l, [id]: r.local }))
+      })
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ids])
-  const set = (i: number, p: Partial<DocRepo>) => onChange(value.map((v, j) => (j === i ? { ...v, ...p } : v)))
+  /**
+   * Gõ xong tên nhánh thì tự biết đọc nó ở đâu.
+   *
+   * Không bắt người dùng chọn clone: tên nhánh đã đủ phân biệt — một nhánh
+   * chưa push chỉ nằm ở đúng một clone, và nếu nó có trên origin thì đọc từ
+   * origin là đúng hơn (đó mới là trạng thái cả team thấy).
+   */
+  const set = (i: number, p: Partial<DocRepo>) =>
+    onChange(
+      value.map((v, j) => {
+        if (j !== i) return v
+        const next = { ...v, ...p }
+        const hit = (local[next.repoId] ?? []).find((b) => b.name === next.ref.trim())
+        return { ...next, workPath: hit?.workPath ?? '' }
+      }),
+    )
   const unused = repos.find((r) => !value.some((v) => v.repoId === r.id))
   return (
     <div className="flex flex-col gap-1.5">
@@ -1008,18 +1062,39 @@ export function RepoRows({ repos, value, onChange }: { repos: RepoPreset[]; valu
               </option>
             ))}
           </select>
-          <input
-            list={`doc-branches-${i}`}
-            value={v.ref}
-            onChange={(e) => set(i, { ref: e.target.value })}
-            className={INPUT}
-            placeholder="Nhánh — develop / feature/…"
-          />
-          <datalist id={`doc-branches-${i}`}>
-            {(branches[v.repoId] ?? []).map((b) => (
-              <option key={b} value={b} />
-            ))}
-          </datalist>
+          <div>
+            <input
+              list={`doc-branches-${i}`}
+              value={v.ref}
+              onChange={(e) => set(i, { ref: e.target.value })}
+              className={INPUT + ' w-full'}
+              placeholder="Nhánh — develop / feature/…"
+            />
+            <datalist id={`doc-branches-${i}`}>
+              {/* Nhánh chưa push đứng trước: đó là nhánh bạn đang làm, và là
+                  lý do ô này tồn tại. */}
+              {(local[v.repoId] ?? []).map((b) => (
+                <option key={`l-${b.name}`} value={b.name}>
+                  chưa push · {b.workPath.split('/').pop()}
+                </option>
+              ))}
+              {(branches[v.repoId] ?? []).map((b) => (
+                <option key={b} value={b} />
+              ))}
+            </datalist>
+            {v.workPath ? (
+              <div className="mt-0.5 text-[11px] text-warn">
+                chưa push — đọc từ <span className="font-mono">{v.workPath}</span>
+              </div>
+            ) : (
+              v.ref.trim() &&
+              !(branches[v.repoId] ?? []).includes(v.ref.trim()) && (
+                <div className="mt-0.5 text-[11px] text-ink-3">
+                  không thấy trên origin — bấm <b>git fetch</b> ở tab Nhánh, hoặc chọn một nhánh trong danh sách
+                </div>
+              )
+            )}
+          </div>
           <button type="button" className="text-ink-3 hover:text-crit" title="Bỏ repo này" onClick={() => onChange(value.filter((_, j) => j !== i))}>
             ✕
           </button>

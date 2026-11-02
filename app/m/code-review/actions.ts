@@ -5,7 +5,7 @@ import { revalidatePath } from 'next/cache'
 import { type ChatMessage, applyChanges, cancelChat, listChat, sendChat } from '@/lib/modules/code-review/chat'
 import { type ClaudeCheck, checkClaude } from '@/lib/modules/code-review/claude'
 import type { WorkBranch } from '@/lib/modules/code-review/model'
-import { getRepo, getTemplate, rememberPerson, setRepos, setRunnerConfig, setTemplates } from '@/lib/modules/code-review/config'
+import { getRepo, getTemplate, pickDocRepos, rememberPerson, setRepos, setRunnerConfig, setTemplates } from '@/lib/modules/code-review/config'
 import {
   changedPaths,
   commitExists,
@@ -52,7 +52,7 @@ import { type DiffFile, parseDiff } from '@/lib/modules/code-review/diff'
 import { buildFreshRows } from '@/lib/modules/code-review/findings'
 import { ForbiddenAction } from '@/lib/modules/code-review/guard'
 import { type TicketPreview, previewTickets } from '@/lib/modules/code-review/jira'
-import { type ConfluenceRef, type JiraContext, OWN_CATEGORY, SEVERITIES, type Severity, NO_JIRA, parseJiraKeys, confluencePages, type SubpageInfo, type Addressee, type DocFile, type DocTemplate, type FindingStatus, HONORIFICS, type PrLink, addressOf, anchorInDiff, cleanHandle, validHandle, type FindingView, type ItemSummary, type RepoPreset, type RoundView, where } from '@/lib/modules/code-review/model'
+import { type ConfluenceRef, type JiraContext, OWN_CATEGORY, SEVERITIES, type Severity, NO_JIRA, parseJiraKeys, confluencePages, type SubpageInfo, type Addressee, type DocFile, type DocTemplate, type FindingStatus, HONORIFICS, type LocalBranch, type PrLink, addressOf, anchorInDiff, cleanHandle, validHandle, type FindingView, type ItemSummary, type RepoPreset, type RoundView, where } from '@/lib/modules/code-review/model'
 import { type LogLine, cancelRound, ensureTicker, tick, updateRoundSummary, viewLog } from '@/lib/modules/code-review/runner'
 import {
   createItem,
@@ -206,15 +206,42 @@ export async function queuePullsAction(input: {
   }
 }
 
-export async function listBranchesAction(repoId: string, refresh = false): Promise<Result & { branches: string[] }> {
-  if (!enabled()) return { ...OFF, branches: [] }
+/**
+ * Nhánh chọn được của một repo: trên `origin`, và những nhánh **chưa push** ở
+ * các clone làm việc.
+ *
+ * Hai danh sách tách rời chứ không trộn: chúng đọc ra từ hai chỗ khác nhau, và
+ * chỗ nào gọi hàm này cũng phải nói rõ nó xử lý được cái nào. Review theo nhánh
+ * phân giải bằng `origin/<nhánh>` nên chỉ dùng `branches`; đối chiếu tài liệu
+ * thì dùng cả hai, vì nó đọc được từ clone làm việc.
+ *
+ * Lỗi của một clone không làm hỏng cả danh sách — clone có thể đã bị gỡ khỏi
+ * máy mà Cấu hình chưa cập nhật, và lúc ấy mất ô chọn nhánh là mất nhiều hơn.
+ */
+export async function listBranchesAction(
+  repoId: string,
+  refresh = false,
+): Promise<Result & { branches: string[]; local: LocalBranch[] }> {
+  if (!enabled()) return { ...OFF, branches: [], local: [] }
   const repo = getRepo(repoId)
-  if (!repo) return { ok: false, message: 'Không thấy repo.', branches: [] }
+  if (!repo) return { ok: false, message: 'Không thấy repo.', branches: [], local: [] }
   try {
     if (refresh) await withRepoLock(repo.localPath, () => fetchAll(repo.localPath))
-    return { ok: true, message: '', branches: await listRemoteBranches(repo.localPath) }
+    const branches = await listRemoteBranches(repo.localPath)
+    const onRemote = new Set(branches)
+    const local: LocalBranch[] = []
+    const seen = new Set<string>()
+    for (const dir of repo.workPaths) {
+      const found = await listWorkBranches(dir).catch(() => [])
+      for (const b of found) {
+        if (b.onRemote || onRemote.has(b.name) || seen.has(b.name)) continue
+        seen.add(b.name)
+        local.push({ name: b.name, workPath: dir })
+      }
+    }
+    return { ok: true, message: '', branches, local }
   } catch (err) {
-    return { ok: false, message: gitSays(err), branches: [] }
+    return { ok: false, message: gitSays(err), branches: [], local: [] }
   }
 }
 
@@ -374,6 +401,8 @@ export async function queueSelfAction(input: {
   docs?: DocFile[]
   /** Vế kia của một thay đổi hai repo — xem {@link snapshotLinks}. */
   links?: PrLink[]
+  /** Trang Confluence để đối chiếu code với tài liệu. */
+  sources?: unknown
 }): Promise<Result & { itemId?: number }> {
   const blocked = await ready()
   if (blocked) return blocked
@@ -401,6 +430,10 @@ export async function queueSelfAction(input: {
   const linked = await snapshotLinks(input.links ?? [])
   if (!linked.links) return { ok: false, message: linked.message! }
 
+  // Chỉ giữ địa chỉ trang, không giữ nội dung: mỗi vòng đọc lại bản mới nhất.
+  const sources = input.sources ? await resolveSources(input.sources) : []
+  if (typeof sources === 'string') return { ok: false, message: sources }
+
   const itemId = createItem({
     kind: 'self',
     repoId: input.repoId,
@@ -415,6 +448,7 @@ export async function queueSelfAction(input: {
     url: '',
     note: input.note.trim(),
     links: linked.links,
+    sources,
   })
   queueRound(itemId, docs)
   ensureTicker()
@@ -1260,24 +1294,31 @@ export async function setSourcesAction(itemId: number, input: unknown): Promise<
  * The code a doc review is checked against: the first repo is where Claude
  * runs, the others are read beside it (stored as links with no base).
  */
-export async function setDocReposAction(itemId: number, repos: Array<{ repoId: string; ref: string }>): Promise<Result> {
+export async function setDocReposAction(
+  itemId: number,
+  repos: Array<{ repoId: string; ref: string; workPath?: string }>,
+): Promise<Result> {
   if (!enabled()) return OFF
   const item = getItem(itemId)
   if (!item || item.kind !== 'doc') return { ok: false, message: 'Không thấy hồ sơ tài liệu.' }
-  const picked: Array<{ repoId: string; ref: string }> = []
-  for (const r of (Array.isArray(repos) ? repos : []).slice(0, 6)) {
-    const id = String(r?.repoId ?? '').trim()
-    const ref = String(r?.ref ?? '').trim()
-    if (!id) continue
-    const repo = getRepo(id)
-    if (!repo) return { ok: false, message: 'Không thấy repo.' }
-    if (!ref) return { ok: false, message: `Chọn nhánh cho ${repo.name}.` }
-    if (!picked.some((p) => p.repoId === id && p.ref === ref)) picked.push({ repoId: id, ref })
-  }
-  patchItem(itemId, { repoId: picked[0]?.repoId ?? '', headRef: picked[0]?.ref ?? '' })
+  const picked = pickDocRepos(repos)
+  if (typeof picked === 'string') return { ok: false, message: picked }
+  patchItem(itemId, {
+    repoId: picked[0]?.repoId ?? '',
+    headRef: picked[0]?.ref ?? '',
+    workPath: picked[0]?.workPath ?? '',
+  })
   setItemLinks(
     itemId,
-    picked.slice(1).map((p) => ({ repoId: p.repoId, prNumber: null, baseRef: '', headRef: p.ref, title: p.ref, url: '' })),
+    picked.slice(1).map((p) => ({
+      repoId: p.repoId,
+      prNumber: null,
+      baseRef: '',
+      headRef: p.ref,
+      title: p.ref,
+      url: '',
+      ...(p.workPath ? { workPath: p.workPath } : {}),
+    })),
   )
   revalidatePath('/m/code-review')
   return { ok: true, message: picked.length ? `Đối chiếu với ${picked.length} repo — áp dụng từ vòng tiếp theo.` : 'Không đối chiếu code nữa.' }

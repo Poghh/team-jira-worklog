@@ -294,8 +294,15 @@ export function ReviewDetail({
  */
 function DocSourcesBar({ item, repos, templates }: { item: ItemView; repos: RepoPreset[]; templates: DocTemplate[] }) {
   const router = useRouter()
+  // Mang cả `workPath` về: hồ sơ đối chiếu một nhánh chưa push thì mở ra sửa
+  // mà đánh rơi nó là lần chạy sau đi tìm `origin/<nhánh>` không có.
   const initialRepos = (): DocRepo[] =>
-    item.repoId ? [{ repoId: item.repoId, ref: item.headRef }, ...item.links.map((l) => ({ repoId: l.repoId, ref: l.headRef }))] : []
+    item.repoId
+      ? [
+          { repoId: item.repoId, ref: item.headRef, workPath: item.workPath },
+          ...item.links.map((l) => ({ repoId: l.repoId, ref: l.headRef, workPath: l.workPath ?? '' })),
+        ]
+      : []
   const initialSources = () => savedSources(item)
   const [open, setOpen] = useState(false)
   const [docRepos, setDocRepos] = useState(initialRepos)

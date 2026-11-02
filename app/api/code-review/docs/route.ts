@@ -1,5 +1,5 @@
 import { checkClaude } from '@/lib/modules/code-review/claude'
-import { getRepo, getTemplate } from '@/lib/modules/code-review/config'
+import { getTemplate, pickDocRepos } from '@/lib/modules/code-review/config'
 import { ensureTicker, tick } from '@/lib/modules/code-review/runner'
 import { resolveSources } from '@/lib/modules/code-review/confluence'
 import type { ConfluenceRef, PrLink } from '@/lib/modules/code-review/model'
@@ -50,17 +50,22 @@ export async function POST(request: Request) {
   }
 
   // Code to check against: the first repo is where Claude runs, the rest are read beside it.
-  const repos = (parseJson(form.get('repos')) as Array<{ repoId?: string; ref?: string }> | null) ?? (repoId ? [{ repoId, ref }] : [])
-  const picked: Array<{ repoId: string; ref: string }> = []
-  for (const r of Array.isArray(repos) ? repos.slice(0, 6) : []) {
-    const id = String(r?.repoId ?? '').trim()
-    const branch = String(r?.ref ?? '').trim()
-    if (!id) continue
-    if (!getRepo(id)) return fail('Không thấy repo.')
-    if (!branch) return fail(`Chọn nhánh code để đối chiếu cho ${getRepo(id)!.name}.`)
-    if (!picked.some((p) => p.repoId === id && p.ref === branch)) picked.push({ repoId: id, ref: branch })
-  }
-  const links: PrLink[] = picked.slice(1).map((p) => ({ repoId: p.repoId, prNumber: null, baseRef: '', headRef: p.ref, title: p.ref, url: '' }))
+  const repos =
+    (parseJson(form.get('repos')) as Array<{ repoId?: string; ref?: string; workPath?: string }> | null) ??
+    (repoId ? [{ repoId, ref }] : [])
+  // Cùng luật với `setDocReposAction`, kể cả phần kiểm `workPath` nằm trong
+  // Cấu hình: hai chỗ cùng nhận đúng một thứ từ trình duyệt.
+  const picked = pickDocRepos(repos)
+  if (typeof picked === 'string') return fail(picked)
+  const links: PrLink[] = picked.slice(1).map((p) => ({
+    repoId: p.repoId,
+    prNumber: null,
+    baseRef: '',
+    headRef: p.ref,
+    title: p.ref,
+    url: '',
+    ...(p.workPath ? { workPath: p.workPath } : {}),
+  }))
 
   const existing = itemIdRaw ? getItem(itemIdRaw) : null
   if (!files.length && !sources?.length && !existing?.sources.length) return fail('Chọn ít nhất một file PDF hoặc dán link Confluence.')
@@ -84,6 +89,8 @@ export async function POST(request: Request) {
       prNumber: null,
       baseRef: '',
       headRef: primary?.ref ?? '',
+      // Nhánh chưa push thì chỉ clone làm việc này mới có nó.
+      workPath: primary?.workPath ?? '',
       author: '',
       url: sources?.[0]?.url ?? '',
       note: note.trim(),

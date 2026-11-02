@@ -232,7 +232,18 @@ async function prepareAndSpawn(roundId: number) {
         workdir = await addWorktree(r.localPath, `r${roundId}`, headSha)
       })
 
-      const docs = parseDocs(round.docs)
+      /**
+       * PDF giữ nguyên như lúc xếp hàng; trang Confluence đọc **lại bây giờ**.
+       *
+       * `filter(!isFetched)` bỏ bản đã kéo ở vòng trước đi rồi kéo lại: tài
+       * liệu sống, và vòng sau mà vẫn đối chiếu với bản cũ thì nó bắt lỗi
+       * đúng những chỗ người viết tài liệu vừa sửa.
+       */
+      const docs = parseDocs(round.docs).filter((d) => !isFetched(d))
+      if (item.sources.length) {
+        docs.push(...(await fetchPages(item.id, item.sources)))
+        updateRound(roundId, { docs: JSON.stringify(docs) })
+      }
       for (const d of docs) {
         const dir = path.dirname(d.path)
         if (!addDirs.includes(dir)) addDirs.push(dir)
@@ -388,8 +399,17 @@ async function prepareAndSpawn(roundId: number) {
 
       if (repo) {
         await withRepoLock(repo.localPath, async () => {
-          await fetchAll(repo.localPath)
-          headSha = await revParse(repo.localPath, `origin/${item.headRef}`)
+          // Nhánh chưa push thì `origin/<nhánh>` không tồn tại — chỉ clone làm
+          // việc mới có nó. Vẫn đối chiếu với Cấu hình: đường dẫn này tới từ
+          // trình duyệt lúc xếp hàng, và một đường dẫn tuỳ ý sẽ biến ô chọn
+          // nhánh thành cách đọc bất kỳ repo nào trên máy.
+          headSha =
+            item.workPath && repo.workPaths.includes(item.workPath)
+              ? await fetchFromWork(repo.localPath, item.workPath, item.headRef, `doc-${roundId}-head`)
+              : await (async () => {
+                  await fetchAll(repo.localPath)
+                  return revParse(repo.localPath, `origin/${item.headRef}`)
+                })()
           workdir = await addWorktree(repo.localPath, `r${roundId}`, headSha)
         })
         // More repos to check against (SDK + iOS…): read-only worktrees, no diff.

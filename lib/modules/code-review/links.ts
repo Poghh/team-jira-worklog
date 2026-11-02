@@ -62,7 +62,11 @@ export async function prepareLinks(roundId: number, links: PrLink[]): Promise<Ro
           // Hai sha đã chốt lúc xếp hàng, kéo thẳng từ clone làm việc. Không
           // hỏi origin: thứ cần xem chưa push, origin không thấy nó.
           headSha = await fetchFromWork(repo.localPath, l.workPath!, l.headRef, `r${roundId}-l${i}-head`)
-          baseSha = await fetchFromWork(repo.localPath, l.workPath!, l.baseRef, `r${roundId}-l${i}-base`)
+          // Repo đối chiếu tài liệu chỉ có nhánh, không có vế base — cùng luật
+          // với đường origin ngay dưới: có code để đọc, không có diff.
+          baseSha = l.baseRef
+            ? await fetchFromWork(repo.localPath, l.workPath!, l.baseRef, `r${roundId}-l${i}-base`)
+            : headSha
           return { headSha, baseSha, workdir: await addWorktree(repo.localPath, `r${roundId}-l${i}`, headSha) }
         }
         if (l.prNumber && repo.githubRepo) {

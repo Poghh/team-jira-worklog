@@ -305,6 +305,19 @@ export interface PrLink {
   workPath?: string
 }
 
+/**
+ * Một nhánh chọn được để đối chiếu, kèm chỗ app sẽ đọc nó ra.
+ *
+ * Danh sách chỉ-origin không có nhánh bạn đang làm dở: nó chưa push. Nhưng
+ * nhánh ấy mới là thứ đáng đối chiếu tài liệu nhất, nên nó phải chọn được —
+ * và app phải biết đọc nó từ clone làm việc nào.
+ */
+export interface LocalBranch {
+  name: string
+  /** Clone làm việc chứa nhánh này. */
+  workPath: string
+}
+
 /** Vế kia cũng đang sửa dở dưới máy, chưa push. */
 export const isLocalLink = (l: Pick<PrLink, 'workPath'>) => Boolean(l.workPath)
 
@@ -447,7 +460,11 @@ export interface ItemView {
   author: string
   url: string
   /**
-   * Clone làm việc hồ sơ tự review này đọc ra — rỗng với PR và tài liệu.
+   * Clone làm việc hồ sơ này đọc ra — rỗng khi nó đọc từ `origin`.
+   *
+   * Tự review luôn có: nó soi ảnh chụp dưới máy. Review tài liệu có khi người
+   * dùng chọn một nhánh **chưa push** để đối chiếu — `origin/<nhánh>` lúc ấy
+   * không tồn tại, và chỉ clone làm việc mới có nó.
    *
    * Lưu trên hồ sơ chứ không suy lại từ repo: một repo khai nhiều clone, và
    * vòng review sau phải soi đúng cái clone vòng trước đã soi.
