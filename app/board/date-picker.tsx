@@ -3,12 +3,14 @@
 import { useSearchParams } from 'next/navigation'
 import { useRef } from 'react'
 
+import { SPRINT_GRACE_DAYS, sprintForDay, sprintNumber } from '@/lib/sprint-name'
 import { addDays, todayIn } from '@/lib/time'
 
 import { NavSpinner, useNav } from './navigation'
 
 interface SprintRange {
   id: number
+  name: string
   start: string | null
   end: string | null
 }
@@ -42,7 +44,9 @@ export function DatePicker({
     if (next === todayIn()) q.delete('date')
     else q.set('date', next)
 
-    const match = sprints.find((s) => s.start && s.end && next >= s.start && next <= s.end)
+    // A day just past a sprint's end (weekend overtime, a gap before the next
+    // one opens) still lands on that sprint, so its tasks can be logged.
+    const match = sprintForDay(sprints, next)?.sprint
 
     if (!match) {
       // No sprint covers this day. Holding on to the previous one would show a
@@ -73,6 +77,10 @@ export function DatePicker({
     else el.click()
   }
 
+  // Logging on a day after the sprint ended: say which sprint it counts for.
+  const day = sprintForDay(sprints, date)
+  const overrun = day?.overrun && day.sprint.id === sprintId ? day.sprint : null
+
   const arrow =
     'h-[30px] w-[26px] rounded-md border border-line-strong bg-surface leading-none text-ink-2 hover:bg-surface-2 hover:text-ink disabled:opacity-50'
 
@@ -89,6 +97,14 @@ export function DatePicker({
         <NavSpinner />
         {isToday ? 'Ngày đang log' : 'Đang log vào ngày cũ'}
       </span>
+      {overrun && (
+        <span
+          className="text-[11px] text-warn"
+          title={`Ngày nằm sau ngày kết thúc sprint — trong vòng ${SPRINT_GRACE_DAYS} ngày sau khi hết, board vẫn lấy task của sprint đó để log.`}
+        >
+          Sau sprint {sprintNumber(overrun.name) ?? overrun.name} (hết {overrun.end!.slice(8, 10)}/{overrun.end!.slice(5, 7)}) — vẫn log vào task sprint này
+        </span>
+      )}
 
       <div className="flex items-center gap-1">
         <button

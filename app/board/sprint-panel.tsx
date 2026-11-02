@@ -43,6 +43,7 @@ export function SprintPanel({
   today,
   selectedDate,
   secondsByDate,
+  overrunDays = [],
   rules,
   baseQuery,
 }: {
@@ -52,6 +53,12 @@ export function SprintPanel({
   today: string
   selectedDate: string
   secondsByDate: Record<string, number>
+  /**
+   * Days after `end` that still count for this sprint and have hours logged
+   * (or are the day being viewed). Listed and added to the total, but never
+   * expected: nobody owes hours after a sprint ends.
+   */
+  overrunDays?: string[]
   rules: QuotaRules
   /** Current filters minus `date`, so day links keep the sprint they belong to. */
   baseQuery: string
@@ -82,7 +89,7 @@ export function SprintPanel({
   const short = workdays.filter((d) => (secondsByDate[d] ?? 0) < quotaFor(d) * 3600)
   const complete = workdays.length - short.length
 
-  const totalSeconds = all.reduce((n, d) => n + (secondsByDate[d] ?? 0), 0)
+  const totalSeconds = [...all, ...overrunDays].reduce((n, d) => n + (secondsByDate[d] ?? 0), 0)
   const expectedSeconds = workdays.reduce((n, d) => n + quotaFor(d) * 3600, 0)
   const missingSeconds = short.reduce(
     (n, d) => n + Math.max(0, quotaFor(d) * 3600 - (secondsByDate[d] ?? 0)),
@@ -127,6 +134,30 @@ export function SprintPanel({
               isToday={d === today}
             />
           ))}
+
+          {overrunDays.length > 0 && (
+            <div className="mt-1.5 border-t border-line pt-1.5">
+              <div
+                className="mb-1 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-3"
+                title="Ngày sau khi sprint hết nhưng vẫn tính cho sprint này — có log giờ thì hiện ở đây, cộng vào tổng, không tính là thiếu."
+              >
+                ngoài sprint
+              </div>
+              {overrunDays.map((d) => (
+                <DayRow
+                  key={d}
+                  date={d}
+                  href={hrefFor(d)}
+                  seconds={secondsByDate[d] ?? 0}
+                  quota={0}
+                  dayOff={rules.daysOff[d] ?? null}
+                  split={split}
+                  selected={d === selectedDate}
+                  isToday={d === today}
+                />
+              ))}
+            </div>
+          )}
 
           {upcoming.length > 0 && (
             <div className="mt-1.5 border-t border-line pt-1.5">

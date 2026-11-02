@@ -38,3 +38,46 @@ export function withoutSprintPrefix(prefixes: string[], pattern: string): string
   const re = sprintPrefixRegex(pattern)
   return re ? prefixes.filter((p) => !re.test(p)) : prefixes
 }
+
+/**
+ * Days after a sprint's end that still count as that sprint on the board.
+ * Work runs over — a weekend after the last day, a holiday before the next
+ * sprint is opened — and those hours belong to the sprint's tasks; without
+ * this the day has no sprint, the board shows no task and nothing can be
+ * logged. A week covers a weekend and a short gap, not a forgotten sprint.
+ */
+export const SPRINT_GRACE_DAYS = 7
+
+export interface SprintSpan {
+  id: number
+  /** `YYYY-MM-DD`, or null for a sprint with no dates yet. */
+  start: string | null
+  end: string | null
+}
+
+/** Whole days from `a` to `b` (calendar dates). */
+function dayDiff(a: string, b: string): number {
+  const utc = (d: string) => {
+    const [y, m, day] = d.split('-').map(Number)
+    return Date.UTC(y, m - 1, day)
+  }
+  return Math.round((utc(b) - utc(a)) / 86400000)
+}
+
+/**
+ * The sprint a calendar day belongs to: the one whose dates cover it, else
+ * the one that ended most recently, at most {@link SPRINT_GRACE_DAYS} before
+ * it (`overrun` then tells the board to say so). Null when neither — the day
+ * really is outside every sprint.
+ */
+export function sprintForDay<S extends SprintSpan>(sprints: S[], day: string): { sprint: S; overrun: boolean } | null {
+  const covering = sprints
+    .filter((s) => s.start && s.end && day >= s.start && day <= s.end)
+    // Overlapping sprints: the one that started last is the one running.
+    .sort((a, b) => (b.start! < a.start! ? -1 : b.start! > a.start! ? 1 : b.id - a.id))[0]
+  if (covering) return { sprint: covering, overrun: false }
+  const ended = sprints
+    .filter((s) => s.end && s.end < day && dayDiff(s.end, day) <= SPRINT_GRACE_DAYS)
+    .sort((a, b) => (b.end! < a.end! ? -1 : b.end! > a.end! ? 1 : b.id - a.id))[0]
+  return ended ? { sprint: ended, overrun: true } : null
+}

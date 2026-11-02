@@ -6,11 +6,12 @@ import { getBoard, getSprintPoints, getSprintTasks } from '@/lib/jira/issues'
 import { getProjectMeta } from '@/lib/jira/meta'
 import { type SprintTask, summarisePoints } from '@/lib/jira/types'
 import { getSprints } from '@/lib/jira/sprints'
+import { SPRINT_GRACE_DAYS, sprintForDay } from '@/lib/sprint-name'
 import { getWorklogs, sumByDate, sumByIssue } from '@/lib/jira/worklog'
 import { listDaysOff } from '@/lib/days-off'
 import { type QuotaRules, quotaForDate } from '@/lib/quota'
 import { SETTING_KEYS, getSetting, getTeamScope, getWorkSchedule } from '@/lib/settings'
-import { DEFAULT_TZ, formatDateVi, isWeekend, todayIn, weekOf } from '@/lib/time'
+import { DEFAULT_TZ, addDays, formatDateVi, isWeekend, todayIn, weekOf } from '@/lib/time'
 
 import { JiraDown } from './jira-down'
 import { LinkPending } from './link-pending'
@@ -80,12 +81,16 @@ async function boardPage(props: PageProps<'/'>) {
   // Three states, not two: a specific sprint, every sprint, or a date that sits
   // outside every sprint — which must not silently fall back to "every".
   const noSprintMatch = sprintParam === 'none'
+  // A date with no sprint picked (a link, a bookmark) lands on that day's
+  // sprint, including the days just after one ended.
+  const spans = sprints.map((s) => ({ id: s.id, start: s.startDate?.slice(0, 10) ?? null, end: s.endDate?.slice(0, 10) ?? null }))
+  const daySprint = one(sp.date) ? sprintForDay(spans, date)?.sprint.id : undefined
   const sprintId =
     sprintParam === 'all' || noSprintMatch
       ? null
       : sprintParam
         ? Number(sprintParam)
-        : (current?.id ?? null)
+        : (daySprint ?? current?.id ?? null)
 
   // With a sprint selected, statistics cover the whole sprint: a sprint runs two
   // weeks, so a single calendar week cannot show whether it is fully covered.
@@ -94,8 +99,17 @@ async function boardPage(props: PageProps<'/'>) {
   const sprintEnd = selectedSprint?.endDate?.slice(0, 10) ?? null
 
   const weekDays = weekOf(date)
+  // Days after the sprint's end that still count for it (weekend overtime…),
+  // up to today: fetched with the sprint so the panel can list the ones logged.
+  const overrunDays: string[] = []
+  if (sprintId !== null && sprintEnd) {
+    const last = addDays(sprintEnd, SPRINT_GRACE_DAYS)
+    for (let d = addDays(sprintEnd, 1); d <= last && d <= todayIn(tz); d = addDays(d, 1)) {
+      if (sprintForDay(spans, d)?.sprint.id === sprintId) overrunDays.push(d)
+    }
+  }
   const rangeFrom = sprintStart ?? weekDays[0]
-  const rangeTo = sprintEnd ?? weekDays[6]
+  const rangeTo = overrunDays.at(-1) ?? sprintEnd ?? weekDays[6]
 
   // Read before the fetch below, which is gated on it. Explicitly `=== 'true'`:
   // off is the default, and an unseeded key must not read as on.
@@ -245,6 +259,7 @@ async function boardPage(props: PageProps<'/'>) {
           sprintId={sprintId}
           sprints={sprints.map((s) => ({
             id: s.id,
+            name: s.name,
             start: s.startDate?.slice(0, 10) ?? null,
             end: s.endDate?.slice(0, 10) ?? null,
           }))}
@@ -371,6 +386,7 @@ async function boardPage(props: PageProps<'/'>) {
             today={todayIn(tz)}
             selectedDate={date}
             secondsByDate={Object.fromEntries(byDate)}
+            overrunDays={overrunDays.filter((d) => (byDate.get(d) ?? 0) > 0 || d === date)}
             rules={rules}
             baseQuery={baseQuery}
           />
