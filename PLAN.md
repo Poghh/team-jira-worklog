@@ -19,7 +19,7 @@ SQLite chỉ lưu những thứ Jira không có chỗ chứa:
 
 | Bảng | Nội dung | Vì sao không để trên Jira |
 |---|---|---|
-| `settings` | Jira URL, email, API token, Gemini key, board mặc định, giờ làm việc | Cấu hình local |
+| `settings` | Jira URL, email, API token, đường dẫn `claude`, board mặc định, giờ làm việc | Cấu hình local |
 | `task_drafts` | Task AI vừa sinh, chưa push lên Jira | Chưa tồn tại trên Jira |
 | `report_templates` | Template text của daily report | Thuần local |
 | `report_history` | Report đã sinh, để xem lại | Jira không lưu report |
@@ -45,10 +45,11 @@ Task Board luôn gọi Jira để lấy danh sách, không đọc DB. Bấm refr
 - **Next.js 15** (App Router, TypeScript) — Route Handlers trong `app/api/*` đóng vai trò backend Node luôn, không cần Express riêng như tool cũ
 - **Tailwind CSS + shadcn/ui** — component sẵn có, tự hỗ trợ dark mode
 - **better-sqlite3 + Drizzle ORM** — file `data/app.db`, không cần server DB
-- **@google/genai** — Gemini để sinh title/description/DoD
+- **Claude Code CLI** — binary `claude` có sẵn trên máy, sinh title/description/DoD
 - Jira Cloud REST API v3 + Agile API v1.0, Basic auth (email + API token) như tool cũ
 
-Token Jira và Gemini chỉ nằm ở server side, không bao giờ gửi xuống browser.
+Token Jira chỉ nằm ở server side, không bao giờ gửi xuống browser. AI thì không
+có token nào để giữ: CLI chạy bằng phiên đăng nhập của chính máy đó.
 
 ### 2.3 Quy tắc thời gian
 
@@ -130,7 +131,7 @@ Dạng thật: `[spt 63][Support] Review các pull request, review technical det
 - **Chọn được nhiều tiền tố, thứ tự ghép theo thứ tự bấm.** Chip đang chọn hiện số thứ tự. Bỏ chọn hết thì title không có tiền tố
 - **Thêm / sửa / xoá / đổi thứ tự** tiền tố trong Settings; màn tạo task có nút thêm nhanh, thêm ở đâu cũng vào chung một danh sách lưu trong SQLite
 - Ô Title **chỉ chứa phần nội dung**, không gõ tiền tố vào. Có dòng preview hiện title hoàn chỉnh. Tách vậy để app khỏi phải đoán đâu là tiền tố khi người dùng sửa tay
-- Prompt Gemini được dặn sinh title **không kèm tiền tố**; app tự ghép vào để tránh AI bịa sai quy ước
+- Prompt được dặn sinh title **không kèm tiền tố**; app tự ghép vào để tránh AI bịa sai quy ước
 - DoD là **textarea gạch đầu dòng** sửa tự do, không phải checklist checkbox
 
 ## 3. Màn hình
@@ -222,7 +223,7 @@ Ba tab, chi tiết ở mục 2.5. Mỗi kết quả hiện assignee hiện tại
 
 ### 3.5 Settings
 
-Jira URL / email / token + nút **Test connection**, Gemini API key và model, board mặc định, định mức ngày, bước nhảy +/−, danh sách preset chọn nhanh, cách xử lý cuối tuần, và template report.
+Jira URL / email / token + nút **Test connection**, đường dẫn `claude` và model, board mặc định, định mức ngày, bước nhảy +/−, danh sách preset chọn nhanh, cách xử lý cuối tuần, và template report.
 
 ## 3a. Kết quả thăm dò thực tế — 19/07/2026
 
@@ -515,7 +516,7 @@ Vẫn an toàn: `GET /rest/agile/1.0/board/{id}/sprint` và `POST /rest/agile/1.
 | `PUT /api/jira/assignee` | Tự nhận task về mình |
 | `POST /api/jira/search` | Chạy JQL tự do cho màn Tìm & nhận task |
 | `GET /api/jira/transitions` | Transition khả dụng của một issue → dropdown status |
-| `POST /api/ai/generate` | Gemini sinh title/description/DoD (không kèm tiền tố) |
+| `POST /api/ai/generate` | AI sinh title/description/DoD (không kèm tiền tố) |
 | `GET/POST /api/drafts` | CRUD draft trong SQLite |
 | `GET/POST /api/settings` | Đọc/ghi settings |
 
@@ -541,9 +542,14 @@ CSV có BOM UTF-8 để Excel không vỡ font tiếng Việt.
 Ba chế độ tìm, tự assign, lưu preset JQL.
 
 **Phase 5 — AI Composer + tạo issue** ✅
-Tích hợp Gemini, màn composer, lưu draft, tạo issue thật với sprint/epic/parent.
+Tích hợp AI, màn composer, lưu draft, tạo issue thật với sprint/epic/parent.
 
-**Model Gemini bị khai tử theo lịch của Google.** `gemini-2.5-flash` vẫn nằm trong danh sách `/models` nhưng gọi thì trả 404 *"no longer available to new users"*. Đang dùng `gemini-3.5-flash`. Ô model trong Settings để tự do gõ, và `/api/ai/models` liệt kê model khả dụng — nhưng danh sách đó chỉ để tham khảo, không đảm bảo gọi được.
+**Đã đổi engine: Gemini → Claude Code CLI.** Model Gemini bị khai tử theo lịch
+của Google — `gemini-2.5-flash` vẫn nằm trong danh sách `/models` nhưng gọi thì
+trả 404 *"no longer available to new users"* — và free tier còn trả 200 kèm body
+không phải JSON. Giờ chạy bằng binary `claude` trên máy: không API key, cùng một
+binary với module Review code, và model lấy từ ô `claude_model` trong Settings
+(trống = mặc định của CLI). `/api/ai/models` bỏ hẳn, CLI tự biết model của nó.
 
 **Phase 6 — Hoàn thiện**
 Dark mode, keyboard shortcut, xử lý lỗi Jira rõ ràng, README hướng dẫn chạy.

@@ -1,6 +1,6 @@
 import 'server-only'
 
-import { eq, sql } from 'drizzle-orm'
+import { eq, inArray, sql } from 'drizzle-orm'
 
 import { db } from './db'
 import { jqlPresets, prefixes, reportTemplates, settings } from './db/schema'
@@ -17,11 +17,12 @@ export const SETTING_KEYS = {
   jiraApiToken: 'jira_api_token',
   jiraProjectKey: 'jira_project_key',
   jiraBoardId: 'jira_board_id',
-  googleApiKey: 'google_api_key',
+  /** Đường dẫn tới `claude`; trống = tự tìm ở những chỗ quen thuộc. */
+  claudeBin: 'claude_bin',
   githubToken: 'github_token',
   githubLogins: 'github_logins',
-  geminiModel: 'gemini_model',
-  geminiFallbackModels: 'gemini_fallback_models',
+  claudeModel: 'claude_model',
+  claudeFallbackModels: 'claude_fallback_models',
   dailyQuotaHours: 'daily_quota_hours',
   logStepHours: 'log_step_hours',
   logPresets: 'log_presets',
@@ -48,10 +49,10 @@ const DEFAULTS: Record<string, string> = {
   // wrong guess produces confusing empty screens rather than an obvious error.
   [SETTING_KEYS.jiraProjectKey]: '',
   [SETTING_KEYS.jiraBoardId]: '',
-  [SETTING_KEYS.geminiModel]: 'gemini-3.1-flash-lite',
+  [SETTING_KEYS.claudeModel]: 'opus',
   // Tried in order when the primary is out of quota. Retrying the same model
   // cannot fix a spent quota — only a different one can.
-  [SETTING_KEYS.geminiFallbackModels]: 'gemini-3-flash-preview,gemini-3.5-flash',
+  [SETTING_KEYS.claudeFallbackModels]: 'sonnet',
   [SETTING_KEYS.dailyQuotaHours]: '8',
   [SETTING_KEYS.logStepHours]: '0.5',
   [SETTING_KEYS.logPresets]: '0.5,1,2,4,8',
@@ -93,10 +94,10 @@ const ENV_SEED: Partial<Record<string, string>> = {
   [SETTING_KEYS.jiraApiToken]: 'JIRA_API_TOKEN',
   [SETTING_KEYS.jiraProjectKey]: 'JIRA_PROJECT_KEY',
   [SETTING_KEYS.jiraBoardId]: 'JIRA_BOARD_ID',
-  [SETTING_KEYS.googleApiKey]: 'GOOGLE_API_KEY',
+  [SETTING_KEYS.claudeBin]: 'CLAUDE_BIN',
   [SETTING_KEYS.githubToken]: 'GITHUB_TOKEN',
   [SETTING_KEYS.githubLogins]: 'GITHUB_LOGIN',
-  [SETTING_KEYS.geminiModel]: 'GEMINI_MODEL',
+  [SETTING_KEYS.claudeModel]: 'CLAUDE_MODEL',
   [SETTING_KEYS.teamLabel]: 'JIRA_TEAM_LABEL',
   [SETTING_KEYS.teamPrefix]: 'JIRA_TEAM_PREFIX',
   [SETTING_KEYS.teamSprintFilter]: 'JIRA_TEAM_SPRINT_FILTER',
@@ -147,6 +148,33 @@ export function ensureSeeded() {
     if (value !== undefined && value !== '') rows.push({ key, value })
   }
   if (rows.length) db.insert(settings).values(rows).run()
+
+  // Đường dẫn `claude` từng là của riêng module Review code. Giờ "Task mới"
+  // chạy cùng một binary, nên nó lên thành setting lõi — cùng lý do với
+  // `github_token`: một giá trị thì một ô, hai ô là hai chỗ để lệch nhau.
+  const movedBin = db
+    .select()
+    .from(settings)
+    .where(eq(settings.key, 'mod:code-review:claude_bin'))
+    .get()?.value
+  if (movedBin && !existing.has(SETTING_KEYS.claudeBin)) {
+    db.insert(settings).values({ key: SETTING_KEYS.claudeBin, value: movedBin }).run()
+  }
+
+  // Ô cũ của Gemini và của bản dùng API. Không còn ai đọc, nhưng
+  // `google_api_key` / `anthropic_api_key` vẫn là khoá thật nằm nguyên văn
+  // trong app.db — giữ lại là chỉ còn mặt để lộ.
+  db.delete(settings)
+    .where(
+      inArray(settings.key, [
+        'google_api_key',
+        'gemini_model',
+        'gemini_fallback_models',
+        'anthropic_api_key',
+        'mod:code-review:claude_bin',
+      ]),
+    )
+    .run()
 
   if (db.select({ n: sql<number>`count(*)` }).from(prefixes).get()?.n === 0) {
     db.insert(prefixes)
@@ -219,7 +247,6 @@ export function getSettingsForClient() {
   const all = getSettings()
   const secretKeys: string[] = [
     SETTING_KEYS.jiraApiToken,
-    SETTING_KEYS.googleApiKey,
     SETTING_KEYS.githubToken,
   ]
   const out: Record<string, string> = {}

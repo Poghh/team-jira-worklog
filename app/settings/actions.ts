@@ -2,6 +2,7 @@
 
 import { revalidatePath } from 'next/cache'
 
+import { probeClaude } from '@/lib/ai/cli'
 import { detectTeamScope } from '@/lib/jira/board-config'
 import { getMyself } from '@/lib/jira/client'
 import { clearMetaCache } from '@/lib/jira/meta'
@@ -126,32 +127,18 @@ export async function testJiraConnection(): Promise<TestResult> {
   }
 }
 
-export async function testGeminiConnection(): Promise<TestResult> {
-  const key = getSetting(SETTING_KEYS.googleApiKey)
-  const model = getSetting(SETTING_KEYS.geminiModel) ?? 'gemini-2.5-flash'
-  if (!key) return { ok: false, message: 'Chưa điền Google API key' }
+export async function testClaudeConnection(): Promise<TestResult> {
+  const check = await probeClaude(getSetting(SETTING_KEYS.claudeBin) ?? '')
+  if (!check.ok) return { ok: false, message: check.problem }
 
-  try {
-    const res = await fetch('https://generativelanguage.googleapis.com/v1beta/models', {
-      headers: { 'x-goog-api-key': key },
-      cache: 'no-store',
-    })
-    const body = (await res.json().catch(() => null)) as
-      | { models?: Array<{ name?: string }>; error?: { message?: string; status?: string } }
-      | null
-
-    if (!res.ok) {
-      return { ok: false, message: body?.error?.message ?? `Google trả về HTTP ${res.status}` }
-    }
-
-    const names = (body?.models ?? []).map((m) => m.name?.split('/').pop()).filter(Boolean)
-    const hasModel = names.includes(model)
-    return {
-      ok: hasModel,
-      message: hasModel ? `Kết nối OK · ${model}` : `Key hợp lệ nhưng không thấy model ${model}`,
-      detail: `${names.length} model khả dụng`,
-    }
-  } catch (error) {
-    return { ok: false, message: error instanceof Error ? error.message : 'Không gọi được Google API' }
+  const model = getSetting(SETTING_KEYS.claudeModel)?.trim()
+  return {
+    ok: true,
+    // Nói rõ tài khoản nào: CLI dùng gói đăng ký của người đã `claude auth
+    // login` trên máy này, không phải của người đang mở trình duyệt.
+    message: `Sẵn sàng · ${check.account || 'đã đăng nhập'}`,
+    detail: [check.version, check.bin, model ? `model ${model}` : 'model mặc định của CLI']
+      .filter(Boolean)
+      .join(' · '),
   }
 }

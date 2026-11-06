@@ -1736,7 +1736,7 @@ function Config({ repos, runner, onClaude }: { repos: RepoPreset[]; runner: Runn
 
       <div className={CARD}>
         <div className={CTITLE + ' mb-2'}>Claude Code CLI</div>
-        <div className="grid gap-2 sm:grid-cols-3">
+        <div className="grid gap-2 sm:grid-cols-2">
           <label className="text-[12px] text-ink-2">
             Số review chạy song song
             <input type="number" min={1} max={6} value={r.concurrency} onChange={(e) => setR({ ...r, concurrency: Number(e.target.value) })} className={INPUT} />
@@ -1745,11 +1745,12 @@ function Config({ repos, runner, onClaude }: { repos: RepoPreset[]; runner: Runn
             Model (trống = mặc định của CLI)
             <input value={r.model} onChange={(e) => setR({ ...r, model: e.target.value })} className={INPUT + ' font-mono'} placeholder="opus / sonnet / …" />
           </label>
-          <label className="text-[12px] text-ink-2">
-            Đường dẫn claude (trống = tự tìm)
-            <input value={r.claudeBin} onChange={(e) => setR({ ...r, claudeBin: e.target.value })} className={INPUT + ' font-mono'} placeholder="~/.local/bin/claude" />
-          </label>
         </div>
+        {/* Đường dẫn `claude` từng nằm ở đây. Nó lên Settings vì "Task mới"
+            chạy cùng binary — hai ô cùng sửa một giá trị là hai chỗ để lệch. */}
+        <p className="mt-1.5 text-[11.5px] text-ink-3">
+          Đường dẫn tới <code className="font-mono">claude</code> đặt ở <b>Settings</b>, dùng chung với Task mới.
+        </p>
         <label className="mt-2 block text-[12px] text-ink-2">
           Quy tắc chung cho mọi review
           <textarea value={r.globalRules} onChange={(e) => setR({ ...r, globalRules: e.target.value })} rows={3} className={INPUT} placeholder="Áp cho mọi repo, trước quy tắc riêng của từng repo." />

@@ -11,7 +11,7 @@ import {
 const now = sql`(strftime('%s','now'))`;
 
 /**
- * Key/value settings. Jira and Gemini credentials live here, seeded once from
+ * Key/value settings. Jira and Claude credentials live here, seeded once from
  * .env.local on first run so they can be changed in the UI without a restart.
  */
 export const settings = sqliteTable("settings", {

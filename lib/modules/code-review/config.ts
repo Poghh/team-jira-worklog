@@ -4,21 +4,22 @@ import { eq } from 'drizzle-orm'
 
 import { db } from '@/lib/db'
 import { settings } from '@/lib/db/schema'
+import { SETTING_KEYS, getSetting, setSetting } from '@/lib/settings'
 
 import type { Addressee, DocFile, DocTemplate, RepoPreset } from './model'
 
 /**
  * Settings for the code-review module, under `mod:code-review:` in the shared
- * `settings` table like every other module. The GitHub token is not here: it is
- * the core `github_token` setting, which already exists for this purpose.
+ * `settings` table like every other module. Two values are not here, for the
+ * same reason: the GitHub token is the core `github_token`, and the path to
+ * `claude` is the core `claude_bin` — "Task mới" runs the same binary, and one
+ * value kept in two places is two places for it to go stale.
  */
 const PREFIX = 'mod:code-review:'
 const K = {
   repos: `${PREFIX}repos`,
   /** How many reviews may run at once. Each one is a full Claude session. */
   concurrency: `${PREFIX}concurrency`,
-  /** Path to the `claude` binary; empty = look in the usual places. */
-  claudeBin: `${PREFIX}claude_bin`,
   /** `--model` for the CLI; empty = whatever the CLI defaults to. */
   model: `${PREFIX}model`,
   /** Rules applied to every review, before the per-repo ones. */
@@ -86,7 +87,7 @@ export function getReviewConfig(): ReviewConfig {
     repos: readRepos(getRaw(K.repos)),
     concurrency:
       Number.isInteger(n) && n >= 1 ? Math.min(n, MAX_CONCURRENCY) : DEFAULT_CONCURRENCY,
-    claudeBin: (getRaw(K.claudeBin) ?? '').trim(),
+    claudeBin: (getSetting(SETTING_KEYS.claudeBin) ?? '').trim(),
     model: (getRaw(K.model) ?? '').trim(),
     globalRules: getRaw(K.globalRules) ?? '',
   }
@@ -108,7 +109,7 @@ export function setRunnerConfig(input: {
 }) {
   const n = Math.max(1, Math.min(MAX_CONCURRENCY, Math.round(input.concurrency) || 1))
   setRaw(K.concurrency, String(n))
-  setRaw(K.claudeBin, input.claudeBin.trim())
+  setSetting(SETTING_KEYS.claudeBin, input.claudeBin.trim())
   setRaw(K.model, input.model.trim())
   setRaw(K.globalRules, input.globalRules)
 }

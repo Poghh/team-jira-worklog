@@ -1,11 +1,9 @@
 /**
  * Retry policy, kept free of any server import so it can be exercised directly.
  *
- * The Gemini free tier fails in three ways that all clear on their own: 429 when
- * the quota window is full, 503 when the model is busy, and — most often here —
- * a 200 whose body is not valid JSON, which is a sampling artefact rather than
- * a real error. All three are worth another attempt; a bad API key or a blocked
- * prompt is not.
+ * The Claude API fails in two ways that clear on their own: 429 when the rate
+ * limit window is full, and 529 when the model is overloaded. Both are worth
+ * another attempt; a bad API key or a declined prompt is not.
  */
 
 /** Marks a failure worth retrying, as opposed to one that will always fail. */
@@ -70,6 +68,6 @@ export async function withRetry<T>(
 
   throw new Error(
     `${last?.message ?? 'Thất bại'} — đã thử ${maxAttempts} lần. ` +
-      'Free tier hay bị giới hạn; chờ một lát rồi thử lại, hoặc đổi model trong Settings.',
+      'Chờ một lát rồi thử lại, hoặc đổi model trong Settings.',
   )
 }
