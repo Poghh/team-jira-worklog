@@ -16,7 +16,7 @@ import { localIndex, readLocalBranches } from "@/lib/modules/branches/local";
 import {
   type EnvBuild,
   type CardBuild,
-  buildCarries,
+  cardsInBuild,
   mergeCardBuild,
   newBuilds,
 } from "@/lib/modules/branches/build-model";
@@ -738,7 +738,7 @@ export async function checkBuildsAction(
 
     // The build's own note names the tickets it carries, so this is where a
     // card learns which build it shipped in — stated by whoever published it,
-    // not deduced from timing.
+    // not deduced from timing. Mã task hay tên FR, xem {@link cardsInBuild}.
     const cards = listTaskNotes();
     // One build per environment per card, so shipping to integration does not
     // erase the develop build the work also went out in.
@@ -746,10 +746,7 @@ export async function checkBuildsAction(
     for (const list of current.values()) {
       // Oldest first, so a newer build of the same environment supersedes it.
       for (const b of [...list].sort((x, y) => x.at - y.at)) {
-        const carried = new Set(buildCarries(b, cfg.projectKeys));
-        if (!carried.size) continue;
-        for (const c of cards) {
-          if (!c.issueKeys.some((k) => carried.has(k))) continue;
+        for (const c of cardsInBuild(cards, b, cfg.projectKeys)) {
           const next = mergeCardBuild(best.get(c.id) ?? c.builds, b);
           if (next) best.set(c.id, next);
         }

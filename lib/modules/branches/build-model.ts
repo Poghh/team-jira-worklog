@@ -200,6 +200,91 @@ export function buildCarries(build: EnvBuild, projectKeys: string[]): string[] {
 }
 
 /**
+ * FR nào một đoạn chữ gọi tên, chuẩn hoá về `FR5`.
+ *
+ * Mã task không phải thứ duy nhất đi vào ghi chú "What to Test". Dòng ghi chú
+ * dựng từ `taskId || description` của bảng release, nên một việc chưa có ticket
+ * Jira vẫn ra được ghi chú — bằng chính tên FR của nó. Khi đó phép đọc chỉ tìm
+ * `VT-123` không thấy gì, và card của việc đó không bao giờ được gắn bản build.
+ *
+ * FR là thứ **cả hai bên đều viết ra**: ghi chú viết `FR5`, còn tên nhánh viết
+ * `ctalk/feature/VT-2583_FR5_delete_system_notice`. Nên đây là chỗ nối, không
+ * phải phép đoán theo thời gian mà module này đã bỏ.
+ *
+ * Mọi cách đánh vần đều về một dạng, vì đo trên dữ liệu thật thì chúng khác
+ * nhau ở từng chỗ viết: nhánh có `FR-4` lẫn `FR5`, tag SDK có `FR4.1`,
+ * `FR5.1`, `FR5.2` — và `.1/.2` là **lần phát hành** của cùng một FR, không
+ * phải FR khác, nên phần sau dấu chấm bị bỏ đi. `FR` trơ trọi không số thì
+ * không phải tên của gì cả: không có số thì không nối được về nhánh nào.
+ *
+ * Chữ ngay trước `FR` không được là chữ cái — `…xfr4` không phải FR — nhưng số
+ * thì được: tag thật viết liền `ctalkvt2583FR5.1`.
+ */
+export function frTokens(text: string): string[] {
+  const out: string[] = [];
+  for (const m of text.matchAll(/(^|[^A-Za-z])FR[-_. ]?(\d+)/gi)) {
+    const token = `FR${m[2]}`;
+    if (!out.includes(token)) out.push(token);
+  }
+  return out;
+}
+
+/** Mọi FR một card tự nhận: tên nhánh của mọi nửa, và tiêu đề. */
+function cardFrTokens(card: {
+  title: string;
+  sides: Array<{ branch: string }>;
+}): string[] {
+  return frTokens([card.title, ...card.sides.map((s) => s.branch)].join(" "));
+}
+
+/**
+ * Card nào bản build này chở, theo đúng lời ghi chú của chính nó.
+ *
+ * Hai đường, vì ghi chú viết bằng hai thứ tiếng:
+ *
+ *  - **mã task** — khớp đúng chuỗi với `issueKeys` của card. Đây là đường cũ và
+ *    không đổi gì;
+ *  - **tên FR** — {@link frTokens}, cho những việc chưa có ticket Jira.
+ *
+ * Đường FR có thêm một điều kiện mà đường mã task không cần: **FR đó chỉ đúng
+ * một card nhận**. Số FR được đếm trong phạm vi một Epic, nên hai Epic đều có
+ * thể có `FR5`; ghi chú chỉ viết `FR5` thì không có gì trong đó nói là Epic
+ * nào. Gắn bừa một bản build cho card sai là nói với QC rằng có thứ để test mà
+ * thật ra không có — đúng cái sai mà cả module này được viết để tránh — nên khi
+ * một FR bị nhiều card nhận thì nó bị bỏ, y như trước khi có đường này.
+ */
+export function cardsInBuild<
+  T extends {
+    id: number;
+    issueKeys: string[];
+    title: string;
+    sides: Array<{ branch: string }>;
+  },
+>(cards: readonly T[], build: EnvBuild, projectKeys: string[]): T[] {
+  if (!build.notes.trim()) return [];
+  const keys = new Set(buildCarries(build, projectKeys));
+  const frs = new Set(frTokens(build.notes));
+  if (!keys.size && !frs.size) return [];
+
+  /** FR → card nào nhận nó. Nhiều hơn một là không ai được nhận. */
+  const owners = new Map<string, number[]>();
+  if (frs.size)
+    for (const c of cards)
+      for (const token of cardFrTokens(c)) {
+        if (!frs.has(token)) continue;
+        const had = owners.get(token) ?? [];
+        if (!had.includes(c.id)) owners.set(token, [...had, c.id]);
+      }
+  const byFr = new Set(
+    [...owners.values()].flatMap((ids) => (ids.length === 1 ? ids : [])),
+  );
+
+  return cards.filter(
+    (c) => c.issueKeys.some((k) => keys.has(k)) || byFr.has(c.id),
+  );
+}
+
+/**
  * Record a build against its own environment, forward only.
  *
  * Per environment rather than per card: a `ctalk/develop` build appearing does
