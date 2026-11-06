@@ -84,6 +84,7 @@ import {
   settleSides,
   cardIsEmpty,
   dropCards,
+  isRenamedCard,
   keysAfterRename,
   mergeCardPrs,
   parseCardSides,
@@ -1410,6 +1411,40 @@ eq(baseFreshness(roundTrip, NOW).upToDate, true, 'và đọc ra đúng kết lu�
      'cả hai nửa biến mất thì gỡ')
   eq(dropCards([card(1, [])], vanished(['a']), none).length, 0,
      'card không trỏ vào nhánh nào thì không ai kết luận được gì về nó')
+}
+
+
+/* ── đổi tên nhánh, hay card đã chết ───────────────────────────────────── */
+//
+// Thật: card 69 sinh ra từ `ctalk/task/resolve_VT-4279_ctalk-develop` — nhánh
+// resolve, không có mã riêng nên card khoá theo nhánh và `issueKey` rỗng. Nhánh
+// merge xong bị xoá trên remote, và luật "nhánh biến mất ⇒ đổi tên" trỏ card
+// sang `ctalk/feature/VT-4279`: nhánh của card VT-4350, đang sống, chưa bao giờ
+// là của nó. Nhánh resolve chết thì card resolve phải vỡ theo.
+{
+  const card = (extra: Record<string, unknown> = {}) => ({
+    issueKey: 'VT-1',
+    githubPinned: false,
+    sides: [{ repo: 'o/ios', branch: 'a' }],
+    ...extra,
+  })
+  const vanished = (names: string[]) => (s: { branch: string }) => names.includes(s.branch)
+
+  eq(isRenamedCard(card(), vanished(['a'])), true,
+     'card có mã, nhánh biến mất ở cả hai nơi: đúng ca đổi tên')
+  eq(isRenamedCard(card(), vanished([])), false, 'nhánh còn thì không có gì đổi tên')
+  eq(isRenamedCard(card({ githubPinned: true }), vanished(['a'])), false,
+     'ghim là quyết định tay, phép quét không trỏ lại')
+  // Chính ca card 69.
+  eq(isRenamedCard(card({ issueKey: '' }), vanished(['a'])), false,
+     'card khoá theo nhánh: nhánh mất là card xong, không đi chiếm nhánh khác')
+  eq(isRenamedCard(card({ issueKey: '   ' }), vanished(['a'])), false,
+     'mã toàn khoảng trắng cũng là không có mã')
+  eq(isRenamedCard(card({ sides: [] }), vanished(['a'])), false,
+     'card không trỏ vào nhánh nào thì không kết luận được gì')
+  eq(isRenamedCard(card({ sides: [{ repo: 'o/ios', branch: 'a' }, { repo: 'o/sdk', branch: 'b' }] }),
+                   vanished(['a'])), false,
+     'một nửa còn sống thì chưa phải đổi tên')
 }
 
 

@@ -39,6 +39,7 @@ import {
   titleFromBranch,
   cardIsEmpty,
   dropCards,
+  isRenamedCard,
   keysAfterRename,
 } from "./github-model";
 import {
@@ -597,8 +598,15 @@ export async function scanGitHub(): Promise<ScanResult> {
    * and everything downstream keeps treating the key as an opaque string. What
    * changes is only what gets *stored*: `issue_key` stays empty for these,
    * which is what the partial unique index and `saveTaskNote` already expect.
+   *
+   * Khoá theo **tên nhánh**, không theo `repo#tên`, và cùng một hàm cho cả hai
+   * chỗ cần nó — {@link contested} cũng gom theo tên, vì một việc thường có
+   * cùng tên nhánh ở cả hai repo và phải cho ra một card hai nửa. Trước đây hai
+   * chỗ dùng hai định dạng: `byKey` ghi `⑂repo#tên` còn vòng quét tra `⑂tên`,
+   * nên card khoá-theo-nhánh **không bao giờ tìm lại được** — mỗi lần quét lại
+   * đẻ thêm một card nữa cho đúng cái nhánh đó.
    */
-  const branchKey = (repo: string, name: string) => `⑂${repo}#${name}`;
+  const branchKey = (name: string) => `⑂${name}`;
   const isBranchKey = (k: string) => k.startsWith("⑂");
 
   const byKey = new Map<string, (typeof allCards)[number]>();
@@ -611,7 +619,7 @@ export async function scanGitHub(): Promise<ScanResult> {
     if (!c.issueKey)
       for (const side of c.sides)
         if (side.repo && side.branch.trim())
-          byKey.set(branchKey(side.repo, side.branch.trim()), c);
+          byKey.set(branchKey(side.branch.trim()), c);
 
   /**
    * `issueKey` → `repo` → the branch of that repository.
@@ -679,7 +687,6 @@ export async function scanGitHub(): Promise<ScanResult> {
     }
   /** Mã bị tranh thì card mang tên nhánh; mã chỉ một nhánh thì vẫn mang mã. */
   const contested = (k: string) => (namesPerKey.get(k)?.size ?? 0) > 1;
-  const sharedKey = (name: string) => `⑂${name}`;
   /** Nhánh bị dời sang khoá-theo-tên, để báo cáo nói ra chứ không im lặng. */
   const splitKeys: string[] = [];
 
@@ -694,11 +701,9 @@ export async function scanGitHub(): Promise<ScanResult> {
     const primary = all[0];
     if (primary && contested(primary) && !splitKeys.includes(primary))
       splitKeys.push(primary);
-    const key = primary
-      ? contested(primary)
-        ? sharedKey(b.name)
-        : primary
-      : branchKey(b.repo, b.name);
+    // Mã riêng của một nhánh thì card mang mã; còn lại — không có mã, hoặc có
+    // mà bị nhánh khác tranh — thì card mang tên nhánh, qua cùng một hàm.
+    const key = primary && !contested(primary) ? primary : branchKey(b.name);
     const card = byKey.get(key);
     if (
       card?.githubPinned &&
@@ -1140,13 +1145,10 @@ export async function scanGitHub(): Promise<ScanResult> {
      * nguyên tên cũ — hai nửa của cùng một việc, không nửa nào sai, mà bảng
      * thì sai.
      *
-     * Ghim vẫn là ngoại lệ: ghim là một quyết định tay, và quyết định tay chỉ
-     * người gỡ được.
+     * Ghim và card khoá-theo-nhánh là hai ngoại lệ; cả ba điều kiện và lý do
+     * của từng cái nằm ở {@link isRenamedCard}.
      */
-    const renamed =
-      !card.githubPinned &&
-      card.sides.some((x) => x.repo && x.branch.trim()) &&
-      card.sides.filter((x) => x.repo && x.branch.trim()).every(sideVanished);
+    const renamed = isRenamedCard(card, sideVanished);
     /**
      * Ticket của card sau lượt này.
      *
@@ -1210,10 +1212,26 @@ export async function scanGitHub(): Promise<ScanResult> {
    *     không phải bị xoá rồi dựng lại từ đầu: dựng lại là mất cột, mất lịch sử
    *     và mất chính những thứ điều kiện 2 đang giữ.
    */
-  const repointed = new Set(
+  const planned = new Set(
     rows.flatMap((r) => (r.noteId && r.action !== "match" ? [r.noteId] : [])),
   );
-  const dropped: GoneCard[] = dropCards(allCards, sideVanished, repointed).map(
+  /**
+   * Card **thật sự** được trỏ sang một nhánh còn sống trong lượt này.
+   *
+   * Hẹp hơn {@link planned} một bậc, và chỗ khác nhau là `conflict`: hàng
+   * `conflict` cố ý không ghi gì cả — nó đứng chờ người dùng tự tick, mặc định
+   * bỏ trống, và {@link safeRows} loại nó khỏi nút quét-một-phát. Card nằm dưới
+   * một hàng như vậy vẫn đang trỏ vào cái nhánh đã mất, nên tính nó là "đã được
+   * chữa" là gạch nó khỏi danh sách mời dọn mà chẳng chữa gì: nhánh chết, card
+   * im lặng, không dòng nào nói ra.
+   *
+   * Phép xoá hẳn phía dưới thì vẫn dùng `planned`: một card có hàng kế hoạch
+   * đang chờ không được biến mất dưới chân chính cái hàng đó.
+   */
+  const repointed = new Set(
+    rows.flatMap((r) => (r.noteId && r.action === "fill" ? [r.noteId] : [])),
+  );
+  const dropped: GoneCard[] = dropCards(allCards, sideVanished, planned).map(
     goneCard,
   );
   const droppedIds = new Set(dropped.map((c) => c.id));
@@ -1224,7 +1242,8 @@ export async function scanGitHub(): Promise<ScanResult> {
       // Card đang được trỏ sang nhánh khác trong chính lần quét này thì không
       // phải "mất nhánh" — nhánh của nó vừa đổi tên. Để nó nằm trong danh sách
       // mời dọn là mời người dùng xoá đúng cái card vừa được chữa, bằng một nút
-      // "Xoá 1 card này" đứng ngay trên dòng CẬP NHẬT của chính nó.
+      // "Xoá 1 card này" đứng ngay trên dòng CẬP NHẬT của chính nó. Chỉ hàng
+      // thật sự ghi nhánh mới được miễn, xem {@link repointed}.
       if (repointed.has(c.id)) return false;
       // Every repository the fix touched, not only the first.
       //
