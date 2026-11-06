@@ -545,7 +545,10 @@ function SelfForm({
   const [dirty, setDirty] = useState(0)
   const [head, setHead] = useState('')
   const [links, setLinks] = useState<PrLink[]>([])
-  const [sources, setSources] = useState<SourceRow[]>([])
+  // Cùng khối ngữ cảnh với review PR: ticket Jira + trang Confluence. Tự
+  // review khác review PR ở chỗ soi code dưới máy, không khác ở chỗ đối chiếu
+  // với yêu cầu nào.
+  const [context, setContext] = useState<PrContext>(EMPTY_CONTEXT)
   const [title, setTitle] = useState('')
   const [note, setNote] = useState('')
   const [msg, setMsg] = useState('')
@@ -642,26 +645,22 @@ function SelfForm({
 
       <input value={title} onChange={(e) => setTitle(e.target.value)} className={INPUT + ' mt-2'} placeholder="Tên hồ sơ (không bắt buộc)" />
       <textarea value={note} onChange={(e) => setNote(e.target.value)} rows={2} className={INPUT + ' mt-2'} placeholder="Ghi chú cho Claude (không bắt buộc)" />
-      {attach.section(
-        'Mô tả chức năng, TDD… Claude sẽ kiểm code có làm đúng và đủ theo tài liệu không.',
-        <div className="mt-2 border-t border-line pt-2">
-          <SourceRows
-            value={sources}
-            onChange={setSources}
-            templates={[]}
-            fallbackTemplate=""
-            noTemplate
-            hint="Hoặc dán link Confluence — mỗi dòng một link. Trang có subpage thì Claude đọc luôn cả cây bên dưới. Mỗi vòng review đọc lại bản mới nhất."
-          />
-        </div>,
-        sources.length,
-      )}
+      {/* Cùng luật với review PR, chỉ thiếu vế mô tả PR vì chưa có PR nào:
+          mã ticket dò theo tên nhánh clone đang đứng và tên hồ sơ. */}
+      <ContextPicker
+        value={context}
+        onChange={setContext}
+        detected={head ? detectJiraKeys({ branch: head, title }) : []}
+        detectedFrom="tên nhánh / tên hồ sơ"
+        scope="Các vòng Review tiếp tự lấy bản mới nhất."
+      />
+      {attach.section('Mô tả chức năng, TDD… Claude sẽ kiểm code có làm đúng và đủ theo tài liệu không.')}
 
       <div className="mt-2 flex items-center gap-2">
         <button
           type="button"
           className={BTN_PRI}
-          disabled={busy || !canRun || dirty === 0 || !contextReady({ jira: NO_JIRA, sources })}
+          disabled={busy || !canRun || dirty === 0 || !contextReady(context)}
           onClick={() =>
             start(async () => {
               const docs = await attach.upload()
@@ -673,13 +672,13 @@ function SelfForm({
                 note,
                 docs,
                 links,
-                ...(sources.length ? { sources: sourcePayload(sources.filter((x) => !x.error)) } : {}),
+                ...contextPayload(context),
               })
               setMsg(r.message)
               if (r.ok) {
                 attach.clear()
                 setLinks([])
-                setSources([])
+                setContext(EMPTY_CONTEXT)
                 onDone()
               }
             })
@@ -1438,12 +1437,20 @@ export function ContextPicker({
   onChange,
   detected,
   scope,
+  detectedFrom = 'tên nhánh / tiêu đề / mô tả PR',
 }: {
   value: PrContext
   onChange: (v: PrContext) => void
   /** Keys the picked PRs / branch name on their own. */
   detected: string[]
   scope?: string
+  /**
+   * Chỗ Claude dò mã ticket, nói bằng lời của màn đang dùng.
+   *
+   * Review PR có mô tả PR để dò; tự review thì chưa có PR nào, nên nhắc tới
+   * nó là hứa một thứ không tồn tại.
+   */
+  detectedFrom?: string
 }) {
   const [draft, setDraft] = useState('')
   const [previews, setPreviews] = useState<Record<string, TicketPreview | 'loading'>>({})
@@ -1518,7 +1525,7 @@ export function ContextPicker({
           />
           <label className="flex items-center gap-1.5 text-[12px] text-ink-2">
             <input type="checkbox" checked={value.jira.auto} onChange={(e) => setJira({ auto: e.target.checked })} />
-            Tự lấy ticket có key trong tên nhánh / tiêu đề / mô tả PR
+            Tự lấy ticket có key trong {detectedFrom}
           </label>
           {shown.length > 0 && (
             <ul className="flex flex-col gap-1">
@@ -1581,7 +1588,7 @@ export function ContextPicker({
           templates={[]}
           fallbackTemplate=""
           noTemplate
-          hint="🌐 Trang Confluence (mô tả chức năng, TDD…) — dán một hoặc nhiều link. Trang có subpage thì Claude đọc cả cây bên dưới; bỏ tick những subpage không liên quan tới PR."
+          hint="🌐 Trang Confluence (mô tả chức năng, TDD…) — dán một hoặc nhiều link. Trang có subpage thì Claude đọc cả cây bên dưới; bỏ tick những subpage không liên quan."
         />
       </div>
     </details>
@@ -1729,7 +1736,7 @@ function Config({ repos, runner, onClaude }: { repos: RepoPreset[]; runner: Runn
 
       <div className={CARD}>
         <div className={CTITLE + ' mb-2'}>Claude Code CLI</div>
-        <div className="grid gap-2 sm:grid-cols-3">
+        <div className="grid gap-2 sm:grid-cols-2">
           <label className="text-[12px] text-ink-2">
             Số review chạy song song
             <input type="number" min={1} max={6} value={r.concurrency} onChange={(e) => setR({ ...r, concurrency: Number(e.target.value) })} className={INPUT} />
@@ -1738,11 +1745,12 @@ function Config({ repos, runner, onClaude }: { repos: RepoPreset[]; runner: Runn
             Model (trống = mặc định của CLI)
             <input value={r.model} onChange={(e) => setR({ ...r, model: e.target.value })} className={INPUT + ' font-mono'} placeholder="opus / sonnet / …" />
           </label>
-          <label className="text-[12px] text-ink-2">
-            Đường dẫn claude (trống = tự tìm)
-            <input value={r.claudeBin} onChange={(e) => setR({ ...r, claudeBin: e.target.value })} className={INPUT + ' font-mono'} placeholder="~/.local/bin/claude" />
-          </label>
         </div>
+        {/* Đường dẫn `claude` từng nằm ở đây. Nó lên Settings vì "Task mới"
+            chạy cùng binary — hai ô cùng sửa một giá trị là hai chỗ để lệch. */}
+        <p className="mt-1.5 text-[11.5px] text-ink-3">
+          Đường dẫn tới <code className="font-mono">claude</code> đặt ở <b>Settings</b>, dùng chung với Task mới.
+        </p>
         <label className="mt-2 block text-[12px] text-ink-2">
           Quy tắc chung cho mọi review
           <textarea value={r.globalRules} onChange={(e) => setR({ ...r, globalRules: e.target.value })} rows={3} className={INPUT} placeholder="Áp cho mọi repo, trước quy tắc riêng của từng repo." />

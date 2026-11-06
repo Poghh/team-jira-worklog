@@ -8,7 +8,7 @@ import {
   type TestResult,
   detectTeamAction,
   saveSettings,
-  testGeminiConnection,
+  testClaudeConnection,
   testJiraConnection,
 } from './actions'
 
@@ -18,11 +18,11 @@ const K = {
   jiraApiToken: 'jira_api_token',
   jiraProjectKey: 'jira_project_key',
   jiraBoardId: 'jira_board_id',
-  googleApiKey: 'google_api_key',
+  claudeBin: 'claude_bin',
   githubToken: 'github_token',
   githubLogins: 'github_logins',
-  geminiModel: 'gemini_model',
-  geminiFallbackModels: 'gemini_fallback_models',
+  claudeModel: 'claude_model',
+  claudeFallbackModels: 'claude_fallback_models',
   dailyQuotaHours: 'daily_quota_hours',
   logStepHours: 'log_step_hours',
   logPresets: 'log_presets',
@@ -69,23 +69,32 @@ export function SettingsForm({ initial }: { initial: Record<string, string> }) {
 
         <TeamCard initial={initial} />
 
-        <Card title="Google Gemini">
+        {/* Một ô cho cả hai thứ chạy bằng Claude Code CLI — "Task mới" sinh
+            nội dung và module Review code. Cùng lý do với token GitHub ở dưới:
+            một giá trị mà hai màn hình sửa được là hai chỗ để lệch nhau. */}
+        <Card title="Claude">
           <Field
-            label="API key"
-            name={K.googleApiKey}
-            defaultValue={initial[K.googleApiKey]}
-            type="password"
-            hint="Tạo tại aistudio.google.com/apikey"
+            label="Đường dẫn claude"
+            name={K.claudeBin}
+            defaultValue={initial[K.claudeBin]}
+            mono
+            hint="Để trống là tự tìm (~/.local/bin, /opt/homebrew/bin…). Chưa có thì cài: curl -fsSL https://claude.ai/install.sh | bash, rồi claude auth login."
           />
-          <Field label="Model" name={K.geminiModel} defaultValue={initial[K.geminiModel]} mono />
+          <Field
+            label="Model"
+            name={K.claudeModel}
+            defaultValue={initial[K.claudeModel]}
+            mono
+            hint="opus / sonnet / haiku, hoặc id đầy đủ. Trống = mặc định của CLI."
+          />
           <Field
             label="Model dự phòng"
-            name={K.geminiFallbackModels}
-            defaultValue={initial[K.geminiFallbackModels]}
+            name={K.claudeFallbackModels}
+            defaultValue={initial[K.claudeFallbackModels]}
             mono
-            hint="Dùng lần lượt khi model chính hết quota. Cách nhau bằng dấu phẩy."
+            hint="Dùng lần lượt khi model chính hết quota hoặc quá tải. Cách nhau bằng dấu phẩy."
           />
-          <ConnectionTest label="Test Gemini" run={testGeminiConnection} />
+          <ConnectionTest label="Test Claude" run={testClaudeConnection} />
         </Card>
 
         {/* Một ô cho cả hai module dùng GitHub — "Nhánh & ghi chú" và "Review

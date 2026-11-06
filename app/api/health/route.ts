@@ -1,3 +1,4 @@
+import { probeClaude } from '@/lib/ai/cli'
 import { JiraError, getMyself } from '@/lib/jira/client'
 import { SETTING_KEYS, getSettings } from '@/lib/settings'
 
@@ -16,7 +17,9 @@ export async function GET() {
     jiraBaseUrl: Boolean(settings[SETTING_KEYS.jiraBaseUrl]),
     jiraEmail: Boolean(settings[SETTING_KEYS.jiraEmail]),
     jiraApiToken: Boolean(settings[SETTING_KEYS.jiraApiToken]),
-    googleApiKey: Boolean(settings[SETTING_KEYS.googleApiKey]),
+    // Không hỏi "đã điền đường dẫn chưa" mà hỏi "chạy được không": ô đó để
+    // trống là trạng thái bình thường — trống nghĩa là tự tìm lấy.
+    claudeCli: (await probeClaude(settings[SETTING_KEYS.claudeBin] ?? '')).ok,
   }
 
   let jira: Record<string, unknown>

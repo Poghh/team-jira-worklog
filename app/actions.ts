@@ -1,7 +1,7 @@
 "use server";
 
 import { getMyself } from "@/lib/jira/client";
-import { generateTask, pointRulesText } from "@/lib/ai/gemini";
+import { generateTask, pointRulesText } from "@/lib/ai/claude";
 import {
   addTeamLabel,
   attachToSprint,
@@ -315,7 +315,7 @@ export async function updateDescriptionAction(
 }
 
 /**
- * Nhờ Gemini viết lại mô tả cho một tiêu đề đã đổi.
+ * Nhờ Claude viết lại mô tả cho một tiêu đề đã đổi.
  *
  * Không ghi gì cả — chỉ trả chữ về để người dùng đọc, sửa, rồi mới bấm Lưu.
  * Đổi tiêu đề xong mà mô tả tự nhảy theo là thứ không ai muốn; đề xuất thì có.
@@ -343,7 +343,7 @@ export async function regenerateDescriptionAction(
   } catch (error) {
     return {
       ok: false,
-      message: error instanceof Error ? error.message : "Gemini lỗi",
+      message: error instanceof Error ? error.message : "Claude lỗi",
     };
   }
 }

@@ -1,16 +1,8 @@
 import type { SprintTask } from '@/lib/jira/types'
-import { statusTone } from '@/lib/jira/types'
 
 import { CreateIssueButton } from './create-issue'
+import { StatusPill } from './status-pill'
 import { TypeIcon } from './type-icon'
-
-const TONE: Record<string, string> = {
-  todo: 'bg-surface-2 text-ink-2',
-  prog: 'bg-accent-soft text-accent-ink',
-  test: 'bg-warn-soft text-warn',
-  ver: 'bg-blue-soft text-blue',
-  done: 'bg-good-soft text-good',
-}
 
 /**
  * Standard-level issues assigned to the user that hold no subtask of theirs.
@@ -47,14 +39,10 @@ export function PendingTasks({ tasks, title }: { tasks: SprintTask[]; title?: st
               {t.issueTypeName}
             </span>
 
-            <span
-              className={
-                'rounded-[4px] px-[7px] py-[3px] text-[10px] font-bold uppercase tracking-[0.05em] ' +
-                TONE[statusTone(t.statusName)]
-              }
-            >
-              {t.statusName}
-            </span>
+            {/* Cùng một pill đổi được trạng thái như trên bảng: task ở đây vẫn
+                là task của chính mình, chỉ thiếu task con để log giờ. Bản cũ vẽ
+                lại cái nhãn tĩnh nên muốn đổi trạng thái phải mở Jira. */}
+            <StatusPill issueKey={t.key} statusName={t.statusName} />
 
             <span className="min-w-[180px] flex-1">
               <span className="block text-[13px]">{t.summary}</span>

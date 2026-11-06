@@ -240,14 +240,33 @@ async function prepareAndSpawn(roundId: number) {
        * đúng những chỗ người viết tài liệu vừa sửa.
        */
       const docs = parseDocs(round.docs).filter((d) => !isFetched(d))
-      if (item.sources.length) {
-        docs.push(...(await fetchPages(item.id, item.sources)))
-        updateRound(roundId, { docs: JSON.stringify(docs) })
+      /**
+       * Ticket Jira trước, rồi trang Confluence — giống hệt đường PR.
+       *
+       * Ticket là cái "làm gì", nên nó đứng đầu danh sách tài liệu. Tên nhánh
+       * lấy từ `headBranch` chứ không phải `headRef`: của tự review thì
+       * `headRef` là sha ảnh chụp, không có mã ticket nào trong đó.
+       */
+      const tickets = await fetchTickets(
+        item.id,
+        ticketPlan(item.jira, { branch: item.headBranch, title: item.title }),
+      )
+      docs.unshift(...tickets.docs)
+      if (item.sources.length) docs.push(...(await fetchPages(item.id, item.sources)))
+      updateRound(roundId, { docs: JSON.stringify(docs) })
+      const attached = new Set(confluencePages(docs).map((d) => d.source.pageId))
+      const host = confluenceHost()
+      const context = {
+        problems: tickets.problems,
+        unreadPages: tickets.pages.filter((u) => !attached.has(parsePageUrl(u, host) ?? '')),
       }
       for (const d of docs) {
         const dir = path.dirname(d.path)
         if (!addDirs.includes(dir)) addDirs.push(dir)
       }
+      // Yêu cầu có đổi so với vòng trước không? Bản tài liệu mới đáng soi lại
+      // cả những chỗ đã kiểm rồi.
+      const docsChanged = round.round > 1 && Boolean(prev) && docSignature(docs) !== docSignature(parseDocs(prev!.docs))
 
       // Vế kia của một thay đổi hai repo — thường là SDK đang sửa dở dưới máy
       // cùng lúc với app. Không có nó thì Claude chỉ thấy một đầu của chỗ nối
@@ -269,7 +288,8 @@ async function prepareAndSpawn(roundId: number) {
       prompt = codePrompt({
         repoName: r.name,
         docs,
-        docsChanged: false,
+        docsChanged,
+        context,
         links,
         addressee: null,
         title: item.title,

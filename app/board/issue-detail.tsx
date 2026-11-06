@@ -64,7 +64,7 @@ export function IssueDetail({ issueKey, onClose }: { issueKey: string; onClose: 
   /**
    * Tiêu đề đang có sửa chưa lưu.
    *
-   * Gemini viết theo tiêu đề **đã lưu** — nó chỉ đọc được `detail.summary`, mà
+   * Claude viết theo tiêu đề **đã lưu** — nó chỉ đọc được `detail.summary`, mà
    * ô sửa chưa lưu thì giá trị ấy vẫn là tiêu đề cũ. Không chặn thì người dùng
    * đổi tiêu đề, bấm viết lại, và nhận về mô tả của tiêu đề cũ mà không có gì
    * trên màn hình nói ra điều đó.
@@ -399,13 +399,13 @@ function EditableTitle({
 }
 
 /**
- * Mô tả issue, sửa được tại chỗ, có nút nhờ Gemini viết lại.
+ * Mô tả issue, sửa được tại chỗ, có nút nhờ Claude viết lại.
  *
  * Hai ô chứ không một: Jira cất mô tả và Definition of Done chung một tài liệu
  * ADF, nhưng người soạn nghĩ về chúng riêng — và màn Task mới cũng hỏi riêng.
  * {@link splitDod} tách về đúng hai ô ấy, {@link textToAdf} ghép lại.
  *
- * Nút Gemini **không** tự ghi: nó điền chữ vào ô để người dùng đọc và sửa, rồi
+ * Nút Claude **không** tự ghi: nó điền chữ vào ô để người dùng đọc và sửa, rồi
  * mới bấm Lưu. Đổi tiêu đề xong mà mô tả tự nhảy theo là thứ không ai muốn.
  */
 function EditableDescription({
@@ -423,7 +423,7 @@ function EditableDescription({
   parentSummary?: string
   onSaved: (doc: unknown) => void
   onEditingChange: (on: boolean) => void
-  /** Tiêu đề đang sửa chưa lưu — Gemini phải đợi, xem ghi chú ở `IssueDetail`. */
+  /** Tiêu đề đang sửa chưa lưu — Claude phải đợi, xem ghi chú ở `IssueDetail`. */
   titleDirty: boolean
 }) {
   const [editing, setEditing] = useState(false)
@@ -510,19 +510,19 @@ function EditableDescription({
           disabled={busy || titleDirty}
           title={
             titleDirty
-              ? 'Tiêu đề đang sửa chưa lưu — Gemini viết theo tiêu đề đã lưu, nên hãy bấm Lưu ở tiêu đề trước.'
-              : `Nhờ Gemini viết lại theo tiêu đề đã lưu:\n${title}\nChỉ điền vào ô — chưa ghi lên Jira.`
+              ? 'Tiêu đề đang sửa chưa lưu — Claude viết theo tiêu đề đã lưu, nên hãy bấm Lưu ở tiêu đề trước.'
+              : `Nhờ Claude viết lại theo tiêu đề đã lưu:\n${title}\nChỉ điền vào ô — chưa ghi lên Jira.`
           }
           className="flex items-center gap-1.5 rounded-md border border-line px-2 py-1 text-[11.5px] text-ink-2 hover:bg-surface-2 disabled:opacity-40"
         >
-          {asking ? <Spinner /> : '✨'} {asking ? 'Đang viết…' : 'Gemini viết lại'}
+          {asking ? <Spinner /> : '✨'} {asking ? 'Đang viết…' : 'Claude viết lại'}
         </button>
       </div>
 
       {/* Nút xám mà không nói lý do thì người dùng chỉ thấy nó hỏng. */}
       {titleDirty && (
         <p className="mb-2 text-[11.5px] text-warn">
-          Tiêu đề đang sửa chưa lưu — Gemini viết theo tiêu đề <b>đã lưu</b>.
+          Tiêu đề đang sửa chưa lưu — Claude viết theo tiêu đề <b>đã lưu</b>.
           Bấm <b>Lưu</b> ở tiêu đề trước rồi hãy viết lại.
         </p>
       )}

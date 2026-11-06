@@ -69,7 +69,7 @@ async function newTaskPage(props: PageProps<'/new'>) {
         </div>
         <h1 className="text-xl font-semibold tracking-tight">Task mới</h1>
         <p className="mt-1 text-[12.5px] text-ink-3">
-          Mô tả bằng lời của bạn, Gemini dựng title / description / DoD. Sửa thoải mái trước khi tạo.
+          Mô tả bằng lời của bạn, Claude dựng title / description / DoD. Sửa thoải mái trước khi tạo.
         </p>
       </header>
 

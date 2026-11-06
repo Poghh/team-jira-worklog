@@ -294,7 +294,9 @@ export function publishedCodes(tasks: TaskLike[], productName: string): Map<stri
   const out = new Map<string, string>()
   for (const t of tasks) {
     if (productName && t.product !== productName) continue
-    const feature = t.taskId.trim()
+    // `taskId || description`, cùng luật với publishCandidates ở trên — nếu nó
+    // vào được ghi chú bằng tên FR thì nó cũng phải cảnh báo được bằng tên đó.
+    const feature = t.taskId.trim() || t.description.trim()
     if (feature && t.buildStatus === REPORTED_STATUS) out.set(normCode(feature), t.publishedBuild || 'build trước')
     for (const f of t.fixes) {
       if (f.status === REPORTED_STATUS && f.code.trim()) out.set(normCode(f.code), f.build || 'build trước')

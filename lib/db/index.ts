@@ -431,6 +431,8 @@ function open() {
   ensureColumn(sqlite, "review_findings", "comment_kind", "comment_kind TEXT NOT NULL DEFAULT ''");
   // PR reviews: Jira tickets read as requirements (Confluence pages reuse `sources`).
   ensureColumn(sqlite, "review_items", "jira", "jira TEXT NOT NULL DEFAULT ''");
+  // Tự review: tên nhánh lúc xếp hàng, vì `head_ref` của nó là một sha.
+  ensureColumn(sqlite, "review_items", "head_branch", "head_branch TEXT NOT NULL DEFAULT ''");
   return drizzle(sqlite, { schema });
 }
 

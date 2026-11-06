@@ -1520,6 +1520,37 @@ export function cardIsEmpty(card: {
 }
 
 /**
+ * Card đang **đổi tên nhánh**, chứ không phải card đã chết.
+ *
+ * Phân biệt được bằng ba câu hỏi, và câu thứ ba là câu từng thiếu:
+ *
+ *  1. không ghim — ghim là quyết định tay, chỉ người gỡ được;
+ *  2. mọi nửa của card đều biến mất ở cả GitHub lẫn clone — phép kiểm do người
+ *     gọi đưa vào, vì chỉ phép quét biết nó vừa đọc được những gì;
+ *  3. **card định danh bằng ticket**, tức `issueKey` không rỗng. Card có
+ *     `issueKey` rỗng được định danh bằng chính cái nhánh nó trỏ vào, nên nhánh
+ *     mất là card xong — không có "tên mới" nào để trỏ sang. Đổi tên một nhánh
+ *     không mã thì khoá nhóm đổi theo, phép tra không ra card nào, và nhánh mới
+ *     đi đường tạo-card chứ không bao giờ qua đây; đường này chỉ còn tới được
+ *     khi một nhánh **khác** tình cờ cũng đánh vần ra cái mã mà card đang giữ.
+ *
+ * Đo trên card 69: nhánh `ctalk/task/resolve_VT-4279_ctalk-develop` merge xong
+ * bị xoá trên remote, và luật này — hồi chưa có (3) — trỏ card sang
+ * `ctalk/feature/VT-4279`: nhánh của một card khác, đang sống, chưa bao giờ là
+ * của nó. Nhánh resolve bị xoá thì card resolve phải vỡ theo, chứ không đi
+ * chiếm một nhánh còn sống cùng mang mã đó — mà ở team này thì lúc nào cũng có
+ * đúng một nhánh như vậy: chính nhánh gốc mà nhánh resolve sinh ra để phục vụ.
+ */
+export function isRenamedCard<S extends { repo: string; branch: string }>(
+  card: { issueKey: string; githubPinned: boolean; sides: S[] },
+  vanished: (side: S) => boolean,
+): boolean {
+  if (card.githubPinned || !card.issueKey.trim()) return false;
+  const owned = card.sides.filter((s) => s.repo && s.branch.trim());
+  return owned.length > 0 && owned.every(vanished);
+}
+
+/**
  * Card phép quét được phép gỡ hẳn khỏi bảng.
  *
  * Ba điều kiện, viết ở một chỗ vì thứ tự giữa chúng mới là phần dễ sai:

@@ -4,7 +4,7 @@ import { revalidatePath } from 'next/cache'
 
 import type { ActionResult } from '@/app/actions'
 
-import { type GenerateOutcome, generateTask, pointRulesText } from '@/lib/ai/gemini'
+import { type GenerateOutcome, generateTask, pointRulesText } from '@/lib/ai/claude'
 import { type ParentOption, createIssue, searchParentCandidates } from '@/lib/jira/create'
 import { deleteDraft, saveDraft } from '@/lib/drafts'
 import { SETTING_KEYS, getSetting } from '@/lib/settings'
@@ -68,7 +68,7 @@ export async function generateAction(
       data,
     }
   } catch (error) {
-    return { ok: false, message: error instanceof Error ? error.message : 'Gemini lỗi' }
+    return { ok: false, message: error instanceof Error ? error.message : 'Claude lỗi' }
   }
 }
 

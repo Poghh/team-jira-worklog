@@ -58,6 +58,8 @@ import {
 } from '@/lib/modules/branches/stage-groups'
 import {
   buildCarries,
+  cardsInBuild,
+  frTokens,
   joinBuilds,
   newBuilds,
   parseBuildNumber,
@@ -84,6 +86,7 @@ import {
   settleSides,
   cardIsEmpty,
   dropCards,
+  isRenamedCard,
   keysAfterRename,
   mergeCardPrs,
   parseCardSides,
@@ -643,6 +646,56 @@ eq(buildCarries(B('- Hir: VT-122\n- CTalk: VT-501, VT-504'), P),
 eq(buildCarries(B('- Sync code master (hotfix)'), P), [], 'prose with no keys')
 eq(buildCarries(B(''), P), [], 'no note at all')
 eq(buildCarries(B('- CXP: CXPT-316'), P), [], 'a project key nobody configured is not invented')
+
+/* ── tên FR, khi ghi chú không có mã task ───────────────────────────────── */
+//
+// Dòng "What to Test" dựng từ `taskId || description` của bảng release, nên một
+// việc chưa có ticket Jira vào được ghi chú bằng chính tên FR của nó. FR là thứ
+// cả hai bên đều viết ra: ghi chú viết `FR5`, nhánh viết
+// `ctalk/feature/VT-2583_FR5_delete_system_notice`.
+eq(frTokens('- CTalk: VT-2583, FR5 Xoá thông báo hệ thống'), ['FR5'],
+   'tên FR đứng cạnh mã task')
+eq(frTokens('FR-4 / fr_4 / FR 4 / FR.4'), ['FR4'], 'mọi cách đánh vần về một dạng, và chỉ một lần')
+// Thật: tag SDK `2026.09.30-ctalkvt2583FR5.1`, `…FR5.2`, `…FR5.3` — ba lần
+// phát hành của cùng FR5, nên phần sau dấu chấm không phải một FR khác.
+eq(frTokens('2026.09.30-ctalkvt2583FR5.2'), ['FR5'],
+   'số trước FR không sao, và .2 là lần phát hành chứ không phải FR khác')
+eq(frTokens('xfr4 refactor'), [], 'chữ cái ngay trước thì không phải FR')
+eq(frTokens('FR cho Mobile Lite'), [], 'FR không số thì không nối được về nhánh nào')
+eq(frTokens(''), [], 'không có gì thì không có FR nào')
+
+{
+  const card = (id: number, issueKeys: string[], branch: string, title = '') => ({
+    id, issueKeys, title, sides: [{ branch }],
+  })
+  const fr5 = card(1, ['VT-2583'], 'ctalk/feature/VT-2583_FR5_delete_system_notice')
+  const fr4 = card(2, ['VT-2583'], 'ctalk/feature/VT-2583_FR-4_change_password')
+  const plain = card(3, ['VT-523'], 'ctalk/bugfix/VT-523')
+  const cards = [fr5, fr4, plain]
+
+  eq(cardsInBuild(cards, B('- CTalk: VT-523'), P).map((c) => c.id), [3],
+     'mã task vẫn đi đường cũ')
+  eq(cardsInBuild(cards, B('- CTalk: FR5'), P).map((c) => c.id), [1],
+     'ghi chú chỉ có tên FR: card của FR đó được gắn bản build')
+  eq(cardsInBuild(cards, B('- CTalk: FR5, VT-523'), P).map((c) => c.id), [1, 3],
+     'hai đường cùng chạy trong một ghi chú')
+  // Mã Epic thì cả hai FR của nó đều nhận — chuyện cũ, và không đổi.
+  eq(cardsInBuild(cards, B('- CTalk: VT-2583'), P).map((c) => c.id), [1, 2],
+     'mã Epic chở mọi FR của Epic')
+  eq(cardsInBuild([fr5, card(4, [], 'hir/feature/VT-9000_FR5_other_thing')], B('- CTalk: FR5'), P)
+       .map((c) => c.id), [],
+     'số FR đếm trong phạm vi Epic: hai card cùng nhận FR5 thì không ai được nhận')
+  eq(cardsInBuild(cards, B('- CTalk: FR9'), P).map((c) => c.id), [],
+     'FR không card nào nhận')
+  eq(cardsInBuild(cards, B('- Sync code master (hotfix)'), P).map((c) => c.id), [],
+     'ghi chú không mã không FR')
+  eq(cardsInBuild(cards, B(''), P).map((c) => c.id), [], 'chưa có ghi chú thì chưa biết gì')
+  // Tiêu đề cũng là chỗ FR được viết ra: card lấy tên từ Jira, không từ nhánh.
+  eq(cardsInBuild([card(5, ['VT-77'], 'ctalk/feature/VT-77', 'FR12 Mời theo link')],
+                  B('- CTalk: FR-12'), P).map((c) => c.id), [5],
+     'FR nằm ở tiêu đề card cũng khớp')
+}
+
 
 /* ── một bản build cho mỗi môi trường ───────────────────────────────────── */
 const dev = (n: string, at: number) => ({ branch: 'ctalk/develop', build: n, at })
@@ -1410,6 +1463,40 @@ eq(baseFreshness(roundTrip, NOW).upToDate, true, 'và đọc ra đúng kết lu�
      'cả hai nửa biến mất thì gỡ')
   eq(dropCards([card(1, [])], vanished(['a']), none).length, 0,
      'card không trỏ vào nhánh nào thì không ai kết luận được gì về nó')
+}
+
+
+/* ── đổi tên nhánh, hay card đã chết ───────────────────────────────────── */
+//
+// Thật: card 69 sinh ra từ `ctalk/task/resolve_VT-4279_ctalk-develop` — nhánh
+// resolve, không có mã riêng nên card khoá theo nhánh và `issueKey` rỗng. Nhánh
+// merge xong bị xoá trên remote, và luật "nhánh biến mất ⇒ đổi tên" trỏ card
+// sang `ctalk/feature/VT-4279`: nhánh của card VT-4350, đang sống, chưa bao giờ
+// là của nó. Nhánh resolve chết thì card resolve phải vỡ theo.
+{
+  const card = (extra: Record<string, unknown> = {}) => ({
+    issueKey: 'VT-1',
+    githubPinned: false,
+    sides: [{ repo: 'o/ios', branch: 'a' }],
+    ...extra,
+  })
+  const vanished = (names: string[]) => (s: { branch: string }) => names.includes(s.branch)
+
+  eq(isRenamedCard(card(), vanished(['a'])), true,
+     'card có mã, nhánh biến mất ở cả hai nơi: đúng ca đổi tên')
+  eq(isRenamedCard(card(), vanished([])), false, 'nhánh còn thì không có gì đổi tên')
+  eq(isRenamedCard(card({ githubPinned: true }), vanished(['a'])), false,
+     'ghim là quyết định tay, phép quét không trỏ lại')
+  // Chính ca card 69.
+  eq(isRenamedCard(card({ issueKey: '' }), vanished(['a'])), false,
+     'card khoá theo nhánh: nhánh mất là card xong, không đi chiếm nhánh khác')
+  eq(isRenamedCard(card({ issueKey: '   ' }), vanished(['a'])), false,
+     'mã toàn khoảng trắng cũng là không có mã')
+  eq(isRenamedCard(card({ sides: [] }), vanished(['a'])), false,
+     'card không trỏ vào nhánh nào thì không kết luận được gì')
+  eq(isRenamedCard(card({ sides: [{ repo: 'o/ios', branch: 'a' }, { repo: 'o/sdk', branch: 'b' }] }),
+                   vanished(['a'])), false,
+     'một nửa còn sống thì chưa phải đổi tên')
 }
 
 

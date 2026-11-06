@@ -276,7 +276,7 @@ export function Composer({
             disabled={generating || !idea.trim()}
             className="rounded-md bg-accent-soft px-[9px] py-1 text-[12.5px] font-medium text-accent-ink hover:brightness-95 disabled:opacity-60"
           >
-            {generating ? 'Đang sinh…' : '✦ Generate với Gemini'}
+            {generating ? 'Đang sinh…' : '✦ Generate với Claude'}
           </button>
         </div>
 
@@ -315,7 +315,7 @@ export function Composer({
             onChange={(e) => setDescription(e.target.value)}
             onPaste={(e) => pasteSplitsDod(e, setDescription, dod, setDod)}
             title={MARKDOWN_HINT}
-            placeholder="Generate với Gemini, hoặc tự viết / dán Markdown — # tiêu đề, **đậm**, `code`, danh sách, bảng…"
+            placeholder="Generate với Claude, hoặc tự viết / dán Markdown — # tiêu đề, **đậm**, `code`, danh sách, bảng…"
             className="w-full resize-y rounded-md border border-line bg-ground px-[10px] py-[7px] font-mono text-[12.5px] leading-[1.6]"
           />
         </Field>
@@ -474,7 +474,7 @@ export function Composer({
               </div>
               {pointsSuggested != null && pointsSuggested !== points ? (
                 <p className="mt-1.5 flex flex-wrap items-center gap-1.5 text-[11.5px] leading-relaxed text-ink-3">
-                  Gemini đề xuất <b className="font-mono font-semibold text-ink-2">{pointsSuggested}</b>
+                  Claude đề xuất <b className="font-mono font-semibold text-ink-2">{pointsSuggested}</b>
                   <button
                     type="button"
                     onClick={() => setPoints(pointsSuggested)}

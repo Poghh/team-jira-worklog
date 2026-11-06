@@ -115,17 +115,23 @@ function mentions(text: string, token: string): boolean {
 }
 
 /**
- * Promote every "đã build" task whose id is named in `text` to "đã public",
- * returning the ids moved. Called when an iOS build ships to testers — the
- * What-to-Test text lists exactly those tasks. Restricted to the "đã build"
- * stage so a stray mention can't jump a task straight from "đang PR" to public,
- * which also makes a repeat submit a no-op.
+ * Promote every "đã build" task named in `text` to "đã public", returning the
+ * ids moved. Called when an iOS build ships to testers — the What-to-Test text
+ * lists exactly those tasks. Restricted to the "đã build" stage so a stray
+ * mention can't jump a task straight from "đang PR" to public, which also makes
+ * a repeat submit a no-op.
+ *
+ * Tên gọi là `taskId || description`, **cùng một luật** với {@link
+ * publishCandidates} — tức chính cái đã viết ra dòng ghi chú đó. Chỗ này từng
+ * chỉ hỏi `taskId`: việc chưa có ticket Jira thì vào được ghi chú bằng tên FR
+ * của nó, đi ra tới tay tester thật, mà bảng release vẫn nằm ở "đã build" vĩnh
+ * viễn vì không ai nhận ra tên nó trong chính dòng chữ mình vừa gửi.
  */
 export function publishBuiltTasksMentioned(text: string, build = ''): string[] {
   if (!text.trim()) return []
   const promoted: string[] = []
   for (const r of listReleaseTasks()) {
-    const id = r.taskId.trim()
+    const id = r.taskId.trim() || r.description.trim()
     if (r.buildStatus === BUILT_STATUS && id && mentions(text, id)) {
       patchReleaseTask(r.id, { buildStatus: REPORTED_STATUS, publishedBuild: build })
       promoted.push(id)
@@ -159,7 +165,9 @@ export function publishCodes(codes: Array<{ taskRowId: number; code: string; kin
     if (!r) continue
     if (list.some((c) => c.kind === 'feature') && r.buildStatus === BUILT_STATUS) {
       patchReleaseTask(r.id, { buildStatus: REPORTED_STATUS, publishedBuild: build })
-      done.push(r.taskId)
+      // Tên nó, không phải mã nó: việc chưa có ticket vẫn phải đọc được trong
+      // dòng "n mã → đã public", chứ không đẩy một chuỗi rỗng vào đó.
+      done.push(r.taskId.trim() || r.description.trim())
     }
     const wanted = new Set(list.filter((c) => c.kind === 'fix').map((c) => c.code.toUpperCase()))
     if (wanted.size) {

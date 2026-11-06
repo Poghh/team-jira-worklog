@@ -11,7 +11,7 @@ import {
 const now = sql`(strftime('%s','now'))`;
 
 /**
- * Key/value settings. Jira and Gemini credentials live here, seeded once from
+ * Key/value settings. Jira and Claude credentials live here, seeded once from
  * .env.local on first run so they can be changed in the UI without a restart.
  */
 export const settings = sqliteTable("settings", {
@@ -489,6 +489,17 @@ export const reviewItems = sqliteTable(
     sources: text("sources").notNull().default("[]"),
     /** JSON {keys, auto}: Jira tickets a PR review reads; '' = none pasted, auto-detect on. */
     jira: text("jira").notNull().default(""),
+    /**
+     * Tự review: tên nhánh clone làm việc đang đứng lúc xếp hàng.
+     *
+     * `head_ref` của tự review là một **sha** (ảnh chụp đã chốt), nên không
+     * đọc ngược ra tên nhánh được — mà tên nhánh mới là chỗ `detectJiraKeys`
+     * tìm thấy mã ticket. Ghim lúc xếp hàng chứ không hỏi lại clone lúc chạy:
+     * giữa hai thời điểm đó bạn có thể đã checkout sang nhánh khác.
+     *
+     * Rỗng với hồ sơ PR / tài liệu — chúng đã có `head_ref` là tên nhánh.
+     */
+    headBranch: text("head_branch").notNull().default(""),
     createdAt: integer("created_at").notNull().default(now),
     updatedAt: integer("updated_at").notNull().default(now),
   },

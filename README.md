@@ -232,9 +232,10 @@ Khi nhận được file zip bản mới:
 | **Report** | Daily report từ giờ đã log, bấm copy để gửi; xem thống kê tuần / sprint, xuất CSV. |
 | **Settings** | Kết nối Jira, AI, quy tắc giờ, bật/tắt module. |
 
-> **Task mới** dùng AI của Google (Gemini) — muốn dùng thì tạo key miễn phí tại
-> https://aistudio.google.com/apikey, dán vào ô **API key** ở khung **Google Gemini** trong Settings,
-> **Lưu settings** rồi bấm **Test Gemini**. Không dùng thì bỏ qua.
+> **Task mới** chạy bằng **Claude Code CLI** trên chính máy bạn — không cần API key, không tốn
+> thêm tiền ngoài gói Claude bạn đang dùng. Cài bằng `curl -fsSL https://claude.ai/install.sh | bash`,
+> chạy `claude auth login`, rồi vào Settings bấm **Test Claude**. Không dùng thì bỏ qua.
+> Module **Review code** dùng chung đúng binary đó.
 
 ---
 
@@ -305,8 +306,7 @@ Mở `.env.local`, điền vào:
 JIRA_BASE_URL=https://your-company.atlassian.net
 JIRA_EMAIL=email-cua-ban@congty.com     ← email tài khoản Atlassian của BẠN
 JIRA_API_TOKEN=                        ← token của BẠN, không dùng chung
-GOOGLE_API_KEY=
-GEMINI_MODEL=gemini-3.5-flash
+CLAUDE_MODEL=opus                      ← opus / sonnet / haiku, trống = mặc định của CLI
 JIRA_PROJECT_KEY=ABC
 JIRA_BOARD_ID=1
 GITHUB_TOKEN=                          ← chỉ cần nếu bật module "Nhánh & ghi chú"
@@ -473,11 +473,12 @@ và sửa ngày được tại chỗ bằng chip ngày trên mỗi dòng.
 
 ```
 app/                 màn hình + route handler (đóng vai trò backend)
-  api/               endpoint nội bộ: transitions, csv, health, models
+  api/               endpoint nội bộ: transitions, csv, health
   board/ find/ new/ report/ settings/
 lib/
   jira/              client, meta, sprints, issues, worklog, find, create
-  ai/gemini.ts       sinh nội dung task
+  ai/cli.ts          tìm + kiểm tra Claude Code CLI (dùng chung)
+  ai/claude.ts       sinh nội dung task
   db/                schema + kết nối SQLite
   settings.ts        cấu hình, seed từ .env.local lần đầu
   time.ts            múi giờ, định dạng timestamp cho Jira
@@ -493,7 +494,7 @@ PLAN.md              thiết kế + ghi chép kỹ thuật về Jira API
 
 Tạo file zip đã loại sẵn `node_modules`, `.next`, `.env.local` và `data/`.
 
-**Đừng bao giờ gửi kèm `data/app.db`** — file đó lưu Jira API token và Google API key
+**Đừng bao giờ gửi kèm `data/app.db`** — file đó lưu Jira API token và GitHub token
 ở dạng chữ thường. Người nhận tự tạo token riêng của họ.
 
 ## Xử lý sự cố (chi tiết)
@@ -502,8 +503,9 @@ Tạo file zip đã loại sẵn `node_modules`, `.next`, `.env.local` và `data
 Kiểm tra ở https://id.atlassian.com/manage-profile/security/api-tokens, và email phải đúng email
 đăng nhập Atlassian.
 
-**Gemini báo 404 "no longer available"** — Google khai tử model theo lịch riêng của họ.
-Đổi model trong Settings; xem danh sách gọi được tại http://localhost:3000/api/ai/models
+**Generate báo chưa đăng nhập** — chạy `claude auth login` trong Terminal, rồi bấm
+**Test Claude** trong Settings. Nếu báo không tìm thấy `claude`, điền đường dẫn vào ô
+**Đường dẫn claude** — Next thường khởi động với `PATH` không có `~/.local/bin`.
 
 **Board trống** — mặc định lọc theo sprint đang chạy. Nếu sprint đó bạn chưa có subtask nào,
 board sẽ chỉ ra các Task cấp trên kèm nút **+ Task con**. Hoặc đổi bộ lọc sang *Mọi sprint*.

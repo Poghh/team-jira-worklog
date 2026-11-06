@@ -451,7 +451,7 @@ function CreateIssueModal({
                     onChange={(e) => setDescription(e.target.value)}
                     onPaste={(e) => pasteSplitsDod(e, setDescription, dod, setDod)}
                     title={MARKDOWN_HINT}
-                    placeholder="Gemini sẽ điền, hoặc tự viết / dán Markdown — # tiêu đề, **đậm**, `code`, danh sách, bảng…"
+                    placeholder="Claude sẽ điền, hoặc tự viết / dán Markdown — # tiêu đề, **đậm**, `code`, danh sách, bảng…"
                     className="w-full resize-y rounded-md border border-line bg-ground px-2.5 py-1.5 font-mono text-[12px] leading-relaxed"
                   />
                 </Field>

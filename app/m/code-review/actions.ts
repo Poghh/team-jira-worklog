@@ -52,7 +52,7 @@ import { type DiffFile, parseDiff } from '@/lib/modules/code-review/diff'
 import { buildFreshRows } from '@/lib/modules/code-review/findings'
 import { ForbiddenAction } from '@/lib/modules/code-review/guard'
 import { type TicketPreview, previewTickets } from '@/lib/modules/code-review/jira'
-import { type ConfluenceRef, type JiraContext, OWN_CATEGORY, SEVERITIES, type Severity, NO_JIRA, parseJiraKeys, confluencePages, type SubpageInfo, type Addressee, type DocFile, type DocTemplate, type FindingStatus, HONORIFICS, type LocalBranch, type PrLink, addressOf, anchorInDiff, cleanHandle, validHandle, type FindingView, type ItemSummary, type RepoPreset, type RoundView, where } from '@/lib/modules/code-review/model'
+import { type ConfluenceRef, type JiraContext, OWN_CATEGORY, SEVERITIES, type Severity, NO_JIRA, parseJiraKeys, confluencePages, type SubpageInfo, type Addressee, type DocFile, type DocTemplate, type FindingStatus, HONORIFICS, isCode, type LocalBranch, type PrLink, addressOf, anchorInDiff, cleanHandle, validHandle, type FindingView, type ItemSummary, type RepoPreset, type RoundView, where } from '@/lib/modules/code-review/model'
 import { type LogLine, cancelRound, ensureTicker, tick, updateRoundSummary, viewLog } from '@/lib/modules/code-review/runner'
 import {
   createItem,
@@ -301,20 +301,20 @@ export async function queueBranchesAction(input: {
  */
 async function snapshotLocal(
   dir: string,
-): Promise<{ sha: string; base: string; label: string; why: string }> {
+): Promise<{ sha: string; base: string; branch: string; label: string; why: string }> {
   const on = await currentBranch(dir).catch(() => '')
   const head = await revParse(dir, 'HEAD').catch(() => '')
   if (!head)
-    return { sha: '', base: '', label: '', why: 'Không đọc được HEAD của clone làm việc.' }
+    return { sha: '', base: '', branch: on, label: '', why: 'Không đọc được HEAD của clone làm việc.' }
   const dirty = await countDirty(dir).catch(() => 0)
   if (dirty > 0) {
     const sha = await snapshotUncommitted(dir).catch(() => '')
     // `stash create` dựng commit lơ lửng có cha là HEAD, nên hai đầu mút của
     // lượt soi là HEAD → ảnh chụp: đúng phần đang gõ dở, không gì khác.
     if (sha)
-      return { sha, base: head, label: `${dirty} file chưa commit${on ? ` trên ${on}` : ''}`, why: '' }
+      return { sha, base: head, branch: on, label: `${dirty} file chưa commit${on ? ` trên ${on}` : ''}`, why: '' }
   }
-  return { sha: head, base: head, label: on || 'HEAD', why: '' }
+  return { sha: head, base: head, branch: on, label: on || 'HEAD', why: '' }
 }
 
 /** Nhánh trong clone làm việc, kèm có việc chưa commit hay không. */
@@ -403,6 +403,8 @@ export async function queueSelfAction(input: {
   links?: PrLink[]
   /** Trang Confluence để đối chiếu code với tài liệu. */
   sources?: unknown
+  /** Ticket Jira đọc làm yêu cầu — y như review PR. */
+  jira?: JiraContext
 }): Promise<Result & { itemId?: number }> {
   const blocked = await ready()
   if (blocked) return blocked
@@ -443,12 +445,16 @@ export async function queueSelfAction(input: {
     // Một sha, không phải tên nhánh: đây là mốc "trước" đã chốt, và tên nhánh
     // thì lúc chạy có thể đã trỏ chỗ khác.
     baseRef: snap.base,
+    // Tên nhánh vẫn phải ghim riêng: `detectJiraKeys` tìm mã ticket ở đó, mà
+    // hai trường kia giờ đều là sha.
+    headBranch: snap.branch,
     headRef: head,
     author: '',
     url: '',
     note: input.note.trim(),
     links: linked.links,
     sources,
+    jira: cleanJira(input.jira),
   })
   queueRound(itemId, docs)
   ensureTicker()
@@ -509,7 +515,9 @@ export async function reReviewAction(itemId: number, note?: string, newDocs?: Do
     if (!dir) return { ok: false, message: 'Clone làm việc của hồ sơ này không còn trong Cấu hình.' }
     const snap = await snapshotLocal(dir)
     if (!snap.sha) return { ok: false, message: snap.why }
-    patchItem(itemId, { headRef: snap.sha })
+    // Cả tên nhánh: giữa hai vòng bạn có thể đã checkout sang nhánh khác, và
+    // mã ticket tự nhận phải theo nhánh đang soi chứ không phải nhánh cũ.
+    patchItem(itemId, { headRef: snap.sha, headBranch: snap.branch })
     // Vế kia chụp lại cùng lúc, nếu không thì vòng sau đối chiếu code iOS mới
     // với SDK của vòng trước — và chỗ lệch nó báo là chỗ bạn vừa sửa xong.
     if (item.links.some((l) => l.workPath)) {
@@ -1049,7 +1057,9 @@ function cleanLinks(links: unknown, self?: { repoId: string; prNumber: number | 
 export async function setLinksAction(itemId: number, links: PrLink[]): Promise<Result> {
   if (!enabled()) return OFF
   const item = getItem(itemId)
-  if (!item || item.kind !== 'pr') return { ok: false, message: 'Chỉ liên kết được giữa các PR.' }
+  // `isCode`, không phải `kind === 'pr'`: tự review cũng nối được với vế kia
+  // của một thay đổi hai repo. Chỉ hồ sơ tài liệu là không có khái niệm này.
+  if (!item || !isCode(item.kind)) return { ok: false, message: 'Chỉ review code mới liên kết được.' }
   const clean = cleanLinks(links, item)
   if (typeof clean === 'string') return { ok: false, message: clean }
   setItemLinks(itemId, clean)
@@ -1338,12 +1348,12 @@ export async function jiraPreviewAction(keys: string[]): Promise<Result & { tick
 export async function setJiraAction(itemId: number, input: JiraContext): Promise<Result> {
   if (!enabled()) return OFF
   const item = getItem(itemId)
-  if (!item || item.kind !== 'pr') return { ok: false, message: 'Không thấy hồ sơ PR.' }
+  if (!item || !isCode(item.kind)) return { ok: false, message: 'Chỉ review code mới đọc ticket.' }
   const jira = cleanJira(input)
   setItemJira(itemId, jira)
   revalidatePath('/m/code-review')
   return {
     ok: true,
-    message: `${jira.keys.length ? `Đã lưu ${jira.keys.length} ticket` : 'Không có ticket dán tay'}${jira.auto ? ' · tự nhận ticket theo tên nhánh / tiêu đề / mô tả PR' : ''} — áp dụng từ vòng tiếp theo.`,
+    message: `${jira.keys.length ? `Đã lưu ${jira.keys.length} ticket` : 'Không có ticket dán tay'}${jira.auto ? ' · tự nhận ticket theo tên nhánh / tiêu đề' : ''} — áp dụng từ vòng tiếp theo.`,
   }
 }
