@@ -162,20 +162,24 @@ function runClaude(bin: string, args: string[]): Promise<CliResult> {
   })
 }
 
-/** One call. Throws RetryableError for anything worth another go. */
-async function callOnce(
+/**
+ * One call returning the schema-shaped object, unparsed. Throws
+ * RetryableError for anything worth another go.
+ */
+async function callStructured(
   bin: string,
   model: string,
   system: string,
   user: string,
-): Promise<GeneratedTask> {
+  schemaJson: string,
+): Promise<unknown> {
   const res = await runClaude(bin, [
     '-p',
     user,
     '--output-format',
     'json',
     '--json-schema',
-    JSON_SCHEMA,
+    schemaJson,
     // Replaces Claude Code's own system prompt instead of appending to it.
     // Appending left the whole coding-agent persona in front of a request to
     // write one Jira ticket — 42k tokens of context for a 500-token job.
@@ -202,8 +206,17 @@ async function callOnce(
     if (RETRYABLE.test(message)) throw new RetryableError(message)
     throw new Error(message)
   }
+  return res.structured_output
+}
 
-  const parsed = TaskSchema.safeParse(res.structured_output)
+/** One task-writing call. Throws RetryableError for anything worth another go. */
+async function callOnce(
+  bin: string,
+  model: string,
+  system: string,
+  user: string,
+): Promise<GeneratedTask> {
+  const parsed = TaskSchema.safeParse(await callStructured(bin, model, system, user, JSON_SCHEMA))
   if (!parsed.success) {
     // With `--json-schema` in force this should not happen; when it does it is
     // a bad roll rather than a standing failure.
@@ -240,6 +253,18 @@ export async function generateTask(
   idea: string,
   context: { pointRules: string; parentSummary?: string },
 ): Promise<GenerateOutcome> {
+  const system = buildSystem(context.pointRules)
+  const user = buildUser(idea, context.parentSummary)
+  return withModels((bin, model) => callOnce(bin, model, system, user))
+}
+
+/**
+ * Chạy `call` qua model chính rồi các model dự phòng khi model trước hết quota;
+ * lỗi tạm thời thì thử lại trong từng model.
+ */
+async function withModels<T extends object>(
+  call: (bin: string, model: string) => Promise<T>,
+): Promise<T & { attempts: number; model: string }> {
   const check = await probeClaude(getSetting(SETTING_KEYS.claudeBin) ?? '')
   if (!check.ok) throw new Error(check.problem)
 
@@ -248,9 +273,6 @@ export async function generateTask(
     .split(',')
     .map((m) => m.trim())
     .filter((m) => m && m !== primary)
-
-  const system = buildSystem(context.pointRules)
-  const user = buildUser(idea, context.parentSummary)
 
   let totalAttempts = 0
   let last: Error | null = null
@@ -264,7 +286,7 @@ export async function generateTask(
       const { value, attempts } = await withRetry(
         () => {
           used++
-          return callOnce(check.bin, model, system, user)
+          return call(check.bin, model)
         },
         { maxAttempts: MAX_ATTEMPTS },
       )
