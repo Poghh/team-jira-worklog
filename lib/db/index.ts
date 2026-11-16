@@ -335,6 +335,14 @@ CREATE TABLE IF NOT EXISTS review_messages (
   ended_at   INTEGER
 );
 CREATE INDEX IF NOT EXISTS review_messages_round_idx ON review_messages (round_id);
+CREATE TABLE IF NOT EXISTS pr_checks (
+  repo       TEXT NOT NULL,
+  head       TEXT NOT NULL,
+  base       TEXT NOT NULL,
+  item       TEXT NOT NULL,
+  created_at INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+);
+CREATE UNIQUE INDEX IF NOT EXISTS pr_checks_pair_item_idx ON pr_checks (repo, head, base, item);
 `;
 
 /**

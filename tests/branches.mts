@@ -20,6 +20,24 @@ import {
   type SyncInput,
 } from '@/lib/modules/branches/git-rules'
 import {
+  type ChecklistContext,
+  type PrFacts,
+  branchNameOk,
+  branchNameProblem,
+  buildChecklist,
+  commitProblem,
+  defaultBase,
+  envHead,
+  expectedLabel,
+  labelAdvice,
+  isUncountedFile,
+  routeOf,
+  sdkVersionFromProjectYml,
+  sdkVersionMatches,
+  titlePattern,
+} from '@/lib/modules/pr/checklist'
+import { changesFromCommits, cleanSummary, suggestPrBody, suggestPrTitle, suggestSquashMessage } from '@/lib/modules/pr/suggest'
+import {
   nextEnvToRequest,
   DEFAULT_STAGES,
   envSteps,
@@ -1663,6 +1681,189 @@ eq(baseFreshness(roundTrip, NOW).upToDate, true, 'và đọc ra đúng kết lu�
   eq(syncAdvice(base({ branch: 'ctalk/task/VT-101', prs: [{ base: 'ctalk/feature/VT-100_x', state: 'MERGED' }] }))?.action,
      'rebase', 'task con đã merge vào cha thì không còn chờ cha')
   eq(syncAdvice(base({ branch: 'ctalk/resolve/VT-245_ctalk-develop' })), null, 'nhánh resolve không sync')
+}
+
+/* ── checklist PR theo môi trường ────────────────────────────────────── */
+//
+// Kiểm theo đúng chữ của tài liệu bản 6, không theo thói quen hiện tại trên
+// GitHub (quyết định của người dùng). Số approve không kiểm.
+{
+  const ENVS = ['ctalk/develop', 'develop', 'staging']
+  eq(routeOf('ctalk/bugfix/VT-1', 'ctalk/develop', ENVS), 'integration', 'nhánh làm việc vào ctalk/develop')
+  eq(routeOf('ctalk/hotfix/VT-1', 'staging', ENVS), 'hotfix', 'hotfix đi thẳng staging')
+  eq(routeOf('ctalk/feature/VT-1_x', 'develop', ENVS), 'env', 'bậc develop là PR môi trường')
+  eq(routeOf('ctalk/task/VT-2', 'ctalk/feature/VT-1_x', ENVS), 'parent', 'task con vào nhánh cha')
+  eq(envHead('develop', ENVS), 'ctalk/develop', 'PR môi trường vào develop đi từ ctalk/develop')
+  eq(envHead('staging', ENVS), 'develop', 'PR môi trường vào staging đi từ develop')
+
+  // Đúng dạng project.yml thật của repo iOS (đọc ngày 14/11).
+  const yml = 'packages:\n  # Element/Matrix dependencies\n  MatrixRustSDK:\n    url: https://github.com/atthetalk/viptalk-matrix-rust-components-swift\n    exactVersion: 2026.11.13-ctalkdev.1\n    # path: ../x\n  Compound:\n    path: compound-ios\n'
+  eq(sdkVersionFromProjectYml(yml), '2026.11.13-ctalkdev.1', 'đọc exactVersion của MatrixRustSDK')
+  eq(sdkVersionMatches('2026.11.13-ctalkdev.1', 'ctalk/develop'), true, 'ctalk/develop cần -ctalkdev.N')
+  eq(sdkVersionMatches('2026.11.13-dev.1', 'ctalk/develop'), false, '-dev không phải -ctalkdev')
+  eq(sdkVersionMatches('2026.11.13-stag.2', 'staging'), true, 'staging cần -stag.N')
+  eq(sdkVersionMatches('2026.11.08', 'master'), true, 'master không hậu tố')
+  eq(sdkVersionMatches('2026.11.08-dev.1', 'master'), false, 'master có hậu tố là sai')
+  eq(sdkVersionMatches('2026.11.08', 'ctalk/feature/x'), null, 'nhánh thường: không có luật phiên bản')
+
+  eq(titlePattern({ route: 'integration', base: 'ctalk/develop' }).re.test('[CTalk] Fix avatar not updating (VT-245)'), true, 'tiêu đề ctalk/develop đúng tài liệu')
+  eq(titlePattern({ route: 'integration', base: 'ctalk/develop' }).re.test('[CTalk] fix: VT-5503 | User avatar'), false, 'kiểu cũ trên GitHub bị đánh trượt')
+  eq(titlePattern({ route: 'integration', base: 'ctalk/develop' }).re.test('[CTalk] Video call UI (VT-101, VT-102)'), true, 'nhiều mã task')
+  eq(titlePattern({ route: 'hotfix', base: 'staging' }).re.test('[Staging][Hotfix] Fix payment timeout (VT-301)'), true, 'tiêu đề hotfix')
+  eq(titlePattern({ route: 'parent', base: 'ctalk/feature/VT-100_video-call' }).re.test('[Feature] Add video call UI'), true, 'task con: mã không bắt buộc')
+  eq(titlePattern({ route: 'parent', base: 'ctalk/bugfix/VT-245' }).sample.startsWith('[Bugfix]'), true, 'prefix theo loại nhánh cha')
+  eq(titlePattern({ route: 'env', base: 'staging' }).re.test('[Staging] Release 14/11'), true, 'PR môi trường staging')
+
+  eq(expectedLabel('integration', 'ctalk/task/VT-311'), 'type: improve', 'task/* mang label type: improve')
+  eq(expectedLabel('parent', 'ctalk/task/VT-311'), null, 'task con → nhánh cha không gắn label')
+  eq(expectedLabel('env', 'develop'), null, 'PR môi trường không gắn label')
+  eq(labelAdvice('integration', 'ctalk/bugfix/VT-1').label, 'type: bugfix', 'gợi ý label theo nhánh bugfix')
+  eq(labelAdvice('parent', 'ctalk/task/VT-2').label, null, 'task con → nhánh cha: gợi ý không gắn label')
+  eq(labelAdvice('integration', 'ctalk/task/resolve_VT-1_ctalk_develop').label, null, 'resolve: giữ label nhánh gốc, không đoán')
+
+  eq(branchNameOk('ctalk/feature/VT-100_video-call'), true, 'feature có mô tả')
+  eq(branchNameOk('ctalk/feature/VT-4279'), true, 'mô tả là tùy: feature không mô tả vẫn đúng')
+  eq(branchNameOk('ctalk/bugfix/VT-245'), true, 'bugfix chỉ có mã')
+  eq(branchNameOk('ctalk/bugfix/VT-245_fix-avatar'), true, 'mô tả là tùy: bugfix có mô tả vẫn đúng')
+  eq(branchNameOk('ctalk/task/VT-100_call-ui'), true, 'task con không có mã mượn mã cha + mô tả')
+  eq(branchNameOk('hir/bugfix/vt-4643-notification'), false, 'mã task phải viết hoa, nối bằng _')
+  eq(branchNameProblem('ctalk/feature/VT-4551'), '', 'feature không mô tả: không lỗi')
+  eq(branchNameProblem('ctalk/feature/VT-1_Video Call').startsWith('mô tả (tùy)'), true, 'mô tả sai dạng: nói đúng lỗi')
+  eq(branchNameProblem('hir/bugfix/vt-4643').startsWith('sau hir/bugfix/ phải là mã task'), true, 'mã viết thường')
+  eq(branchNameProblem('feature/VT-1').startsWith('phải bắt đầu bằng ctalk/'), true, 'thiếu team')
+  eq(branchNameProblem('ctalk/feature/VT-1_video-call'), '', 'đúng thì không có lỗi')
+
+  // PR #1929: task con mở PR vào nhánh feature, bậc ctalk/develop trống.
+  const sub = [{ branch: 'ctalk/feature/VT-2323_x', state: 'OPEN' }, { branch: 'ctalk/develop', state: '' }, { branch: 'develop', state: '' }]
+  eq(defaultBase(sub), 'ctalk/feature/VT-2323_x', 'mở thẳng PR đang mở, không mở bậc trống')
+  eq(defaultBase([{ branch: 'ctalk/develop', state: 'MERGED' }, { branch: 'develop', state: '' }]), 'develop', 'không có PR mở: bậc đầu chưa có PR')
+  eq(defaultBase([]), '', 'không có bậc nào')
+
+  eq(commitProblem('fix(chat): fix avatar not updating\n\nRef: VT-245'), '', 'commit đúng format')
+  eq(commitProblem('feat: VT-4279 | scope media'), '', 'type không scope vẫn đúng')
+  eq(commitProblem('Update file'), 'dòng đầu không theo `type(scope): mô tả`', 'thiếu type')
+  eq(commitProblem('fix: done.'), 'dòng đầu kết thúc bằng dấu chấm', 'chấm cuối câu')
+  eq(commitProblem('fix: x\nRef: VT-1'), 'thiếu dòng trống trước `Ref:`', 'Ref cần dòng trống phía trước')
+  eq(commitProblem("Merge branch 'master' into x"), '', 'commit merge không bị soi format')
+
+  eq(isUncountedFile('ElementX.xcodeproj/project.pbxproj'), true, 'pbxproj không tính')
+  eq(isUncountedFile('ElementX/Resources/Assets.xcassets/a.imageset/a.png'), true, 'asset không tính')
+  eq(isUncountedFile('ElementX/Sources/Generated/Strings.swift'), true, 'code generate không tính')
+  eq(isUncountedFile('ElementX/Sources/App.swift'), false, 'code thường có tính')
+
+  const ctx = (o: Partial<ChecklistContext>): ChecklistContext => ({
+    repo: 'o/ios', head: 'ctalk/bugfix/VT-245', base: 'ctalk/develop', route: 'integration',
+    behind: 0, sdkVersion: '2026.11.13-ctalkdev.1', issueKeys: ['VT-245'], ...o,
+  })
+  const pr = (o: Partial<PrFacts>): PrFacts => ({
+    number: 1, url: 'u', state: 'OPEN', title: '[CTalk] Fix avatar not updating (VT-245)',
+    body: 'https://x.atlassian.net/browse/VT-245', labels: ['type: bugfix'], mergeable: 'MERGEABLE', ci: 'SUCCESS',
+    additions: 10, deletions: 0, changedFiles: 1, files: [{ path: 'a.swift', additions: 10, deletions: 0 }], commits: ['fix: x'], ...o,
+  })
+  const st = (items: ReturnType<typeof buildChecklist>, id: string) => items.find((i) => i.id === id)?.state
+  const ids = (items: ReturnType<typeof buildChecklist>) => items.map((i) => i.id)
+
+  const good = buildChecklist(ctx({}), pr({}))
+  eq(good.filter((i) => i.kind === 'auto' && i.state !== 'ok').map((i) => i.id), [], 'PR đúng mọi luật: mọi mục tự kiểm đều đạt')
+  eq(ids(good).some((i) => i.startsWith('ios-')), false, 'không lặp checklist của PR template iOS')
+  eq(ids(good).some((i) => /approv/.test(i)), false, 'không có mục approve')
+
+  const none = buildChecklist(ctx({}), null)
+  eq(st(none, 'title'), 'wait', 'chưa có PR: tiêu đề đợi')
+  eq(st(none, 'sync-master'), 'ok', 'chưa có PR vẫn kiểm được sync master')
+  eq(st(none, 'sdk-version'), 'ok', 'chưa có PR vẫn kiểm được phiên bản SDK')
+
+  eq(st(buildChecklist(ctx({ behind: 12 }), null), 'sync-master'), 'fail', 'tụt master là chưa đạt')
+  eq(st(buildChecklist(ctx({ sdkVersion: '2026.11.13-dev.1' }), null), 'sdk-version'), 'fail', 'SDK sai môi trường')
+  eq(st(buildChecklist(ctx({}), pr({ labels: ['pr-bugfix'] })), 'label'), 'fail', 'label pr-bugfix không phải type: bugfix')
+  eq(st(buildChecklist(ctx({}), pr({ labels: ['type: bugfix', 'type: feature'] })), 'label'), 'fail', 'hai label type là sai')
+  eq(st(buildChecklist(ctx({}), pr({ mergeable: 'CONFLICTING' })), 'conflict'), 'fail', 'conflict')
+  eq(buildChecklist(ctx({}), pr({ mergeable: 'CONFLICTING' })).find((i) => i.id === 'conflict')?.detail?.includes('ctalk/resolve/VT-245_ctalk-develop'), true,
+     'conflict chỉ đúng tên nhánh resolve')
+  eq(st(buildChecklist(ctx({}), pr({ ci: 'FAILURE' })), 'ci'), 'fail', 'CI đỏ')
+  eq(st(buildChecklist(ctx({}), pr({ body: '' })), 'body-jira'), 'fail', 'mô tả thiếu link Jira')
+
+  const feature = ctx({ head: 'ctalk/feature/VT-100_video-call', issueKeys: ['VT-100'] })
+  const fpr = pr({ title: '[CTalk] Video call (VT-100)', labels: ['type: feature'], commits: ['feat(call): add ui', 'WIP'] })
+  eq(st(buildChecklist(feature, fpr), 'commits'), 'fail', 'feature merge commit: soi từng commit')
+  eq(buildChecklist(feature, fpr).find((i) => i.id === 'merge-method')?.text, 'Bấm Merge commit (không squash)', 'feature dùng Merge commit')
+  eq(ids(good).includes('commits'), false, 'bugfix squash: không soi từng commit')
+
+  const child = buildChecklist(ctx({ head: 'ctalk/task/VT-101', base: 'ctalk/feature/VT-100_video-call', route: 'parent',
+    parentBranch: 'ctalk/feature/VT-100_video-call', sdkVersion: '2026.11.13-ctalkdev.1' }), pr({ state: 'MERGED', labels: [] }))
+  eq(ids(child).includes('sdk-version'), false, 'PR vào nhánh cha: không kiểm phiên bản SDK')
+  eq(ids(child).includes('label'), false, 'PR vào nhánh cha: không gắn label')
+  eq(st(child, 'delete-branch'), 'fail', 'task con merge rồi mà nhánh còn: phải xoá')
+
+  const envPr = buildChecklist(ctx({ head: 'ctalk/develop', base: 'develop', route: 'env', behind: null, sdkVersion: '2026.11.13-ctalkdev.1' }),
+    pr({ title: '[Develop] Sync CTalk sprint 45', labels: [] }))
+  eq(st(envPr, 'sdk-version'), 'fail', 'PR môi trường vào develop mà SDK còn -ctalkdev')
+  eq(st(envPr, 'title'), 'ok', 'tiêu đề [Develop]')
+  eq(ids(envPr).includes('branch-name'), false, 'PR môi trường: không soi tên nhánh')
+
+  const hot = buildChecklist(ctx({ head: 'ctalk/hotfix/VT-301', base: 'staging', route: 'hotfix', sdkVersion: '2026.11.13-stag.1', issueKeys: ['VT-301'] }), null)
+  eq(['hotfix-staging-clean', 'hotfix-scope', 'body-hotfix'].every((i) => ids(hot).includes(i)), true, 'hotfix có đủ mục riêng')
+}
+
+/* ── Gợi ý tiêu đề PR ─────────────────────────────────────────── */
+{
+  eq(cleanSummary('[CTALK][iOS] Sửa crash khi vào room.'), 'Sửa crash khi vào room', 'bỏ thẻ Jira đầu và dấu chấm cuối')
+  eq(cleanSummary('  Gọi   video  '), 'Gọi video', 'gom khoảng trắng')
+
+  const iss = (key: string, summary = '') => ({ key, summary, url: `https://j/browse/${key}` })
+  const fr = { key: 'VT-4551', summary: '[CTALK] Per-request Signature For Trusted Device' }
+  eq(suggestPrTitle({ route: 'integration', head: 'ctalk/task/VT-4739', base: 'ctalk/develop', issues: [iss('VT-4739', 'CLONE - [CTALK] Task con')], feature: fr }),
+    '[CTalk] Per-request Signature For Trusted Device (VT-4739)', 'thân tiêu đề lấy từ FR, mã vẫn là của task')
+  eq(suggestPrTitle({ route: 'integration', head: 'ctalk/task/implement_dpop', base: 'ctalk/develop', issues: [], feature: fr }),
+    '[CTalk] Per-request Signature For Trusted Device (VT-4551)', 'task không mã thì dùng mã FR')
+  eq(suggestPrBody({ route: 'integration', head: 'ctalk/task/VT-4739', issues: [iss('VT-4739'), iss('VT-5225')], feature: iss('VT-4551', '[CTALK] Per-request Signature'), sdkPrs: ['o/sdk#496'], sdkVersion: '2026.11.15-ctalktask.1' }),
+    '## Summaries\n\n- Jira: [VT-4739](https://j/browse/VT-4739), [VT-5225](https://j/browse/VT-5225)\n- FR: [VT-4551](https://j/browse/VT-4551) — Per-request Signature\n- <thay đổi chính, mỗi dòng một ý>\n\n## SDK Reference\n\n- o/sdk#496\n- MatrixRustSDK `2026.11.15-ctalktask.1`',
+    'mô tả: Summaries có Jira + FR, SDK Reference có PR SDK + phiên bản')
+  eq(suggestPrBody({ route: 'integration', head: 'ctalk/task/resolve_VT-1_ctalk-develop', issues: [iss('VT-1')] }),
+    '## Summaries\n\n- Jira: [VT-1](https://j/browse/VT-1)\n- Replaces #… (review threads answered there)\n- <thay đổi chính, mỗi dòng một ý>',
+    'nhánh resolve có dòng Replaces, repo không SDK thì không có SDK Reference')
+  eq(suggestPrBody({ route: 'env', head: 'ctalk/develop', issues: [iss('VT-1')] }), '', 'PR môi trường không gợi ý mô tả')
+  eq(changesFromCommits([
+    'feat(task): VT-5225 | VT-5660 | Send tasks through the send queue\n\nRef: VT-5225',
+    "Merge branch 'master' into ctalk/feature/VT-1",
+    'fix(ui): show read-only fields undimmed.\n\n- Keep Task Details open after an update\n- Ref: VT-1',
+    'fix(ui): Show read-only fields undimmed',
+  ]).join(' / '),
+    'Send tasks through the send queue / Show read-only fields undimmed / Keep Task Details open after an update',
+    'thay đổi từ commit: bỏ type, mã task, merge, Ref, trùng; lấy gạch đầu dòng ở thân')
+  eq(suggestPrBody({ route: 'integration', head: 'ctalk/task/VT-1', issues: [iss('VT-1')], changes: ['Show A', 'Hide B'] }),
+    '## Summaries\n\n- Jira: [VT-1](https://j/browse/VT-1)\n- Show A\n- Hide B', 'có thay đổi thì thay dòng chờ điền')
+  eq(suggestSquashMessage({ route: 'parent', head: 'ctalk/task/implement_dpop', parentBranch: 'ctalk/feature/VT-4551', issues: [], feature: { key: 'VT-4551', summary: '[CTALK] Per-request Signature For Trusted Device' } }),
+    'feat: Per-request Signature For Trusted Device\n\nRef: VT-4551', 'squash: task con vào nhánh feature → feat, Ref mã FR')
+  eq(suggestSquashMessage({ route: 'integration', head: 'ctalk/bugfix/VT-245', issues: [iss('VT-245', '[CTALK] Fix avatar not updating')] }),
+    'fix: Fix avatar not updating\n\nRef: VT-245', 'squash: bugfix → fix')
+  eq(suggestSquashMessage({ route: 'integration', head: 'ctalk/task/VT-9', issues: [iss('VT-9', 'A '.repeat(60))] }).split('\n')[0].length <= 72, true, 'squash: dòng đầu ≤ 72 ký tự')
+  const t1 = suggestPrTitle({ route: 'integration', head: 'ctalk/bugfix/VT-1', base: 'ctalk/develop', issues: [iss('VT-1', '[CTALK] Sửa avatar')] })
+  eq(t1, '[CTalk] Sửa avatar (VT-1)', 'tiêu đề PR làm việc')
+  eq(titlePattern({ route: 'integration', base: 'ctalk/develop' }).re.test(t1), true, 'tiêu đề gợi ý qua được kiểm tra format')
+
+  const t2 = suggestPrTitle({ route: 'integration', head: 'x', base: 'ctalk/develop', issues: [iss('VT-1', 'Sửa A'), iss('VT-2')] })
+  eq(t2, '[CTalk] Sửa A (VT-1, VT-2)', 'nhiều mã task')
+  eq(titlePattern({ route: 'integration', base: 'ctalk/develop' }).re.test(t2), true, 'nhiều mã vẫn đúng format')
+
+  eq(suggestPrTitle({ route: 'integration', head: 'x', base: 'ctalk/develop', issues: [], fallback: 'Tiêu đề card' }),
+    '[CTalk] Tiêu đề card (VT-…)', 'thiếu mã thì để VT-… lộ ra')
+  eq(suggestPrTitle({ route: 'integration', head: 'x', base: 'ctalk/develop', issues: [iss('VT-9')], fallback: 'Card' }),
+    '[CTalk] Card (VT-9)', 'Jira không có summary thì dùng tiêu đề card')
+
+  const hot = suggestPrTitle({ route: 'hotfix', head: 'ctalk/hotfix/VT-301', base: 'staging', issues: [iss('VT-301', 'Crash login')] })
+  eq(hot, '[Staging][Hotfix] Crash login (VT-301)', 'tiêu đề hotfix')
+  eq(titlePattern({ route: 'hotfix', base: 'staging' }).re.test(hot), true, 'tiêu đề hotfix đúng format')
+
+  const sub = suggestPrTitle({ route: 'parent', head: 'ctalk/task/VT-101', base: 'ctalk/feature/VT-100_call', parentBranch: 'ctalk/feature/VT-100_call', issues: [iss('VT-101', 'Màn hình gọi')] })
+  eq(sub, '[Feature] Màn hình gọi (VT-101)', 'task con vào nhánh feature')
+  eq(titlePattern({ route: 'parent', base: 'ctalk/feature/VT-100_call', parentBranch: 'ctalk/feature/VT-100_call' }).re.test(sub), true, 'task con đúng format')
+
+  const env = suggestPrTitle({ route: 'env', head: 'ctalk/develop', base: 'develop', issues: [], date: new Date(2026, 10, 15) })
+  eq(env, '[Develop] ctalk/develop → develop 15/11/2026', 'tiêu đề PR môi trường')
+  eq(titlePattern({ route: 'env', base: 'develop' }).re.test(env), true, 'PR môi trường đúng format')
+
+
 }
 
 console.log(bad ? `\n${bad}/${n} FAILED` : `\nall ${n} ok`)

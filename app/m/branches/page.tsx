@@ -3,6 +3,7 @@ import { connection } from "next/server";
 import { getIssueStatuses } from "@/lib/jira/issues";
 import { SETTING_KEYS, getSetting } from "@/lib/settings";
 import { ModuleGate } from "@/lib/modules/gate";
+import { isModuleEnabled } from "@/lib/modules/state";
 import { getGitHubConfig, toConfigView } from "@/lib/modules/branches/config";
 import {
   hostOf,
@@ -139,6 +140,7 @@ export default async function BranchesPage() {
           offSite={offSite}
           ghView={ghView}
           statusNames={statusNames}
+          prModule={isModuleEnabled("pr")}
         />
       </div>
     </ModuleGate>

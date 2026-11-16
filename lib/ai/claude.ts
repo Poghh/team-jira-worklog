@@ -312,3 +312,43 @@ export function pointRulesText(): string {
   ]
   return rules.map(([p, spec]) => `- ${p} point = ${spec}`).join('\n')
 }
+
+const ChangesSchema = z.object({ changes: z.array(z.string()) })
+const { $schema: _draft2, ...CHANGES_BODY } = z.toJSONSchema(ChangesSchema)
+const CHANGES_SCHEMA = JSON.stringify(CHANGES_BODY)
+
+const CHANGES_SYSTEM = `You write the change list of a pull request description for a mobile/chat app team.
+
+Given the commit messages and the diff, return "changes": 3 to 8 short items.
+- Each item is one user-visible or reviewer-relevant change, in English, imperative mood ("Limit title input…", "Show…", "Keep…").
+- At most about 15 words each, no trailing period, no leading "- ".
+- Describe behaviour, not files or line numbers. Group related edits into one item.
+- Mention refactors, comment-only or test-only work in one short item only if it is a large part of the diff.
+- Do not invent anything the diff does not show. Do not repeat Jira keys.`
+
+/** Gợi ý danh sách thay đổi của một PR từ commit và diff. Chỉ đọc dữ liệu đưa vào. */
+export async function summarizeChanges(input: {
+  commits: string[]
+  files: Array<{ path: string; additions: number; deletions: number; patch?: string }>
+}): Promise<{ changes: string[]; model: string; attempts: number }> {
+  const MAX_PATCH = 60_000
+  let budget = MAX_PATCH
+  const diff: string[] = []
+  for (const f of input.files) {
+    const head = `--- ${f.path} (+${f.additions} -${f.deletions})`
+    const patch = f.patch && budget > 0 ? f.patch.slice(0, Math.min(budget, 6_000)) : ''
+    budget -= patch.length
+    diff.push(patch ? `${head}\n${patch}` : `${head} (patch omitted)`)
+  }
+  const user = `Commit messages:\n${input.commits.map((c) => `* ${c.trim()}`).join('\n') || '(none)'}\n\nDiff:\n${diff.join('\n\n')}`
+
+  return withModels(async (bin, model) => {
+    const parsed = ChangesSchema.safeParse(await callStructured(bin, model, CHANGES_SYSTEM, user, CHANGES_SCHEMA))
+    if (!parsed.success) throw new RetryableError('Claude không trả về nội dung đúng dạng')
+    const changes = parsed.data.changes
+      .map((c) => unescapeLines(c).replace(/^[-*•]\s*/, '').replace(/\.$/, '').trim())
+      .filter(Boolean)
+    if (!changes.length) throw new RetryableError('Claude trả về danh sách rỗng')
+    return { changes }
+  })
+}

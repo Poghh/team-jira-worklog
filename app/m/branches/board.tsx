@@ -12,6 +12,7 @@ import {
 import { StatusPill } from "@/app/board/status-pill";
 import { NavProvider, useNav } from "@/app/board/navigation";
 import { BuildNews, useBuildWatch } from "@/app/build-watch";
+import Link from "next/link";
 import { useBranchSuggest } from "./branch-suggest";
 import { CopyBtn } from "@/app/board/copy";
 import { type SyncAdvice, syncAdvice } from "@/lib/modules/branches/git-rules";
@@ -113,6 +114,7 @@ export function BranchBoard({
   offSite,
   ghView,
   statusNames = [],
+  prModule = false,
 }: {
   initial: TaskNoteRow[];
   stages: StageConfig[];
@@ -127,6 +129,8 @@ export function BranchBoard({
   ghView: GitHubConfigView;
   /** Tên trạng thái thật của project — rỗng khi Jira không trả lời được. */
   statusNames?: string[];
+  /** Module "Git & PR" đang bật — ô "chưa tạo PR" dẫn sang đó. */
+  prModule?: boolean;
 }) {
   /**
    * Gợi ý cho hai ô của tab Cột, lấy từ chính những card đã quét.
@@ -217,6 +221,7 @@ export function BranchBoard({
           repoLabels={ghView.repoLabels}
           repoColors={ghView.repoColors}
           buildsOn={ghView.buildEnabled}
+          prModule={prModule}
         />
       )}
       {tab === "config" && (
@@ -287,9 +292,16 @@ function Ladder({
   owners,
   onGoTo,
   suggest = null,
+  prGuide,
 }: {
   rows: LadderRow[];
   repo: string;
+  /**
+   * Link sang checklist của module "Git & PR" cho một bậc. Vắng
+   * (module chưa bật) thì ô trống chỉ mời tạo PR ở môi trường kế tiếp, thẳng
+   * sang GitHub như trước.
+   */
+  prGuide?: (base: string) => string;
   /** `repo#branch` → card giữ nhánh đó. Xem {@link ownersByBranch}. */
   owners?: Map<string, { id: number; issueKey: string; title: string }>;
   onGoTo?: (id: number) => void;
@@ -371,6 +383,27 @@ function Ladder({
                   >
                     {b.label}
                   </a>
+                ) : prGuide && r.branch ? (
+                  /* Ô trống dẫn sang checklist của module "Git & PR": tạo PR khi
+                     chưa sync master, sai phiên bản SDK hay sai tiêu đề là lỗi
+                     chỉ thấy sau khi đã tạo. App không tạo PR — người dùng tự
+                     làm trên GitHub, checklist để soát.
+
+                     Đứng yên trông như mọi ô trống khác; rê chuột mới hiện ra
+                     là bấm được. Ô của môi trường kế tiếp (`suggest`) nói thêm
+                     vì sao nên tạo. */
+                  <Link
+                    href={prGuide(r.branch)}
+                    onClick={(e) => e.stopPropagation()}
+                    title={
+                      (suggest && suggest.base === r.branch ? `${suggest.why}\n\n` : "") +
+                      `Mở checklist PR vào ${r.branch} — soát từng mục trước khi tự tạo PR trên GitHub.`
+                    }
+                    className="group/pr flex min-w-0 flex-auto justify-center truncate rounded-[3px] border border-dashed border-line-strong px-1 py-px font-mono text-[9.5px] text-ink-3 hover:border-solid hover:border-accent hover:bg-accent-soft hover:text-accent-ink"
+                  >
+                    <span className="group-hover/pr:hidden">chưa tạo PR</span>
+                    <span className="hidden group-hover/pr:inline">☑ checklist PR</span>
+                  </Link>
                 ) : suggest && suggest.base === r.branch ? (
                   /* Ô trống của **đúng** môi trường kế tiếp: đứng yên trông y
                      như mọi ô trống khác, rê chuột vào mới hiện ra là bấm
@@ -726,6 +759,7 @@ function Board({
   repoLabels,
   repoColors,
   buildsOn,
+  prModule,
 }: {
   initial: TaskNoteRow[];
   stages: StageConfig[];
@@ -744,6 +778,8 @@ function Board({
    * than showing controls for a channel nobody configured.
    */
   buildsOn: boolean;
+  /** Module "Git & PR" đang bật. */
+  prModule: boolean;
 }) {
   /**
    * The cards, seeded from the server and patched locally for the moment
@@ -1287,6 +1323,7 @@ function Board({
                     repoLabels={repoLabels}
                     repoColors={repoColors}
                     buildsOn={buildsOn}
+                    prModule={prModule}
                     selected={selected.has(c.id)}
                     onToggleSelect={() => toggleSel(c.id)}
                     onDragStart={() => setDragId(c.id)}
@@ -1403,6 +1440,7 @@ function NoteCard({
   repoLabels,
   repoColors,
   buildsOn,
+  prModule,
   selected,
   onToggleSelect,
   onDragStart,
@@ -1427,6 +1465,8 @@ function NoteCard({
   repoColors: Record<string, string>;
   /** This team ships builds — see {@link Board}. */
   buildsOn: boolean;
+  /** Module "Git & PR" đang bật — xem {@link Ladder}. */
+  prModule: boolean;
   /**
    * `repo#branch` → card đang giữ nhánh đó, để một PR nhắm vào nhánh của card
    * khác đọc ra card ấy thay vì đọc ra một chuỗi tên nhánh dài.
@@ -1571,6 +1611,13 @@ function NoteCard({
       card.build,
       card.statusName ? statusTone(card.statusName) : null,
     );
+
+  /** Link sang module "Git & PR" cho một bậc của một repo — `undefined` khi module tắt. */
+  const prGuideFor = (side: CardSide | undefined) =>
+    prModule && side?.branch.trim()
+      ? (base: string) =>
+          `/m/pr?${new URLSearchParams({ card: String(card.id), repo: side.repo, base })}`
+      : undefined;
 
   const envBranches = envSteps(stages).map((s) => s.branch);
   /**
@@ -1835,6 +1882,7 @@ function NoteCard({
             suggest={suggestFor(sides[0])}
             owners={owners}
             onGoTo={onGoTo}
+            prGuide={prGuideFor(sides[0])}
           />
         </>
       ) : (
@@ -1887,6 +1935,7 @@ function NoteCard({
                   builds={false}
                   owners={owners}
                   onGoTo={onGoTo}
+                  prGuide={prGuideFor(side)}
                 />
               </span>
             </Fragment>

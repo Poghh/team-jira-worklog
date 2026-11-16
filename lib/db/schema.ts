@@ -629,3 +629,22 @@ export const reviewMessages = sqliteTable(
 export type ReviewItem = typeof reviewItems.$inferSelect;
 export type ReviewRound = typeof reviewRounds.$inferSelect;
 export type ReviewFinding = typeof reviewFindings.$inferSelect;
+
+/**
+ * `pr` module — mục checklist PR người dùng đã tick tay.
+ *
+ * Theo cặp `repo + head + base` chứ không theo card: mỗi bậc môi trường là một
+ * PR khác nhau với danh sách việc khác nhau, và PR nhập tay (không có card nào)
+ * cũng phải tick được. Mục app tự kiểm không lưu: đọc lại từ GitHub mỗi lần mở.
+ */
+export const prChecks = sqliteTable(
+  "pr_checks",
+  {
+    repo: text("repo").notNull(),
+    head: text("head").notNull(),
+    base: text("base").notNull(),
+    item: text("item").notNull(),
+    createdAt: integer("created_at").notNull().default(now),
+  },
+  (t) => [uniqueIndex("pr_checks_pair_item_idx").on(t.repo, t.head, t.base, t.item)],
+);

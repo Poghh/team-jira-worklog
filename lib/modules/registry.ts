@@ -6,7 +6,7 @@
  * both read it directly). Adding a module is adding an entry plus its route
  * under `app/m/<id>/`; nav, Settings and the route guard all derive from here.
  */
-export type ModuleId = 'progress' | 'ios-publish' | 'releases' | 'branches' | 'sdk-release' | 'code-review'
+export type ModuleId = 'progress' | 'ios-publish' | 'releases' | 'branches' | 'sdk-release' | 'code-review' | 'pr'
 
 export interface ModuleManifest {
   id: ModuleId
@@ -65,6 +65,17 @@ export const MODULES: ModuleManifest[] = [
     nav: { href: '/m/branches', label: 'Nhánh & ghi chú' },
     status: 'ready',
     tables: ['task_notes'],
+  },
+  {
+    id: 'pr',
+    name: 'Git & PR',
+    icon: '⇄',
+    description:
+      'Làm việc với Git theo "Git & Task Management Rules": gợi ý tên nhánh từ ticket Jira (Claude gợi ý mô tả nhánh), gợi ý tiêu đề, label, mô tả PR và commit khi squash, rồi checklist soát PR — tên nhánh, sync master, phiên bản SDK, conflict, CI, cách merge. Mục nào đọc được từ GitHub thì app tự kiểm, còn lại người dùng tick. App không tạo hay sửa PR.',
+    nav: { href: '/m/pr', label: 'Git & PR' },
+    status: 'ready',
+    tables: ['pr_checks'],
+    configHint: 'dùng GitHub token của module Nhánh',
   },
   {
     id: 'releases',

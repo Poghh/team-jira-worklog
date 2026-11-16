@@ -9,6 +9,7 @@ import {
   pushHeadsToCheck,
   pushedBranches,
 } from "./github-model";
+import { type PrFacts, sdkVersionFromProjectYml } from "@/lib/modules/pr/checklist";
 
 const API = "https://api.github.com/graphql";
 const REST = "https://api.github.com";
@@ -1009,3 +1010,166 @@ export async function fetchBuildRuns(
     .sort((a, b) => b.startedAt - a.startedAt);
 }
 
+/**
+ * Tên nhánh của một repo, mới đẩy trước — cho ô chọn base/compare của module
+ * Git & PR. Chỉ đọc; dừng ở `max` nhánh.
+ */
+export async function fetchBranchNames(token: string, repo: string, max = 500): Promise<string[]> {
+  const [owner, name] = repo.split("/");
+  if (!owner || !name) throw new GitHubError(`Repo không hợp lệ: ${repo}`);
+  const out: string[] = [];
+  let cursor: string | null = null;
+  while (out.length < max) {
+    const data: {
+      repository: {
+        refs: { nodes: Array<{ name: string }>; pageInfo: { hasNextPage: boolean; endCursor: string | null } };
+      } | null;
+    } = await graphql(
+      token,
+      `query($owner: String!, $name: String!, $after: String) {
+         repository(owner: $owner, name: $name) {
+           refs(refPrefix: "refs/heads/", first: 100, after: $after,
+                orderBy: {field: TAG_COMMIT_DATE, direction: DESC}) {
+             nodes { name }
+             pageInfo { hasNextPage endCursor }
+           }
+         }
+       }`,
+      { owner, name, after: cursor },
+    );
+    if (!data.repository) throw new GitHubError(`Token không thấy repo ${repo}`);
+    out.push(...data.repository.refs.nodes.map((n) => n.name));
+    if (!data.repository.refs.pageInfo.hasNextPage) break;
+    cursor = data.repository.refs.pageInfo.endCursor;
+  }
+  return out.slice(0, max);
+}
+
+export interface CompareData {
+  /** Commit message đầy đủ, cũ trước. */
+  commits: string[];
+  /** Tối đa 300 file (trần của GitHub); `patch` vắng khi file quá lớn hoặc nhị phân. */
+  files: Array<{ path: string; additions: number; deletions: number; patch?: string }>;
+}
+
+/**
+ * So `base...head` như trang compare của GitHub — commit và diff của nhánh
+ * nguồn từ chỗ rẽ khỏi đích. Chỉ đọc.
+ */
+export async function fetchCompare(token: string, repo: string, base: string, head: string): Promise<CompareData> {
+  const seg = (b: string) => b.split("/").map(encodeURIComponent).join("/");
+  const data = await rest<{
+    commits: Array<{ commit: { message: string } }>;
+    files?: Array<{ filename: string; additions: number; deletions: number; patch?: string }>;
+  }>(token, `/repos/${repo}/compare/${seg(base)}...${seg(head)}`);
+  return {
+    commits: data.commits.map((c) => c.commit.message),
+    files: (data.files ?? []).map((f) => ({
+      path: f.filename,
+      additions: f.additions,
+      deletions: f.deletions,
+      patch: f.patch,
+    })),
+  };
+}
+
+/** Những gì checklist PR cần đọc từ GitHub cho một cặp `head → base`. */
+export interface PrChecklistData {
+  /** PR mới nhất của cặp này — đang mở trước, rồi đã merge. `null` = chưa có. */
+  facts: PrFacts | null;
+  /** `MatrixRustSDK.exactVersion` ở nhánh nguồn; `null` khi repo không có. */
+  sdkVersion: string | null;
+  /** Nhánh nguồn còn trên GitHub không. */
+  headExists: boolean;
+}
+
+/**
+ * Đọc một PR cho checklist — gọi khi người dùng mở checklist của một bậc,
+ * không chạy trong phép quét.
+ *
+ * Một truy vấn duy nhất: PR theo cặp nhánh và `project.yml` ở nhánh nguồn.
+ * Chỉ đọc.
+ *
+ * `files(first: 100)` là trần của GitHub; PR lớn hơn thì checklist dùng tổng
+ * thô và nói rõ là chưa trừ lock/asset.
+ */
+export async function fetchPrChecklist(
+  token: string,
+  repo: string,
+  head: string,
+  base: string,
+): Promise<PrChecklistData> {
+  const [owner, name] = repo.split("/");
+  if (!owner || !name || !head || !base)
+    return { facts: null, sdkVersion: null, headExists: false };
+
+  type Node = {
+    number: number;
+    url: string;
+    state: string;
+    title: string;
+    body: string;
+    mergeable: string;
+    additions: number;
+    deletions: number;
+    changedFiles: number;
+    labels: { nodes: Array<{ name: string }> };
+    files: { nodes: Array<{ path: string; additions: number; deletions: number }> } | null;
+    commits: { nodes: Array<{ commit: { message: string } }> };
+    tip: { nodes: Array<{ commit: { statusCheckRollup: { state: string } | null } }> };
+  };
+  const data = await graphql<{
+    repository: {
+      pullRequests: { nodes: Node[] };
+      ref: { name: string } | null;
+      yml: { text?: string | null } | null;
+    } | null;
+  }>(
+    token,
+    `query($owner: String!, $name: String!, $head: String!, $base: String!, $ref: String!, $yml: String!) {
+      repository(owner: $owner, name: $name) {
+        pullRequests(headRefName: $head, baseRefName: $base, first: 10,
+                     orderBy: { field: CREATED_AT, direction: DESC }) {
+          nodes {
+            number url state title body mergeable additions deletions changedFiles
+            labels(first: 20) { nodes { name } }
+            files(first: 100) { nodes { path additions deletions } }
+            commits(last: 100) { nodes { commit { message } } }
+            tip: commits(last: 1) { nodes { commit { statusCheckRollup { state } } } }
+          }
+        }
+        ref(qualifiedName: $ref) { name }
+        yml: object(expression: $yml) { ... on Blob { text } }
+      }
+    }`,
+    { owner, name, head, base, ref: `refs/heads/${head}`, yml: `${head}:project.yml` },
+  );
+
+  const r = data.repository;
+  const nodes = r?.pullRequests.nodes ?? [];
+  // Đang mở là thứ đang cần làm; đã merge là kết quả; đóng chỉ khi không còn gì.
+  const pr =
+    nodes.find((n) => n.state === "OPEN") ?? nodes.find((n) => n.state === "MERGED") ?? nodes[0] ?? null;
+
+  return {
+    facts: pr
+      ? {
+          number: pr.number,
+          url: pr.url,
+          state: pr.state,
+          title: pr.title,
+          body: pr.body ?? "",
+          labels: pr.labels.nodes.map((l) => l.name),
+          mergeable: pr.mergeable,
+          ci: pr.tip.nodes[0]?.commit.statusCheckRollup?.state ?? "",
+          additions: pr.additions,
+          deletions: pr.deletions,
+          changedFiles: pr.changedFiles,
+          files: pr.files?.nodes ?? [],
+          commits: pr.commits.nodes.map((c) => c.commit.message),
+        }
+      : null,
+    sdkVersion: r?.yml?.text ? sdkVersionFromProjectYml(r.yml.text) : null,
+    headExists: Boolean(r?.ref),
+  };
+}
