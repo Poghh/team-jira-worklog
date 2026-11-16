@@ -366,11 +366,11 @@ function ensureColumn(
   }
 }
 
-function open() {
-  fs.mkdirSync(DB_DIR, { recursive: true });
-  const sqlite = new Database(DB_PATH);
-  sqlite.pragma("journal_mode = WAL");
-  sqlite.pragma("foreign_keys = ON");
+/**
+ * Tạo bảng và thêm cột còn thiếu. Chạy lại bao nhiêu lần cũng được: mọi câu
+ * đều `IF NOT EXISTS`, còn `ensureColumn` hỏi trước khi thêm.
+ */
+function migrate(sqlite: Database.Database) {
   sqlite.exec(CREATE_TABLES);
   ensureColumn(
     sqlite,
@@ -433,6 +433,14 @@ function open() {
   ensureColumn(sqlite, "review_items", "jira", "jira TEXT NOT NULL DEFAULT ''");
   // Tự review: tên nhánh lúc xếp hàng, vì `head_ref` của nó là một sha.
   ensureColumn(sqlite, "review_items", "head_branch", "head_branch TEXT NOT NULL DEFAULT ''");
+}
+
+function open() {
+  fs.mkdirSync(DB_DIR, { recursive: true });
+  const sqlite = new Database(DB_PATH);
+  sqlite.pragma("journal_mode = WAL");
+  sqlite.pragma("foreign_keys = ON");
+  migrate(sqlite);
   return drizzle(sqlite, { schema });
 }
 
@@ -445,7 +453,13 @@ const globalForDb = globalThis as unknown as {
   __jiraLogworkDb?: ReturnType<typeof open>;
 };
 
-export const db = globalForDb.__jiraLogworkDb ?? open();
+const cached = globalForDb.__jiraLogworkDb;
+// Kết nối giữ qua hot reload thì cũng giữ nguyên schema của lần mở đầu: bảng
+// hay cột thêm vào code sau đó không bao giờ được tạo cho tới khi restart dev
+// server ("no such table"). Chạy lại migrate trên kết nối cũ mỗi lần module
+// này được nạp lại.
+if (cached) migrate(cached.$client);
+export const db = cached ?? open();
 
 if (process.env.NODE_ENV !== "production") globalForDb.__jiraLogworkDb = db;
 
