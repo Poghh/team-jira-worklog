@@ -156,6 +156,70 @@ export function prBaseBranches(
   return out;
 }
 
+/** One entry of the user's event feed, reduced to what decides ownership. */
+export interface FeedEvent {
+  type: string;
+  /** `owner/name`. */
+  repo: string;
+  /** Branch name, without `refs/heads/`. */
+  branch: string;
+  /** CreateEvent: what was created. */
+  refType?: string;
+  /** PushEvent: the commit the branch moved to. */
+  head?: string;
+}
+
+/**
+ * Lần push cần hỏi thêm: nhánh không do người dùng tạo, mà họ chỉ có push.
+ *
+ * Bấm merge một PR trên GitHub cũng đẻ ra một `PushEvent` lên nhánh đích,
+ * actor là người bấm. Thật: `pinkc0cb` tạo `feature/release-2026-11-08`, người
+ * dùng merge PR #1885 từ nhánh resolve của họ vào đó, và feed ghi "windxfeng
+ * push lên feature/release-2026-11-08" — luật push nhận luôn nhánh của người
+ * khác. Phân biệt được nhờ `head`: lần bấm nút thì `head` chính là merge commit
+ * của PR.
+ *
+ * Chỉ nhánh không có CreateEvent mới phải hỏi: tự tạo nhánh thì đã là bằng
+ * chứng, push sau đó bằng cách nào cũng không đổi gì.
+ */
+export function pushHeadsToCheck(events: FeedEvent[]): Array<{ repo: string; oid: string }> {
+  const created = new Set(
+    events
+      .filter((e) => e.type === "CreateEvent" && e.refType === "branch")
+      .map((e) => `${e.repo}#${e.branch}`),
+  );
+  const out: Array<{ repo: string; oid: string }> = [];
+  for (const e of events) {
+    if (e.type !== "PushEvent" || !e.head) continue;
+    if (created.has(`${e.repo}#${e.branch}`)) continue;
+    if (!out.some((x) => x.repo === e.repo && x.oid === e.head))
+      out.push({ repo: e.repo, oid: e.head });
+  }
+  return out;
+}
+
+/**
+ * Nhánh người dùng tạo, hoặc push lên bằng tay — `owner/repo#branch`.
+ *
+ * `mergeHeads` là những `head` đã được xác nhận là merge commit của một PR:
+ * push kiểu đó không tính. Một nhánh vẫn được nhận nếu nó còn **bất kỳ** event
+ * nào khác đứng được — tạo nó, hay một lần push thật.
+ */
+export function pushedBranches(
+  events: FeedEvent[],
+  mergeHeads: Set<string>,
+): Set<string> {
+  const out = new Set<string>();
+  for (const e of events) {
+    if (!e.repo || !e.branch) continue;
+    if (e.type === "CreateEvent" && e.refType === "branch")
+      out.add(`${e.repo}#${e.branch}`);
+    else if (e.type === "PushEvent" && !(e.head && mergeHeads.has(e.head)))
+      out.add(`${e.repo}#${e.branch}`);
+  }
+  return out;
+}
+
 export function mineBy(
   branch: RemoteBranch,
   me: Identity,

@@ -1350,29 +1350,6 @@ export function noteProgress(items: NoteItem[]): {
   return { done: items.filter((i) => i.done).length, total: items.length };
 }
 
-/**
- * A branch name suggested from the issue, e.g. `VT-412` + "Sửa crash khi vào
- * room" → `VT-412-sua-crash-khi-vao-room`. Only a starting point the user edits;
- * the point is to not have to type the key and the slug by hand every time.
- */
-export function suggestBranch(issueKey: string, title: string): string {
-  const slug = title
-    .normalize("NFD")
-    // Combining accents, stripped after NFD split them off their base letter.
-    // `đ` has no decomposition, so it needs its own pass.
-    .replace(/[\u0300-\u036f]/g, "")
-    .replace(/[đĐ]/g, "d")
-    // Bracketed tags (`[CTALK][spt 69]`) are filing metadata, not a description.
-    .replace(/\[[^\]]*\]/g, " ")
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "")
-    .split("-")
-    .slice(0, 8)
-    .join("-");
-  return [issueKey, slug].filter(Boolean).join("-");
-}
-
 /** Reads the stored JSON list, falling back to the primary key alone. */
 export function parseIssueKeys(raw: string, primary: string): string[] {
   const out: string[] = [];

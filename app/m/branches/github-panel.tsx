@@ -876,6 +876,26 @@ function ScanReview({
         </p>
       )}
 
+      {/* Từng lên bảng nhờ luật login, giờ thì không — nói ra vì người dùng
+          sẽ đi tìm. Lý do là thứ đáng đọc: commit mới nhất của nhánh là của
+          nhánh gốc, thường là chính lần merge PR của họ. */}
+      {scan.noOwnCommits.length > 0 && (
+        <p className="mt-2 rounded-md border border-line bg-surface-2 px-2.5 py-1.5 text-[12px] text-ink-2">
+          Bỏ qua vì chưa có commit riêng:{" "}
+          <span className="font-mono">
+            {scan.noOwnCommits
+              .map((b) => {
+                const [repo, name] = b.split("#");
+                return `${repo.split("/")[1]} · ${name}`;
+              })
+              .join(", ")}
+          </span>{" "}
+          — nhánh trùng với nhánh gốc, nên commit mới nhất mang tên bạn chỉ là
+          commit của <span className="font-mono">master</span> (thường là một
+          lần bạn merge PR), không phải bằng chứng nhánh là của bạn.
+        </p>
+      )}
+
       {scan.localHidden.length > 0 && (
         <div className="mt-2 rounded-md border border-warn bg-warn-soft/40 px-2.5 py-2 text-[12px] text-ink-2">
           <b>Commit chưa đẩy, nằm ngoài bảng</b> — nhánh này có việc chưa push

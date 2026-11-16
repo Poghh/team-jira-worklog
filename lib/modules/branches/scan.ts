@@ -149,6 +149,14 @@ export interface ScanResult {
    * ai nói lý do thì không phân biệt được với một nhánh app đọc hụt.
    */
   envSkipped: string[];
+  /**
+   * Nhánh luật login nhận nhưng không có commit riêng so với nhánh gốc.
+   *
+   * Commit mới nhất của chúng là của nhánh gốc — thường là một lần merge PR
+   * của chính người dùng — chứ không phải của nhánh. Nêu ra vì một nhánh đã
+   * từng lên bảng rồi lặng lẽ thôi lên thì người dùng sẽ đi tìm.
+   */
+  noOwnCommits: string[];
   /** Mine, but naming no configured project key — the usual cause of an empty scan. */
   unmatched: number;
   /** Branch names behind `unmatched`, capped, so the cause is visible not inferred. */
@@ -518,7 +526,7 @@ export async function scanGitHub(): Promise<ScanResult> {
   const envSkipped: string[] = [];
 
   const byRule: Record<string, number> = {};
-  const mine = branches.filter((b) => {
+  let mine = branches.filter((b) => {
     // A branch sitting in a clone on this machine is the user's by construction;
     // the identity rules exist to filter the server's shared view, not this one.
     const how = b.local?.onlyLocal ? "local" : mineBy(b, cfg.identity, pushed);
@@ -537,6 +545,78 @@ export async function scanGitHub(): Promise<ScanResult> {
     byRule[how] = (byRule[how] ?? 0) + 1;
     return true;
   });
+
+  /**
+   * Nhánh gốc của mỗi repo, hỏi một lần cho cả lượt quét.
+   *
+   * Hai chỗ cần nó — cổng "có commit riêng không" ngay dưới, và phép đo "đã có
+   * bản mới nhất của master" lúc dựng card — nên nhớ lại thay vì hỏi hai lần.
+   */
+  const baseMemo = new Map<string, Promise<string>>();
+  const baseOf = (repo: string) => {
+    if (!baseMemo.has(repo))
+      baseMemo.set(repo, fetchBaseBranch(token, repo).catch(() => ""));
+    return baseMemo.get(repo)!;
+  };
+
+  /**
+   * Luật login chỉ đáng tin khi commit mới nhất là của **chính nhánh**.
+   *
+   * Nhánh chưa có commit riêng nào thì "commit mới nhất" của nó là commit mới
+   * nhất của nhánh nó cắt ra — mà trên `master` đó thường là một commit merge
+   * PR bấm trên GitHub, tác giả là người bấm. Thật:
+   * `hir/feature/vtl-3322-integration-sticker` trùng khít `master`, đỉnh là
+   * `3e24e09e` "Merge pull request #484 from atthetalk/staging" do chính người
+   * dùng merge, nên luật login kéo nhánh của người khác lên bảng của họ. Ai vừa
+   * merge vào `master` là nhận luôn mọi nhánh cắt ra sau đó.
+   *
+   * Nên những nhánh mà login là lý do **duy nhất** phải qua thêm một câu: so
+   * với nhánh gốc của repo, nó có commit nào của riêng nó không. Không có thì
+   * bỏ, và báo ra. Nhánh thật của người dùng không mất ở đây — ca +0 commit
+   * của họ đã có luật khác đỡ: vừa tạo và push thì luật push, là đích của PR
+   * mình mở thì luật prbase, còn nhánh có trong clone dưới máy thì được tin
+   * luôn, không hỏi.
+   *
+   * So với nhánh gốc chứ không với môi trường: nhánh đã merge hết vào
+   * `ctalk/develop` cũng +0 so với develop mà vẫn là việc của người dùng.
+   * `master` chỉ nhận hàng lúc phát hành, nên +0 so với nó nghĩa là nhánh
+   * không mang gì bản phát hành chưa có.
+   *
+   * Hỏi không được — GitHub lỗi, repo không có nhánh gốc — thì giữ như cũ:
+   * không có câu trả lời thì không phải bằng chứng là nhánh rỗng.
+   */
+  const noOwnCommits: string[] = [];
+  {
+    const suspects = mine.filter(
+      (b) => !b.local && mineBy(b, cfg.identity, pushed) === "login",
+    );
+    const byRepo = new Map<string, string[]>();
+    for (const b of suspects)
+      byRepo.set(b.repo, [...(byRepo.get(b.repo) ?? []), b.name]);
+
+    const empty = new Set<string>();
+    await Promise.all(
+      [...byRepo].map(async ([repo, names]) => {
+        const base = await baseOf(repo);
+        if (!base) return;
+        const got = await fetchEnvState(
+          token,
+          names.map((branch) => ({ repo, branch })),
+          [{ branch: base }],
+        ).catch((): Awaited<ReturnType<typeof fetchEnvState>> => ({}));
+        for (const name of names)
+          if (got[`${repo}#${name}`]?.[base]?.ahead === 0)
+            empty.add(`${repo}#${name}`);
+      }),
+    );
+
+    if (empty.size) {
+      mine = mine.filter((b) => !empty.has(`${b.repo}#${b.name}`));
+      noOwnCommits.push(...empty);
+      byRule.login = (byRule.login ?? 0) - empty.size;
+      if (byRule.login <= 0) delete byRule.login;
+    }
+  }
 
   /**
    * Nhánh đích của một PR do chính người dùng mở cũng là việc của người dùng.
@@ -891,7 +971,7 @@ export async function scanGitHub(): Promise<ScanResult> {
       // theo `repo#branch` nên không có chỗ nào đụng nhau.
       await Promise.all(
         [...byRepo].map(async ([repo, list]) => {
-          const base = await fetchBaseBranch(token, repo).catch(() => "");
+          const base = await baseOf(repo);
           if (!base) return;
           baseByRepo.set(repo, base);
           const got = await fetchBaseStates(token, repo, base, list).catch(
@@ -1463,6 +1543,7 @@ export async function scanGitHub(): Promise<ScanResult> {
     mine: mine.length,
     mineBy: byRule,
     envSkipped,
+    noOwnCommits,
     envCards,
     splitKeys,
     unmatched,

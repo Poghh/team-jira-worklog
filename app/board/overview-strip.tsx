@@ -1,10 +1,11 @@
 import Link from "next/link";
 
 import type { PointsSummary } from "@/lib/jira/types";
-import { type QuotaRules, quotaForDate } from "@/lib/quota";
+import { DAY_OFF_SHORT, type QuotaRules, halfDayHours, quotaForDate } from "@/lib/quota";
 import { formatDuration } from "@/lib/time";
 
 import { LinkPending } from "../link-pending";
+import { HATCH } from "./day-bar";
 import { DatePicker } from "./date-picker";
 import { DayOffButton } from "./day-off-button";
 
@@ -57,6 +58,16 @@ export function OverviewStrip({
 }) {
   const hrefFor = (d: string) => `/?${baseQuery ? baseQuery + "&" : ""}date=${d}`;
   const quotaFor = (d: string) => quotaForDate(d, rules);
+  /**
+   * Lunch cắt ngày ở đâu, tính theo phần của cả ngày — 3h sáng trên 8h là
+   * 0.375.
+   *
+   * Truyền xuống chứ không mặc định 0.5: ngày 09:00-18:00 có buổi sáng ba
+   * tiếng trên tám, nên cột vẽ nửa-nửa là nói sai nửa nào lớn hơn.
+   */
+  const halves = halfDayHours(rules.schedule);
+  const span = halves.morning + halves.afternoon;
+  const split = span > 0 ? halves.morning / span : 0.5;
 
   const days = start && end ? daysBetween(start, end) : [];
   const elapsed = days.filter((d) => d <= today);
@@ -154,6 +165,7 @@ export function OverviewStrip({
               seconds={secondsByDate[d] ?? 0}
               quota={quotaFor(d)}
               dayOff={rules.daysOff[d] ?? null}
+              split={split}
               selected={d === date}
               isToday={d === today}
               future={d > today}
@@ -185,7 +197,10 @@ export function OverviewStrip({
           </span>
           {offDays.length > 0 && (
             <span className="font-mono text-[9px] uppercase tracking-[0.06em] text-ink-3">
-              {offDays.length} ngày nghỉ · không tính
+              {offDays.length} ngày nghỉ ·{" "}
+              {offDays.every((d) => rules.daysOff[d] === "full")
+                ? "không tính"
+                : "nửa ngày tính nửa hạn mức"}
             </span>
           )}
         </Seg>
@@ -222,8 +237,19 @@ function Seg({
  * Một ngày trong dải: cột dọc cao bằng tỉ lệ giờ đã log trên hạn mức.
  *
  * Cột là một link sang ngày đó, còn nút đánh dấu nghỉ nổi lên khi rê chuột —
- * cùng cách bản dọc làm, chỉ xoay chiều. Ngày nghỉ gạch chéo và hạn mức về 0,
- * nên nó không bao giờ bị đếm là "thiếu giờ": đó là cả điểm của việc đánh dấu.
+ * cùng cách bản dọc làm, chỉ xoay chiều.
+ *
+ * Nghỉ cả ngày: hạn mức về 0, cả cột gạch chéo, không bao giờ bị đếm là
+ * "thiếu giờ" — đó là cả điểm của việc đánh dấu.
+ *
+ * Nghỉ nửa ngày thì phần gạch chéo là nửa **không** phải làm, và cột chỉ được
+ * dâng trong nửa còn lại. Trước đây `pct` đo trên hạn mức của riêng nửa ấy
+ * nhưng lại được vẽ trên cả chiều cao, nên nghỉ chiều mà log 4h ra một cột
+ * đầy kịch — giống hệt ngày làm đủ 8h, và nuốt luôn phần gạch chéo phía dưới.
+ * Bản ngang {@link DayBar} đã chia đúng từ đầu; cột dọc thì chưa ai chia.
+ *
+ * Hai nửa không bằng nhau: 09:00-18:00 quanh bữa trưa là sáng ba tiếng, chiều
+ * năm — nên nghỉ sáng chừa lại nhiều cột hơn nghỉ chiều, và nhìn là thấy khác.
  */
 function DayCell({
   date,
@@ -231,6 +257,7 @@ function DayCell({
   seconds,
   quota,
   dayOff,
+  split,
   selected,
   isToday,
   future,
@@ -240,12 +267,22 @@ function DayCell({
   seconds: number;
   quota: number;
   dayOff: "full" | "morning" | "afternoon" | null;
+  /** Buổi sáng hết ở đâu, tính theo phần của cả ngày — 3h trên 8h là 0.375. */
+  split: number;
   selected: boolean;
   isToday: boolean;
   future: boolean;
 }) {
-  const pct = quota > 0 ? Math.min(100, (seconds / (quota * 3600)) * 100) : 0;
+  // Chưa kẹp ở 100: kẹp sau, ở mép cột. Làm quá nửa của một ngày nghỉ nửa thì
+  // cột phải dâng vào phần gạch chéo — đó đúng là nghĩa "hôm ấy làm xuyên cả
+  // buổi đáng lẽ nghỉ", chứ không phải thứ để lặng lẽ cắt đi.
+  const pct = quota > 0 ? (seconds / (quota * 3600)) * 100 : 0;
   const short = quota > 0 && !future && seconds < quota * 3600;
+  // Phần cột mà giờ của ngày này được phép chiếm: nửa của nó, hay cả cột khi
+  // không đánh dấu gì. Nghỉ cả ngày thì không còn nửa nào — hạn mức đã là 0 nên
+  // `pct` cũng bằng 0, và cả cột là gạch chéo.
+  const share =
+    dayOff === "full" ? 0 : dayOff === "afternoon" ? split : dayOff === "morning" ? 1 - split : 1;
   const hours = seconds ? (seconds / 3600).toFixed(seconds % 3600 === 0 ? 0 : 1) : "—";
 
   return (
@@ -273,21 +310,29 @@ function DayCell({
         href={href}
         title={
           `${label(date)} · ${hours}h / ${quota}h` +
-          (dayOff ? " · ngày nghỉ, không tính" : short ? " · thiếu giờ" : "")
+          (dayOff ? ` · ${DAY_OFF_SHORT[dayOff]}` : "") +
+          (dayOff === "full" ? ", không tính" : short ? " · thiếu giờ" : "")
         }
         className={
-          "flex h-[22px] w-full items-end overflow-hidden rounded-[3px] " +
-          (dayOff
-            ? "bg-[repeating-linear-gradient(45deg,var(--color-surface-2),var(--color-surface-2)_3px,transparent_3px,transparent_6px)]"
-            : "bg-surface-2") +
+          "relative flex h-[22px] w-full items-end overflow-hidden rounded-[3px] bg-surface-2" +
           (selected ? " outline outline-2 outline-offset-1 outline-accent" : "")
         }
       >
+        {dayOff && (
+          <i
+            aria-hidden
+            className="absolute inset-x-0 top-0"
+            // Gạch chéo phủ phần KHÔNG phải làm, nên nó là phần còn lại của cột.
+            style={{ height: `${(1 - share) * 100}%`, backgroundImage: HATCH }}
+          />
+        )}
         {pct > 0 && (
           <i
-            style={{ height: `${pct}%` }}
+            // `pct` đo trên hạn mức của riêng nửa đó — nửa ngày làm trọn là
+            // 100% — nên phải thu vào đúng phần cột của nửa ấy.
+            style={{ height: `${Math.min(100, pct * share)}%` }}
             className={
-              "block w-full rounded-[3px] " + (short ? "bg-warn" : "bg-accent")
+              "relative block w-full rounded-[3px] " + (short ? "bg-warn" : "bg-accent")
             }
           />
         )}

@@ -54,7 +54,6 @@ import {
   setLinksAction,
   setSourcesAction,
   setTemplateAction,
-  updateSummaryAction,
 } from '../actions'
 import { ContextPicker, type DocRepo, LinkPicker, type PrContext, RepoRows, type SourceRow, SourceRows, contextReady, sourcePayload, useAttachments, useDocUpload } from '../review'
 import { CfAccessNote, CfProvider, FindingConfluence, SendAllConfluence } from './confluence'
@@ -1166,7 +1165,9 @@ function FindingCard({
         )}
         {(f.origin === 'carried' || f.status === 'dismissed') && <StatusPill s={f.status} />}
         <span className="text-[13px] font-medium">{f.title}</span>
-        {kind === 'pr' &&
+        {/* `isCode`: nhãn phân loại — kể cả "✍️ Bạn viết" — là của mọi
+            finding về code, không riêng finding trên một PR. */}
+        {isCode(kind) &&
           f.category &&
           (f.category === OWN_CATEGORY ? (
             <span className="rounded bg-accent-soft px-1.5 py-[1px] text-[11px] font-medium text-accent-ink">✍️ Bạn viết</span>

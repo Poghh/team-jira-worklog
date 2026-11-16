@@ -1143,3 +1143,36 @@ export async function transitionIssue(
     },
   );
 }
+
+/**
+ * FR (Epic trên Jira) mà các task này thuộc về — để gợi ý tiêu đề PR.
+ *
+ * Đi lên theo `parent`: task con → task → Epic, tối đa ba bậc. Task tự nó là
+ * Epic thì lấy chính nó. Lấy FR đầu tiên tìm được theo thứ tự `keys`; không có
+ * thì `null`. Chỉ đọc.
+ */
+export async function getFeatureOf(keys: string[]): Promise<{ key: string; summary: string } | null> {
+  const isEpic = (t?: { name?: string; hierarchyLevel?: number }) =>
+    !!t && ((t.hierarchyLevel ?? 0) >= 1 || /^epic$/i.test(t.name ?? ""));
+  let level = [...new Set(keys.filter(Boolean))];
+  for (let depth = 0; depth < 3 && level.length; depth++) {
+    const found = await searchJql<JiraIssue>(
+      `key in (${level.map((k) => `"${escapeJql(k)}"`).join(",")})`,
+      ["summary", "issuetype", "parent"],
+      { limit: level.length },
+    );
+    const byKey = new Map(found.map((i) => [i.key, i]));
+    const next: string[] = [];
+    for (const k of level) {
+      const i = byKey.get(k);
+      if (!i) continue;
+      if (isEpic(i.fields.issuetype)) return { key: i.key, summary: i.fields.summary ?? "" };
+      const p = i.fields.parent;
+      if (!p) continue;
+      if (isEpic(p.fields?.issuetype)) return { key: p.key, summary: p.fields?.summary ?? "" };
+      next.push(p.key);
+    }
+    level = [...new Set(next)];
+  }
+  return null;
+}

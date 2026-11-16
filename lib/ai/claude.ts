@@ -5,6 +5,7 @@ import os from 'node:os'
 import * as z from 'zod/v4'
 
 import { SETTING_KEYS, getSetting } from '../settings'
+import { branchSlug } from '../modules/branches/git-rules'
 import { probeClaude } from './cli'
 import { RetryableError, withRetry } from './retry'
 
@@ -44,6 +45,15 @@ const { $schema: _draft, ...SCHEMA_BODY } = z.toJSONSchema(TaskSchema)
 const JSON_SCHEMA = JSON.stringify(SCHEMA_BODY)
 
 /**
+ * Model đôi khi trả chuỗi có `\\n` dạng chữ (hai ký tự) thay vì xuống dòng
+ * thật — chép theo ví dụ JSON. Đổi lại thành xuống dòng để Jira hiện đúng
+ * danh sách gạch đầu dòng.
+ */
+export function unescapeLines(text: string) {
+  return text.replace(/\\r\\n|\\n/g, '\n').trim()
+}
+
+/**
  * The model is told NOT to emit prefixes. The app composes `[spt 66][Mobile]`
  * itself from the sprint and the user's chips, because a model asked to follow
  * a bracket convention will eventually produce `[mobile]` or `[Mob]` and the
@@ -52,11 +62,29 @@ const JSON_SCHEMA = JSON.stringify(SCHEMA_BODY)
 function buildSystem(pointRules: string) {
   return `Bạn là trợ lý viết task cho một team phát triển phần mềm người Việt.
 
-Từ mô tả ngắn của lập trình viên, hãy viết:
+Từ mô tả của lập trình viên, hãy viết:
 1. title — một dòng, tiếng Việt, ngắn gọn, nêu rõ việc phải làm. KHÔNG thêm bất kỳ tiền tố nào trong ngoặc vuông.
-2. description — các gạch đầu dòng mô tả công việc cần xử lý, tiếng Việt.
-3. dod — Definition of Done, các gạch đầu dòng, mỗi dòng là một điều kiện kiểm chứng được.
+2. description — 3 đến 5 gạch đầu dòng "- ", tiếng Việt, mỗi dòng một việc cần xử lý, tối đa khoảng 20 từ.
+3. dod — Definition of Done, 2 đến 4 gạch đầu dòng "- ", mỗi dòng là một điều kiện kiểm chứng được, tối đa khoảng 20 từ.
 4. storyPoints — số nguyên 1, 2 hoặc 3.
+
+Viết NGẮN như một ticket Jira, không phải báo cáo:
+- Mô tả của lập trình viên có thể dài hoặc dán kèm ghi chú, log, kết quả điều tra. Chỉ rút ra việc cần làm; KHÔNG chép lại số liệu, tên file, dòng code, bằng chứng hay kết luận đã có.
+- Không tiêu đề phụ, không đoạn văn, không gạch đầu dòng lồng nhau, không dòng "Mục tiêu:" hay "Output:".
+- Mỗi dòng bắt đầu bằng động từ.
+
+Mỗi gạch đầu dòng nằm trên một dòng riêng (xuống dòng thật, không viết chữ "\\n").
+
+Ví dụ:
+title: Thêm nút xoá tin nhắn trong màn chat
+description:
+- Thêm action Xoá vào menu nhấn giữ tin nhắn
+- Gọi API redact và cập nhật timeline
+- Hiện xác nhận trước khi xoá
+dod:
+- Xoá được tin của chính mình, tin biến mất ở cả hai phía
+- Không hiện Xoá với tin của người khác
+storyPoints: 2
 
 Quy tắc story point của team:
 ${pointRules}
@@ -135,20 +163,24 @@ function runClaude(bin: string, args: string[]): Promise<CliResult> {
   })
 }
 
-/** One call. Throws RetryableError for anything worth another go. */
-async function callOnce(
+/**
+ * One call returning the schema-shaped object, unparsed. Throws
+ * RetryableError for anything worth another go.
+ */
+async function callStructured(
   bin: string,
   model: string,
   system: string,
   user: string,
-): Promise<GeneratedTask> {
+  schemaJson: string,
+): Promise<unknown> {
   const res = await runClaude(bin, [
     '-p',
     user,
     '--output-format',
     'json',
     '--json-schema',
-    JSON_SCHEMA,
+    schemaJson,
     // Replaces Claude Code's own system prompt instead of appending to it.
     // Appending left the whole coding-agent persona in front of a request to
     // write one Jira ticket — 42k tokens of context for a 500-token job.
@@ -175,8 +207,17 @@ async function callOnce(
     if (RETRYABLE.test(message)) throw new RetryableError(message)
     throw new Error(message)
   }
+  return res.structured_output
+}
 
-  const parsed = TaskSchema.safeParse(res.structured_output)
+/** One task-writing call. Throws RetryableError for anything worth another go. */
+async function callOnce(
+  bin: string,
+  model: string,
+  system: string,
+  user: string,
+): Promise<GeneratedTask> {
+  const parsed = TaskSchema.safeParse(await callStructured(bin, model, system, user, JSON_SCHEMA))
   if (!parsed.success) {
     // With `--json-schema` in force this should not happen; when it does it is
     // a bad roll rather than a standing failure.
@@ -186,8 +227,8 @@ async function callOnce(
 
   return {
     title: parsed.data.title.trim(),
-    description: parsed.data.description.trim(),
-    dod: parsed.data.dod.trim(),
+    description: unescapeLines(parsed.data.description),
+    dod: unescapeLines(parsed.data.dod),
     // Clamp rather than trust: the team's scale stops at 3 and a stray 5 or 8
     // would sail straight into Jira.
     storyPoints: Math.min(3, Math.max(1, parsed.data.storyPoints)),
@@ -213,6 +254,18 @@ export async function generateTask(
   idea: string,
   context: { pointRules: string; parentSummary?: string },
 ): Promise<GenerateOutcome> {
+  const system = buildSystem(context.pointRules)
+  const user = buildUser(idea, context.parentSummary)
+  return withModels((bin, model) => callOnce(bin, model, system, user))
+}
+
+/**
+ * Chạy `call` qua model chính rồi các model dự phòng khi model trước hết quota;
+ * lỗi tạm thời thì thử lại trong từng model.
+ */
+async function withModels<T extends object>(
+  call: (bin: string, model: string) => Promise<T>,
+): Promise<T & { attempts: number; model: string }> {
   const check = await probeClaude(getSetting(SETTING_KEYS.claudeBin) ?? '')
   if (!check.ok) throw new Error(check.problem)
 
@@ -221,9 +274,6 @@ export async function generateTask(
     .split(',')
     .map((m) => m.trim())
     .filter((m) => m && m !== primary)
-
-  const system = buildSystem(context.pointRules)
-  const user = buildUser(idea, context.parentSummary)
 
   let totalAttempts = 0
   let last: Error | null = null
@@ -237,7 +287,7 @@ export async function generateTask(
       const { value, attempts } = await withRetry(
         () => {
           used++
-          return callOnce(check.bin, model, system, user)
+          return call(check.bin, model)
         },
         { maxAttempts: MAX_ATTEMPTS },
       )
@@ -262,4 +312,80 @@ export function pointRulesText(): string {
     ['3', getSetting(SETTING_KEYS.pointBudget3) ?? '1d-2d'],
   ]
   return rules.map(([p, spec]) => `- ${p} point = ${spec}`).join('\n')
+}
+
+const ChangesSchema = z.object({ changes: z.array(z.string()) })
+const { $schema: _draft2, ...CHANGES_BODY } = z.toJSONSchema(ChangesSchema)
+const CHANGES_SCHEMA = JSON.stringify(CHANGES_BODY)
+
+const CHANGES_SYSTEM = `You write the change list of a pull request description for a mobile/chat app team.
+
+Given the commit messages and the diff, return "changes": 3 to 8 short items.
+- Each item is one user-visible or reviewer-relevant change, in English, imperative mood ("Limit title input…", "Show…", "Keep…").
+- At most about 15 words each, no trailing period, no leading "- ".
+- Describe behaviour, not files or line numbers. Group related edits into one item.
+- Mention refactors, comment-only or test-only work in one short item only if it is a large part of the diff.
+- Do not invent anything the diff does not show. Do not repeat Jira keys.`
+
+/** Gợi ý danh sách thay đổi của một PR từ commit và diff. Chỉ đọc dữ liệu đưa vào. */
+export async function summarizeChanges(input: {
+  commits: string[]
+  files: Array<{ path: string; additions: number; deletions: number; patch?: string }>
+}): Promise<{ changes: string[]; model: string; attempts: number }> {
+  const MAX_PATCH = 60_000
+  let budget = MAX_PATCH
+  const diff: string[] = []
+  for (const f of input.files) {
+    const head = `--- ${f.path} (+${f.additions} -${f.deletions})`
+    const patch = f.patch && budget > 0 ? f.patch.slice(0, Math.min(budget, 6_000)) : ''
+    budget -= patch.length
+    diff.push(patch ? `${head}\n${patch}` : `${head} (patch omitted)`)
+  }
+  const user = `Commit messages:\n${input.commits.map((c) => `* ${c.trim()}`).join('\n') || '(none)'}\n\nDiff:\n${diff.join('\n\n')}`
+
+  return withModels(async (bin, model) => {
+    const parsed = ChangesSchema.safeParse(await callStructured(bin, model, CHANGES_SYSTEM, user, CHANGES_SCHEMA))
+    if (!parsed.success) throw new RetryableError('Claude không trả về nội dung đúng dạng')
+    const changes = parsed.data.changes
+      .map((c) => unescapeLines(c).replace(/^[-*•]\s*/, '').replace(/\.$/, '').trim())
+      .filter(Boolean)
+    if (!changes.length) throw new RetryableError('Claude trả về danh sách rỗng')
+    return { changes }
+  })
+}
+
+const SlugSchema = z.object({ slugs: z.array(z.string()) })
+const { $schema: _draft3, ...SLUG_BODY } = z.toJSONSchema(SlugSchema)
+const SLUG_SCHEMA = JSON.stringify(SLUG_BODY)
+
+const SLUG_SYSTEM = `Bạn đặt phần mô tả ngắn cho tên nhánh Git của một team mobile/chat.
+
+Tên nhánh có dạng <team>/task/<MÃ-FR>_<mo-ta-ngan>. Bạn chỉ viết phần <mo-ta-ngan>.
+Trả về "slugs": 3 lựa chọn, khác nhau, cái hợp nhất đứng đầu.
+- 2 đến 4 từ tiếng Anh, viết thường, không dấu, nối bằng "-". Ví dụ: implement-dpop, sign-request-header, verify-trusted-device.
+- Nói việc cần code (động từ + đối tượng), không lặp lại tên FR, không có mã task, không từ đệm (for, the, with…).
+- Có mô tả của lập trình viên thì bám vào đó; không thì suy ra việc chính từ FR và các ticket con.`
+
+/** Gợi ý phần mô tả ngắn của nhánh task trên nhánh feature của một FR. */
+export async function suggestBranchSlugs(input: {
+  fr: { key: string; summary: string }
+  /** Summary các ticket con còn mở — bối cảnh, không phải mỗi ticket một nhánh. */
+  children: string[]
+  hint?: string
+}): Promise<{ slugs: string[]; model: string; attempts: number }> {
+  const user = [
+    `FR ${input.fr.key}: ${input.fr.summary}`,
+    input.children.length ? `Ticket con còn mở:\n${input.children.map((c) => `- ${c}`).join('\n')}` : '',
+    input.hint?.trim() ? `Lập trình viên định làm: ${input.hint.trim()}` : '',
+  ]
+    .filter(Boolean)
+    .join('\n\n')
+
+  return withModels(async (bin, model) => {
+    const parsed = SlugSchema.safeParse(await callStructured(bin, model, SLUG_SYSTEM, user, SLUG_SCHEMA))
+    if (!parsed.success) throw new RetryableError('Claude không trả về nội dung đúng dạng')
+    const slugs = [...new Set(parsed.data.slugs.map((x) => branchSlug(x)).filter(Boolean))]
+    if (!slugs.length) throw new RetryableError('Claude trả về danh sách rỗng')
+    return { slugs }
+  })
 }

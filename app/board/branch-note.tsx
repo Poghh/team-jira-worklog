@@ -5,6 +5,7 @@ import { useState, useTransition } from "react";
 import { useCopy } from "./copy";
 
 import { saveNoteAction } from "@/app/m/branches/actions";
+import { useBranchSuggest } from "@/app/m/branches/branch-suggest";
 import { NotesEditor } from "@/app/m/branches/board";
 import { EnvLadder, PR_CLS } from "@/app/m/branches/github-panel";
 import {
@@ -20,7 +21,6 @@ import {
   type TaskNoteRow,
   noteProgress,
   parseNotes,
-  suggestBranch,
 } from "@/lib/modules/branches/model";
 
 import { Popover, PopoverTitle } from "./popover";
@@ -106,6 +106,7 @@ function Editor({
   onCancel: () => void;
 }) {
   const [branch, setBranch] = useState(row?.branch ?? "");
+  const suggest = useBranchSuggest(issueKey, setBranch);
   const linkWas = row ? githubLinkOf(row) : "";
   const [link, setLink] = useState(linkWas);
   const [body, setBody] = useState(row?.body ?? "");
@@ -157,17 +158,9 @@ function Editor({
           placeholder="feature/…"
           className="min-w-0 flex-1 rounded-md border border-line bg-ground px-2 py-1 font-mono text-[12px]"
         />
-        <button
-          type="button"
-          onClick={() =>
-            setBranch(suggestBranch(issueKey, row?.title || summary))
-          }
-          title="Dựng tên nhánh từ key + tiêu đề"
-          className="shrink-0 rounded-md border border-line-strong px-2 py-1 text-[11.5px] hover:bg-surface-2"
-        >
-          Gợi ý
-        </button>
+        {suggest.button}
       </div>
+      {suggest.panel}
 
       <input
         value={link}

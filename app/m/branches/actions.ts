@@ -12,6 +12,9 @@ import {
   toConfigView,
 } from "@/lib/modules/branches/config";
 import { fetchEnvBuilds } from "@/lib/modules/branches/build";
+import { type IssueLite, guessTeam } from "@/lib/modules/branches/git-rules";
+import { type JiraIssue, jiraFetch, searchJql } from "@/lib/jira/client";
+import { suggestBranchSlugs } from "@/lib/ai/claude";
 import { localIndex, readLocalBranches } from "@/lib/modules/branches/local";
 import {
   type EnvBuild,
@@ -828,5 +831,106 @@ export async function markBuildsSeenAction(
       ok: false,
       message: error instanceof Error ? error.message : "Không đánh dấu được",
     };
+  }
+}
+
+/** Những gì ô gợi ý tên nhánh cần để tự dựng các lựa chọn ở trình duyệt. */
+export interface BranchSuggestData {
+  issue: IssueLite;
+  /** Team đoán từ những nhánh người dùng đang có. Người dùng đổi được. */
+  team: string;
+  envs: { integration: string; hotfix: string; trunk: string };
+}
+
+/**
+ * Đọc issue từ Jira để gợi ý tên nhánh theo quy tắc của team.
+ *
+ * Phải hỏi Jira chứ không đoán từ tiêu đề: tên nhánh phụ thuộc issue type
+ * (Story → `feature/`, Bug → `bugfix/`…) và, với sub-task, vào task cha. Chỉ
+ * đọc — không ghi gì lên Jira.
+ *
+ * Trả dữ liệu thô chứ không trả sẵn tên nhánh: đổi team `ctalk`/`hir` thì
+ * trình duyệt tính lại ngay, không phải gọi Jira lần nữa.
+ */
+export async function branchSuggestAction(
+  issueKey: string,
+): Promise<ActionResult & { data?: BranchSuggestData }> {
+  const key = issueKey.trim().toUpperCase();
+  if (!/^[A-Z][A-Z0-9]+-\d+$/.test(key))
+    return { ok: false, message: "Cần một issue key, ví dụ VT-123" };
+
+  try {
+    const issue = await jiraFetch<JiraIssue>(
+      `/rest/api/3/issue/${encodeURIComponent(key)}?fields=summary,issuetype,parent`,
+    );
+    const f = issue.fields;
+    const parent = f.parent
+      ? {
+          key: f.parent.key,
+          summary: f.parent.fields?.summary ?? "",
+          type: f.parent.fields?.issuetype?.name ?? "",
+        }
+      : null;
+    const subtask = Boolean(f.issuetype?.subtask);
+
+    const envs = envSteps(getStages()).map((s) => s.branch);
+    return {
+      ok: true,
+      message: "",
+      data: {
+        issue: {
+          key: issue.key,
+          summary: f.summary ?? "",
+          type: f.issuetype?.name ?? "",
+          subtask,
+          // `parent` của một issue thường là epic, không phải task cha — chỉ
+          // sub-task mới tách nhánh theo cha.
+          parent: subtask ? parent : null,
+          // Issue thường có `parent` là Epic — đó là FR của nó.
+          epic:
+            !subtask && parent && /epic/i.test(parent.type) ? { key: parent.key, summary: parent.summary } : null,
+        },
+        team: guessTeam(listTaskNotes().flatMap((c) => c.sides.map((s) => s.branch))),
+        envs: {
+          integration: envs[0] ?? "ctalk/develop",
+          hotfix: envs.find((b) => b === "staging") ?? envs[envs.length - 1] ?? "staging",
+          trunk: "master",
+        },
+      },
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      message: error instanceof Error ? error.message : `Không đọc được ${key} từ Jira`,
+    };
+  }
+}
+
+/**
+ * Claude gợi ý phần `<mo-ta-ngan>` cho nhánh task trên nhánh feature của một
+ * FR. Bối cảnh: summary FR và các ticket con còn mở (chỉ đọc Jira), cộng mô tả
+ * người dùng gõ nếu có. Chạy qua Claude Code CLI ở máy này.
+ */
+export async function branchSlugAction(input: {
+  frKey: string;
+  hint?: string;
+}): Promise<ActionResult & { slugs?: string[]; model?: string }> {
+  const key = input.frKey.trim().toUpperCase();
+  if (!/^[A-Z][A-Z0-9]+-\d+$/.test(key)) return { ok: false, message: "Cần mã FR, ví dụ VT-4551" };
+  try {
+    const fr = await jiraFetch<JiraIssue>(`/rest/api/3/issue/${encodeURIComponent(key)}?fields=summary`);
+    const children = await searchJql<JiraIssue>(
+      `parent = "${key}" AND statusCategory != Done ORDER BY key ASC`,
+      ["summary"],
+      { limit: 30 },
+    ).catch(() => [] as JiraIssue[]);
+    const res = await suggestBranchSlugs({
+      fr: { key, summary: fr.fields.summary ?? "" },
+      children: children.map((c) => c.fields.summary ?? "").filter(Boolean),
+      hint: input.hint,
+    });
+    return { ok: true, message: "", slugs: res.slugs, model: res.model };
+  } catch (error) {
+    return { ok: false, message: error instanceof Error ? error.message : "Không gợi ý được" };
   }
 }
