@@ -44,6 +44,15 @@ const { $schema: _draft, ...SCHEMA_BODY } = z.toJSONSchema(TaskSchema)
 const JSON_SCHEMA = JSON.stringify(SCHEMA_BODY)
 
 /**
+ * Model đôi khi trả chuỗi có `\\n` dạng chữ (hai ký tự) thay vì xuống dòng
+ * thật — chép theo ví dụ JSON. Đổi lại thành xuống dòng để Jira hiện đúng
+ * danh sách gạch đầu dòng.
+ */
+export function unescapeLines(text: string) {
+  return text.replace(/\\r\\n|\\n/g, '\n').trim()
+}
+
+/**
  * The model is told NOT to emit prefixes. The app composes `[spt 66][Mobile]`
  * itself from the sprint and the user's chips, because a model asked to follow
  * a bracket convention will eventually produce `[mobile]` or `[Mob]` and the
@@ -52,11 +61,29 @@ const JSON_SCHEMA = JSON.stringify(SCHEMA_BODY)
 function buildSystem(pointRules: string) {
   return `Bạn là trợ lý viết task cho một team phát triển phần mềm người Việt.
 
-Từ mô tả ngắn của lập trình viên, hãy viết:
+Từ mô tả của lập trình viên, hãy viết:
 1. title — một dòng, tiếng Việt, ngắn gọn, nêu rõ việc phải làm. KHÔNG thêm bất kỳ tiền tố nào trong ngoặc vuông.
-2. description — các gạch đầu dòng mô tả công việc cần xử lý, tiếng Việt.
-3. dod — Definition of Done, các gạch đầu dòng, mỗi dòng là một điều kiện kiểm chứng được.
+2. description — 3 đến 5 gạch đầu dòng "- ", tiếng Việt, mỗi dòng một việc cần xử lý, tối đa khoảng 20 từ.
+3. dod — Definition of Done, 2 đến 4 gạch đầu dòng "- ", mỗi dòng là một điều kiện kiểm chứng được, tối đa khoảng 20 từ.
 4. storyPoints — số nguyên 1, 2 hoặc 3.
+
+Viết NGẮN như một ticket Jira, không phải báo cáo:
+- Mô tả của lập trình viên có thể dài hoặc dán kèm ghi chú, log, kết quả điều tra. Chỉ rút ra việc cần làm; KHÔNG chép lại số liệu, tên file, dòng code, bằng chứng hay kết luận đã có.
+- Không tiêu đề phụ, không đoạn văn, không gạch đầu dòng lồng nhau, không dòng "Mục tiêu:" hay "Output:".
+- Mỗi dòng bắt đầu bằng động từ.
+
+Mỗi gạch đầu dòng nằm trên một dòng riêng (xuống dòng thật, không viết chữ "\\n").
+
+Ví dụ:
+title: Thêm nút xoá tin nhắn trong màn chat
+description:
+- Thêm action Xoá vào menu nhấn giữ tin nhắn
+- Gọi API redact và cập nhật timeline
+- Hiện xác nhận trước khi xoá
+dod:
+- Xoá được tin của chính mình, tin biến mất ở cả hai phía
+- Không hiện Xoá với tin của người khác
+storyPoints: 2
 
 Quy tắc story point của team:
 ${pointRules}
@@ -186,8 +213,8 @@ async function callOnce(
 
   return {
     title: parsed.data.title.trim(),
-    description: parsed.data.description.trim(),
-    dod: parsed.data.dod.trim(),
+    description: unescapeLines(parsed.data.description),
+    dod: unescapeLines(parsed.data.dod),
     // Clamp rather than trust: the team's scale stops at 3 and a stray 5 or 8
     // would sail straight into Jira.
     storyPoints: Math.min(3, Math.max(1, parsed.data.storyPoints)),
