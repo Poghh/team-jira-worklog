@@ -23,12 +23,13 @@ import type { DayOffKind } from '@/lib/quota'
  * Overtime past the half runs on and overlaps the hatching, which is exactly
  * what it means.
  *
- * The hatch is an inline gradient rather than a Tailwind arbitrary value: this
- * is the one place in the app that needs it, and a `repeating-linear-gradient`
- * spelled into a class name is a string that silently stops being emitted the
- * day somebody reformats it.
+ * The hatch is an inline gradient rather than a Tailwind arbitrary value: a
+ * `repeating-linear-gradient` spelled into a class name is a string that
+ * silently stops being emitted the day somebody reformats it. Exported because
+ * the day strip on the board hatches the same thing the same way, and two
+ * hatches drawn at two angles read as two different meanings.
  */
-const HATCH =
+export const HATCH =
   'repeating-linear-gradient(135deg, var(--line-strong) 0 1.5px, transparent 1.5px 4px)'
 
 export function DayBar({
