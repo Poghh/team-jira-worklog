@@ -10,6 +10,16 @@
  */
 import { logDatePastDue, statusRank, statusTone } from '@/lib/jira/types'
 import {
+  branchName,
+  branchSlug,
+  branchSuggestions,
+  guessTeam,
+  kindOfType,
+  resolveBranchName,
+  syncAdvice,
+  type SyncInput,
+} from '@/lib/modules/branches/git-rules'
+import {
   nextEnvToRequest,
   DEFAULT_STAGES,
   envSteps,
@@ -41,7 +51,6 @@ import {
   builtButNotTested,
   sortByStatus,
   stageDrift,
-  suggestBranch,
   withLocalState,
 } from '@/lib/modules/branches/model'
 import {
@@ -1172,7 +1181,6 @@ eq(serializeNotes([{ done: false, text: ' keep ' }, { done: false, text: '' }]),
    'blank rows are dropped on the way out')
 eq(noteProgress(parseNotes('- [x] a\n- [ ] b')), { done: 1, total: 2 }, 'progress')
 eq(parseIssueKeys('["VT-2"]', 'VT-1'), ['VT-1', 'VT-2'], 'the primary key comes first')
-eq(suggestBranch('VT-412', '[CTALK] Sửa crash khi vào room'), 'VT-412-sua-crash-khi-vao-room', 'branch suggestion')
 eq(shortRepo('atthetalk/viptalk-ios-x', ['atthetalk/viptalk-ios-x', 'atthetalk/viptalk-matrix-rust-sdk-ruma']),
    'ios-x', 'the common prefix is dropped')
 eq(parseGitHubLink('https://github.com/o/r/pull/12'), { repo: 'o/r', prNumber: 12 }, 'a pull request URL')
@@ -1562,6 +1570,99 @@ eq(baseFreshness(roundTrip, NOW).upToDate, true, 'và đọc ra đúng kết lu�
   eq(keysAfterRename(['VT-1', 'VT-2'], ['VT-1', 'VT-2'], ['VT-1', 'VT-2']), ['VT-1', 'VT-2'],
      'nhánh mới vẫn nhắc cả hai thì giữ cả hai')
   eq(keysAfterRename([], [], ['VT-7']), ['VT-7'], 'card chưa có mã nào thì nhận mã của nhánh mới')
+}
+
+/* ── quy tắc Git của team: tên nhánh (mục 1, 5) ──────────────────────── */
+//
+// Nguồn: Confluence "Git & Task Management Rules". Mỗi dòng ở đây là một dòng
+// trong bảng của tài liệu.
+{
+  eq(branchSlug('[CTALK][spt 69] Sửa Video Call đang đổ chuông'), 'sua-video-call-dang',
+     'mô tả: không dấu, viết thường, bỏ tag ngoặc vuông, tối đa 4 từ')
+  eq(branchSlug('CLONE - [CTALK] Per-request Signature For Trusted Device'), 'per-request-signature-trusted-device',
+     'mô tả: bỏ CLONE -, bỏ từ đệm (for), từ có gạch nối tính là một')
+  eq(kindOfType('Story'), 'feature', 'Story là feature')
+  eq(kindOfType('Bug'), 'bugfix', 'Bug là bugfix')
+  eq(kindOfType('Improve'), 'task', 'Improve đi nhánh task/')
+  eq(branchName('ctalk', 'feature', 'vt-100', 'Video call'), 'ctalk/feature/VT-100_video-call',
+     'feature mang mô tả, nối bằng _, mã viết hoa')
+  eq(branchName('ctalk', 'bugfix', 'VT-245', 'Fix avatar'), 'ctalk/bugfix/VT-245', 'bugfix chỉ có mã')
+  eq(branchName('hir', 'hotfix', 'VT-301'), 'hir/hotfix/VT-301', 'hotfix chỉ có mã')
+  eq(resolveBranchName('ctalk', 'VT-245', 'ctalk/develop'), 'ctalk/resolve/VT-245_ctalk-develop',
+     'resolve: / trong nhánh đích thành -')
+
+  const envs = { integration: 'ctalk/develop', hotfix: 'staging', trunk: 'master' }
+  const bug = branchSuggestions('ctalk', { key: 'VT-245', summary: 'Fix avatar', type: 'Bug', subtask: false, parent: null }, envs)
+  eq(bug.map((s) => [s.name, s.from, s.into]),
+     [['ctalk/bugfix/VT-245', 'master', 'ctalk/develop'], ['ctalk/hotfix/VT-245', 'master', 'staging']],
+     'bug: bugfix vào ctalk/develop, hotfix vào staging là lựa chọn thứ hai')
+  eq(bug[0]!.command, 'git fetch origin\ngit checkout -b ctalk/bugfix/VT-245 origin/master',
+     'lệnh tạo nhánh tách từ origin/master mới nhất')
+
+  const sub = branchSuggestions('ctalk', {
+    key: 'VT-101', summary: 'Call UI', type: 'Sub-task', subtask: true,
+    parent: { key: 'VT-100', summary: 'Video call', type: 'Story' },
+  }, envs)
+  eq([sub[0]!.name, sub[0]!.from, sub[0]!.into],
+     ['ctalk/task/VT-101', 'ctalk/feature/VT-100_video-call', 'ctalk/feature/VT-100_video-call'],
+     'task con của feature: tách từ nhánh cha, PR vào nhánh cha, đứng đầu')
+  eq(sub[1]!.name, 'ctalk/feature/VT-100_video-call', 'làm thẳng trên nhánh cha là lựa chọn thứ hai')
+
+  const subOfBug = branchSuggestions('ctalk', {
+    key: 'VT-246', summary: 'iOS', type: 'Sub-task', subtask: true,
+    parent: { key: 'VT-245', summary: 'Fix avatar', type: 'Bug' },
+  }, envs)
+  eq(subOfBug.map((s) => s.name), ['ctalk/bugfix/VT-245', 'ctalk/hotfix/VT-245', 'ctalk/task/VT-246'],
+     'task con của bug: nhánh bugfix của cha đứng đầu')
+
+  const fr = { key: 'VT-4551', summary: '[CTALK] Per-request Signature For Trusted Device' }
+  const taskInFr = branchSuggestions('ctalk', { key: 'VT-4739', summary: 'x', type: 'Task', subtask: false, parent: null, epic: fr }, envs)
+  eq(taskInFr.map((s) => [s.name, s.from, s.into]),
+     [['ctalk/task/VT-4739', 'ctalk/feature/VT-4551_per-request-signature-trusted-device', 'ctalk/feature/VT-4551_per-request-signature-trusted-device'],
+      ['ctalk/task/VT-4739', 'master', 'ctalk/develop']],
+     'task trong FR: task con của nhánh feature FR đứng đầu, nhánh riêng từ master thứ hai')
+  const bugInFr = branchSuggestions('ctalk', { key: 'VT-9', summary: 'x', type: 'Bug', subtask: false, parent: null, epic: fr }, envs)
+  eq(bugInFr.map((s) => s.label), ['Bugfix', 'Hotfix (lỗi production)', 'Task con của FR VT-4551'], 'bug trong FR: bugfix riêng đứng đầu')
+  const epicItself = branchSuggestions('ctalk', { key: 'VT-4551', summary: fr.summary, type: 'Epic', subtask: false, parent: null, epic: null }, envs)
+  eq(epicItself[0]!.name, 'ctalk/feature/VT-4551_per-request-signature-trusted-device', 'FR (Epic) chính nó: nhánh feature có mô tả')
+  const fb = 'ctalk/feature/VT-4551_per-request-signature-trusted-device'
+  eq(epicItself.map((s) => [s.name, s.from, s.into]),
+     [[fb, 'master', 'ctalk/develop'], ['ctalk/task/VT-4551_mo-ta-ngan', fb, fb]],
+     'FR: nhánh feature và đúng một nhánh task trên nó — không mỗi ticket con một nhánh')
+
+  eq(guessTeam(['hir/feature/VT-1', 'hir/task/VT-2', 'ctalk/task/VT-3', 'feature/x']), 'hir', 'team: đa số thắng')
+  eq(guessTeam([]), 'ctalk', 'team mặc định ctalk')
+}
+
+/* ── quy tắc Git của team: rebase hay merge master (mục 2) ───────────── */
+{
+  const ENVS = ['ctalk/develop', 'develop', 'staging']
+  const base = (o: Partial<SyncInput>): SyncInput => ({
+    branch: 'ctalk/bugfix/VT-245', behind: 12, base: 'master', prs: [],
+    envBranches: ENVS, arrivedEnvs: [], openChildPrs: 0, ...o,
+  })
+  eq(syncAdvice(base({ behind: 0 })), null, 'đã có bản mới nhất thì không có gì phải làm')
+  eq(syncAdvice(base({ behind: null })), null, 'chưa đo được thì im')
+  eq(syncAdvice(base({}))?.action, 'rebase', 'chưa từng merge vào ctalk/develop: rebase')
+  eq(syncAdvice(base({}))?.commands, 'git fetch origin\ngit rebase origin/master\ngit push --force-with-lease',
+     'rebase đẩy bằng --force-with-lease, không --force')
+  eq(syncAdvice(base({ prs: [{ base: 'ctalk/develop', state: 'OPEN' }] }))?.action, 'rebase',
+     'PR vào ctalk/develop còn mở chưa phải là đã merge')
+  eq(syncAdvice(base({ prs: [{ base: 'ctalk/develop', state: 'MERGED' }] }))?.action, 'merge',
+     'đã merge vào ctalk/develop: merge master')
+  eq(syncAdvice(base({ arrivedEnvs: ['ctalk/develop'] }))?.action, 'merge',
+     'nội dung đã tới ctalk/develop qua đường khác (resolve) cũng tính là đã merge')
+  eq(syncAdvice(base({ branch: 'ctalk/feature/VT-100_x', openChildPrs: 2 }))?.action, 'wait-children',
+     'nhánh cha còn task con đang mở PR: chưa rebase')
+  eq(syncAdvice(base({ branch: 'ctalk/feature/VT-100_x', openChildPrs: 2, prs: [{ base: 'ctalk/develop', state: 'MERGED' }] }))?.action,
+     'wait-children', 'nhánh cha đã vào ctalk/develop mà còn task con mở: vẫn đợi merge hết rồi mới merge master')
+
+  const child = base({ branch: 'ctalk/task/VT-101', prs: [{ base: 'ctalk/feature/VT-100_x', state: 'OPEN' }] })
+  eq(syncAdvice(child)?.action, 'into-parent', 'task con: không sync master, merge vào nhánh cha trước')
+  eq(syncAdvice(child)?.commands, '', 'task con: không có lệnh rebase nào')
+  eq(syncAdvice(base({ branch: 'ctalk/task/VT-101', prs: [{ base: 'ctalk/feature/VT-100_x', state: 'MERGED' }] }))?.action,
+     'rebase', 'task con đã merge vào cha thì không còn chờ cha')
+  eq(syncAdvice(base({ branch: 'ctalk/resolve/VT-245_ctalk-develop' })), null, 'nhánh resolve không sync')
 }
 
 console.log(bad ? `\n${bad}/${n} FAILED` : `\nall ${n} ok`)

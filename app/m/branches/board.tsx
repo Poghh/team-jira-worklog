@@ -12,6 +12,9 @@ import {
 import { StatusPill } from "@/app/board/status-pill";
 import { NavProvider, useNav } from "@/app/board/navigation";
 import { BuildNews, useBuildWatch } from "@/app/build-watch";
+import { useBranchSuggest } from "./branch-suggest";
+import { CopyBtn } from "@/app/board/copy";
+import { type SyncAdvice, syncAdvice } from "@/lib/modules/branches/git-rules";
 import { statusRank, statusTone } from "@/lib/jira/types";
 import {
   type GitHubConfigView,
@@ -19,6 +22,7 @@ import {
   parsePrRef,
   githubLinkOf,
   parseEnvState,
+  hasArrived,
   parseGitHubLink,
   prBadge,
   repoChip,
@@ -49,7 +53,6 @@ import {
   serializeNotes,
   sortByStatus,
   stageDrift,
-  suggestBranch,
   branchSegments,
 } from "@/lib/modules/branches/model";
 
@@ -453,18 +456,31 @@ const SPINE_X = "left-[64px] w-[2px] rounded-full";
  * Câm khi chưa đo được. Card quét từ bản cũ của app không có dữ liệu này, và
  * im lặng đúng hơn là đoán "đã up to date".
  */
-function BaseAge({ side }: { side: CardSide }) {
+function BaseAge({
+  side,
+  advice,
+}: {
+  side: CardSide;
+  /**
+   * Rebase hay merge, theo quy tắc Git của team — xem {@link syncAdvice}.
+   * `null` khi nhánh tụt mà quy tắc không đòi sync (nhánh resolve).
+   */
+  advice: SyncAdvice | null;
+}) {
   const f = baseFreshness(side);
   if (f.upToDate === null) return null;
   const base = side.baseBranch;
+  const waiting = advice ? !advice.commands : false;
 
   return (
     <span
       title={
         f.upToDate
           ? `Nhánh đã chứa mọi commit của ${base}.`
-          : `Nhánh tách ra từ ${base} và chưa lấy lại bản mới. ` +
-            `Merge muộn dễ đụng conflict, và bản build từ đây thiếu những sửa lỗi sau đó.`
+          : (advice ? `${advice.why}\n\n` : "") +
+            `Nhánh tách ra từ ${base} và chưa lấy lại bản mới. ` +
+            `Merge muộn dễ đụng conflict, và bản build từ đây thiếu những sửa lỗi sau đó.` +
+            (advice?.commands ? `\n\n${advice.commands}` : "")
       }
       className="flex min-w-0 items-start gap-1.5"
     >
@@ -487,11 +503,20 @@ function BaseAge({ side }: { side: CardSide }) {
         //
         // Vẫn dùng cặp màu `warn` sẵn có của app thay vì bịa màu mới — cặp đó
         // đã được chọn để đọc được trên cả nền sáng lẫn tối.
-        <span className="flex min-w-0 items-start gap-1.5 overflow-hidden rounded-[4px] border-l-[3px] border-warn bg-warn-soft py-[3px] pl-1.5 pr-2">
-          <span className="text-[11px] font-bold leading-[1.35] text-warn">⟳</span>
-          <span className="min-w-0 text-[11px] leading-[1.35] text-warn">
-            <b className="font-bold">Chưa rebase</b> — {f.text}
+        // Nhãn là **việc phải làm** theo quy tắc của team — rebase hay merge,
+        // hay đợi — chứ không phải "chưa rebase" chung chung: rebase một nhánh
+        // đã vào `ctalk/develop` là làm sai quy trình. Lý do nằm ở tooltip,
+        // lệnh nằm sau nút copy.
+        <span className="flex min-w-0 items-start gap-1.5 overflow-hidden rounded-[4px] border-l-[3px] border-warn bg-warn-soft py-[3px] pl-1.5 pr-1">
+          <span className="text-[11px] font-bold leading-[1.35] text-warn">
+            {waiting ? "⏸" : "⟳"}
           </span>
+          <span className="min-w-0 flex-1 text-[11px] leading-[1.35] text-warn">
+            <b className="font-bold">{advice?.title ?? "Chưa sync"}</b> — {f.text}
+          </span>
+          {advice?.commands && (
+            <CopyBtn text={advice.commands} what={`lệnh ${advice.title.toLowerCase()}`} className="!text-warn" />
+          )}
         </span>
       )}
     </span>
@@ -1547,6 +1572,33 @@ function NoteCard({
       card.statusName ? statusTone(card.statusName) : null,
     );
 
+  const envBranches = envSteps(stages).map((s) => s.branch);
+  /**
+   * Sync `master` về nhánh bằng cách nào — quy tắc Git của team, mục 2.
+   *
+   * Mọi dữ kiện đã nằm sẵn trên các card: PR của nhánh, môi trường nó đã tới,
+   * card nào đang mở PR vào nó (task con), và nhánh cha tụt bao nhiêu. Không
+   * hỏi GitHub thêm câu nào.
+   */
+  const adviceFor = (side: CardSide) => {
+    const env = parseEnvState(side.envState);
+    return syncAdvice({
+      branch: side.branch,
+      behind: side.behind,
+      base: side.baseBranch ?? "",
+      prs: side.prs,
+      envBranches,
+      // Chỉ tính "đã tới" khi có bằng chứng: tới theo đường khác (`landed`),
+      // hoặc đi qua một nhánh khác (`landedVia`). `ahead === 0` trơn thì nhánh
+      // vừa tách chưa có commit nào cũng thoả — mà nhánh đó phải rebase, không
+      // phải merge. PR đã merge thì `syncAdvice` tự đọc từ `prs`.
+      arrivedEnvs: envBranches.filter(
+        (b) => env[b]?.landed || (side.landedVia && hasArrived(env, { branch: b })),
+      ),
+      openChildPrs: inboundPrs(cards, side.repo, side.branch).length,
+    });
+  };
+
   /** The branch that carried the first side's work in, when it detoured. */
   const landedVia = sides[0]?.landedVia ?? "";
 
@@ -1775,7 +1827,7 @@ function NoteCard({
               nằm trong card (`base=master behind=29`), chỉ là không ai vẽ nó
               ra, nên bảng im lặng y như lúc chưa đo được gì. Ô nhãn 62px của
               `BaseAge` khớp sẵn với `CardRow`, không phải căn lại. */}
-          {sides[0] && <BaseAge side={sides[0]} />}
+          {sides[0] && <BaseAge side={sides[0]} advice={adviceFor(sides[0])} />}
           <Ladder
             rows={cardLadder(sides[0]?.prs ?? [], card.builds, stages)}
             repo={card.repo}
@@ -1828,7 +1880,7 @@ function NoteCard({
                     <b className="font-semibold">GitHub không còn nhánh này</b>
                   </span>
                 )}
-                <BaseAge side={side} />
+                <BaseAge side={side} advice={adviceFor(side)} />
                 <Ladder
                   rows={cardLadder(side.prs, [], stages)}
                   repo={side.repo}
@@ -2410,6 +2462,11 @@ function NoteModal({
    * branch cannot go missing because the list changed.
    */
   const primaryRepo = parseGitHubLink(d.githubLink)?.repo || repos[0] || "";
+  // Hook gọi ở đây, trước mọi `return`: `setRowBranch` khai báo bên dưới
+  // nhưng là function declaration nên đã có sẵn lúc closure chạy.
+  const suggest = useBranchSuggest(d.issueKey, (name) =>
+    setRowBranch(primaryRepo, name),
+  );
   const branchFields = [
     ...repos,
     ...d.sides.map((x) => x.repo).filter((r) => r && !repos.includes(r)),
@@ -2687,20 +2744,7 @@ function NoteModal({
                     className="min-w-0 flex-1 rounded-md border border-line bg-ground px-2.5 py-1.5 font-mono text-[12px]"
                   />
                   {f.primary ? (
-                    <button
-                      type="button"
-                      onClick={() =>
-                        setRowBranch(
-                          f.repo,
-                          suggestBranch(d.issueKey.trim(), d.title),
-                        )
-                      }
-                      disabled={!d.issueKey.trim() && !d.title.trim()}
-                      title="Dựng tên nhánh từ key + tiêu đề"
-                      className={BTN + " shrink-0 disabled:opacity-50"}
-                    >
-                      Gợi ý
-                    </button>
+                    suggest.button
                   ) : (
                     <span className="w-[52px] shrink-0 font-mono text-[10px] text-ink-3">
                       {f.pinned ? "đã ghim" : ""}
@@ -2708,6 +2752,7 @@ function NoteModal({
                   )}
                 </div>
               ))}
+              {suggest.panel}
             </div>
             <span className="mt-1 block text-[11.5px] text-ink-3">
               Một dòng cho mỗi repo đang theo dõi. App ghép theo commit mới
