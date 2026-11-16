@@ -5,13 +5,22 @@ import { useState, useTransition } from "react";
 import { CopyBtn } from "@/app/board/copy";
 import {
   type BranchSuggestData,
+  branchSlugAction,
   branchSuggestAction,
 } from "@/app/m/branches/actions";
-import { TEAMS, branchSuggestions } from "@/lib/modules/branches/git-rules";
+import {
+  type BranchSuggestion,
+  TEAMS,
+  branchSuggestions,
+  createCmd,
+  keyInBranch,
+} from "@/lib/modules/branches/git-rules";
 
 /** Bỏ tiền tố team khi hiển thị — giống nhau ở mọi dòng. */
 const short = (b: string) => b.replace(/^(ctalk|hir)\//, "");
 
+/** Chỗ chờ mô tả trong tên nhánh task của FR — Claude điền thay. */
+const PLACEHOLDER = "_mo-ta-ngan";
 
 /**
  * Nút "Gợi ý" tên nhánh và bảng lựa chọn bên dưới nó.
@@ -130,6 +139,16 @@ export function useBranchSuggest(
                   {short(s.from)} → {short(s.into)}
                 </span>
               </span>
+              {s.name.endsWith(PLACEHOLDER) && (
+                <SlugSuggest
+                  s={s}
+                  pickVerb={pickVerb}
+                  onPick={(name) => {
+                    onPick(name);
+                    setOpen(false);
+                  }}
+                />
+              )}
             </div>
           ))}
           <span className="text-[10.5px] text-ink-3">
@@ -143,3 +162,80 @@ export function useBranchSuggest(
   return { button, panel };
 }
 
+/**
+ * Claude gợi ý phần mô tả cho nhánh task của FR: đọc summary FR, các ticket
+ * con còn mở, và mô tả bạn gõ (nếu có). Ra vài tên đầy đủ để chọn.
+ */
+function SlugSuggest({
+  s,
+  pickVerb,
+  onPick,
+}: {
+  s: BranchSuggestion;
+  pickVerb: string;
+  onPick: (name: string) => void;
+}) {
+  const [hint, setHint] = useState("");
+  const [slugs, setSlugs] = useState<string[]>([]);
+  const [model, setModel] = useState("");
+  const [error, setError] = useState("");
+  const [pending, start] = useTransition();
+  const stem = s.name.slice(0, -PLACEHOLDER.length);
+
+  function ask() {
+    setError("");
+    start(async () => {
+      const res = await branchSlugAction({ frKey: keyInBranch(stem), hint });
+      if (res.ok && res.slugs) {
+        setSlugs(res.slugs);
+        setModel(res.model ?? "");
+      } else setError(res.message);
+    });
+  }
+
+  return (
+    <div className="mt-1 flex flex-col gap-1 border-t border-line pt-1.5">
+      <div className="flex items-center gap-1">
+        <input
+          value={hint}
+          onChange={(ev) => setHint(ev.target.value)}
+          onKeyDown={(ev) => {
+            if (ev.key === "Enter") {
+              ev.preventDefault();
+              ask();
+            }
+          }}
+          placeholder="Bạn định làm gì? (tuỳ chọn, vd. ký header bằng DPoP)"
+          className="min-w-0 flex-1 rounded border border-line-strong bg-surface px-1.5 py-0.5 text-[11.5px]"
+        />
+        <button
+          type="button"
+          onClick={ask}
+          disabled={pending}
+          title="Claude đọc summary FR, ticket con còn mở và mô tả của bạn để đặt mô tả nhánh"
+          className="shrink-0 rounded border border-line-strong px-1.5 py-0.5 text-[11px] hover:bg-surface disabled:opacity-50"
+        >
+          {pending ? "Claude đang nghĩ…" : slugs.length ? "✦ Gợi ý lại" : "✦ Gợi ý mô tả"}
+        </button>
+      </div>
+      {error && <span className="text-[11px] text-crit">{error}</span>}
+      {slugs.map((slug) => {
+        const name = `${stem}_${slug}`;
+        return (
+          <div key={slug} className="flex min-w-0 items-center gap-1">
+            <button
+              type="button"
+              onClick={() => onPick(name)}
+              title={`Bấm để ${pickVerb} tên nhánh này`}
+              className="min-w-0 flex-1 truncate text-left font-mono text-[11.5px] hover:text-accent-ink"
+            >
+              {name}
+            </button>
+            <CopyBtn text={createCmd(name, s.from)} what="lệnh tạo nhánh" />
+          </div>
+        );
+      })}
+      {slugs.length > 0 && model && <span className="text-[10px] text-ink-3">Claude · {model}</span>}
+    </div>
+  );
+}

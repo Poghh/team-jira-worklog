@@ -5,6 +5,7 @@ import os from 'node:os'
 import * as z from 'zod/v4'
 
 import { SETTING_KEYS, getSetting } from '../settings'
+import { branchSlug } from '../modules/branches/git-rules'
 import { probeClaude } from './cli'
 import { RetryableError, withRetry } from './retry'
 
@@ -350,5 +351,41 @@ export async function summarizeChanges(input: {
       .filter(Boolean)
     if (!changes.length) throw new RetryableError('Claude trả về danh sách rỗng')
     return { changes }
+  })
+}
+
+const SlugSchema = z.object({ slugs: z.array(z.string()) })
+const { $schema: _draft3, ...SLUG_BODY } = z.toJSONSchema(SlugSchema)
+const SLUG_SCHEMA = JSON.stringify(SLUG_BODY)
+
+const SLUG_SYSTEM = `Bạn đặt phần mô tả ngắn cho tên nhánh Git của một team mobile/chat.
+
+Tên nhánh có dạng <team>/task/<MÃ-FR>_<mo-ta-ngan>. Bạn chỉ viết phần <mo-ta-ngan>.
+Trả về "slugs": 3 lựa chọn, khác nhau, cái hợp nhất đứng đầu.
+- 2 đến 4 từ tiếng Anh, viết thường, không dấu, nối bằng "-". Ví dụ: implement-dpop, sign-request-header, verify-trusted-device.
+- Nói việc cần code (động từ + đối tượng), không lặp lại tên FR, không có mã task, không từ đệm (for, the, with…).
+- Có mô tả của lập trình viên thì bám vào đó; không thì suy ra việc chính từ FR và các ticket con.`
+
+/** Gợi ý phần mô tả ngắn của nhánh task trên nhánh feature của một FR. */
+export async function suggestBranchSlugs(input: {
+  fr: { key: string; summary: string }
+  /** Summary các ticket con còn mở — bối cảnh, không phải mỗi ticket một nhánh. */
+  children: string[]
+  hint?: string
+}): Promise<{ slugs: string[]; model: string; attempts: number }> {
+  const user = [
+    `FR ${input.fr.key}: ${input.fr.summary}`,
+    input.children.length ? `Ticket con còn mở:\n${input.children.map((c) => `- ${c}`).join('\n')}` : '',
+    input.hint?.trim() ? `Lập trình viên định làm: ${input.hint.trim()}` : '',
+  ]
+    .filter(Boolean)
+    .join('\n\n')
+
+  return withModels(async (bin, model) => {
+    const parsed = SlugSchema.safeParse(await callStructured(bin, model, SLUG_SYSTEM, user, SLUG_SCHEMA))
+    if (!parsed.success) throw new RetryableError('Claude không trả về nội dung đúng dạng')
+    const slugs = [...new Set(parsed.data.slugs.map((x) => branchSlug(x)).filter(Boolean))]
+    if (!slugs.length) throw new RetryableError('Claude trả về danh sách rỗng')
+    return { slugs }
   })
 }
