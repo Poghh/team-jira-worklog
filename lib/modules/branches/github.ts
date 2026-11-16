@@ -2,9 +2,12 @@ import "server-only";
 
 import {
   type EnvState,
+  type FeedEvent,
   type PullRequest,
   type RemoteBranch,
   pickPr,
+  pushHeadsToCheck,
+  pushedBranches,
 } from "./github-model";
 
 const API = "https://api.github.com/graphql";
@@ -164,18 +167,19 @@ interface RefNode {
  * here), so it *adds* recent branches rather than replacing the author rules —
  * older work would fall off the board if this were the only signal.
  *
+ * Lần bấm merge PR trên GitHub cũng hiện ra thành push của người bấm — những
+ * lần đó bị loại, xem {@link pushHeadsToCheck}.
+ *
  * Returns keys shaped `owner/repo#branch`.
  */
 export async function fetchPushedBranches(
   token: string,
   logins: string[],
 ): Promise<Set<string>> {
-  const out = new Set<string>();
-
   type Event = {
     type: string;
     repo?: { name?: string };
-    payload?: { ref?: string | null; ref_type?: string };
+    payload?: { ref?: string | null; ref_type?: string; head?: string };
   };
 
   /**
@@ -207,19 +211,84 @@ export async function fetchPushedBranches(
       ),
   );
 
-  for (const events of pages) {
-    for (const e of events ?? []) {
+  const events: FeedEvent[] = [];
+  for (const page of pages)
+    for (const e of page ?? []) {
       const repo = e.repo?.name;
       const raw = e.payload?.ref;
       if (!repo || !raw) continue;
-
-      if (e.type === "CreateEvent" && e.payload?.ref_type === "branch")
-        out.add(`${repo}#${raw}`);
-      else if (e.type === "PushEvent")
-        out.add(`${repo}#${raw.replace(/^refs\/heads\//, "")}`);
+      events.push({
+        type: e.type,
+        repo,
+        branch: raw.replace(/^refs\/heads\//, ""),
+        refType: e.payload?.ref_type,
+        head: e.payload?.head,
+      });
     }
-  }
 
+  return pushedBranches(events, await fetchMergeHeads(token, pushHeadsToCheck(events)));
+}
+
+/**
+ * Những commit nào trong số này là merge commit của một PR.
+ *
+ * Xem {@link pushHeadsToCheck}: một `PushEvent` mà `head` là merge commit của
+ * PR là lần bấm nút merge, không phải lần push. Hỏi `associatedPullRequests`
+ * của chính commit đó rồi so `mergeCommit` — đúng cho cả ba kiểu merge của
+ * GitHub (merge, squash, rebase), vì kiểu nào PR cũng ghi lại commit nó tạo ra.
+ *
+ * Hỏi không được thì trả tập rỗng, tức mọi push vẫn được tính như trước: thiếu
+ * câu trả lời không phải là bằng chứng.
+ */
+async function fetchMergeHeads(
+  token: string,
+  heads: Array<{ repo: string; oid: string }>,
+): Promise<Set<string>> {
+  const out = new Set<string>();
+  const byRepo = new Map<string, string[]>();
+  for (const h of heads) byRepo.set(h.repo, [...(byRepo.get(h.repo) ?? []), h.oid]);
+
+  await Promise.all(
+    [...byRepo].map(async ([repo, oids]) => {
+      const [owner, name] = repo.split("/");
+      if (!owner || !name) return;
+      const chunkSize = 40;
+      for (let i = 0; i < oids.length; i += chunkSize) {
+        const chunk = oids.slice(i, i + chunkSize);
+        const vars: Record<string, unknown> = { owner, name };
+        const decls = ["$owner: String!", "$name: String!"];
+        const fields = chunk.map((oid, ci) => {
+          vars[`o${ci}`] = oid;
+          decls.push(`$o${ci}: GitObjectID!`);
+          return `c${ci}: object(oid: $o${ci}) { ... on Commit {
+                    associatedPullRequests(first: 5) { nodes { mergeCommit { oid } } }
+                  } }`;
+        });
+        try {
+          const data = await graphql<{
+            repository: Record<
+              string,
+              {
+                associatedPullRequests?: {
+                  nodes: Array<{ mergeCommit: { oid: string } | null }>;
+                };
+              } | null
+            > | null;
+          }>(
+            token,
+            `query(${decls.join(", ")}) { repository(owner: $owner, name: $name) { ${fields.join("\n")} } }`,
+            vars,
+          );
+          chunk.forEach((oid, ci) => {
+            const nodes = data.repository?.[`c${ci}`]?.associatedPullRequests?.nodes ?? [];
+            if (nodes.some((n) => n.mergeCommit?.oid === oid)) out.add(oid);
+          });
+        } catch {
+          // Một repo hỏi không được không làm hỏng cả feed — push của nó vẫn tính.
+        }
+      }
+    }),
+  );
   return out;
 }
 
@@ -939,3 +1008,4 @@ export async function fetchBuildRuns(
     .filter((r) => r.sha && r.startedAt > 0)
     .sort((a, b) => b.startedAt - a.startedAt);
 }
+

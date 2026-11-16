@@ -88,6 +88,8 @@ import {
   dropCards,
   isRenamedCard,
   keysAfterRename,
+  pushHeadsToCheck,
+  pushedBranches,
   mergeCardPrs,
   parseCardSides,
   primarySide,
@@ -1463,6 +1465,47 @@ eq(baseFreshness(roundTrip, NOW).upToDate, true, 'và đọc ra đúng kết lu�
      'cả hai nửa biến mất thì gỡ')
   eq(dropCards([card(1, [])], vanished(['a']), none).length, 0,
      'card không trỏ vào nhánh nào thì không ai kết luận được gì về nó')
+}
+
+
+/* ── bấm merge PR không phải là push ───────────────────────────────────── */
+//
+// Thật: `pinkc0cb` tạo `feature/release-2026-11-08`; người dùng merge PR #1885
+// từ nhánh resolve của họ vào đó. Feed ghi một PushEvent lên nhánh ấy với
+// `head` = merge commit của #1885, và luật push nhận nhánh của người khác.
+{
+  const R = 'atthetalk/viptalk-ios-x'
+  const ev = (type: string, branch: string, extra: Record<string, string> = {}) => ({
+    type, repo: R, branch, ...extra,
+  })
+  const feed = [
+    ev('CreateEvent', 'ctalk/task/release-2026-11-08', { refType: 'branch' }),
+    ev('PushEvent', 'ctalk/task/release-2026-11-08', { head: 'aaa' }),
+    ev('PushEvent', 'feature/release-2026-11-08', { head: 'cb6afdf6' }),
+    ev('PushEvent', 'ctalk/feature/VT-1', { head: 'bbb' }),
+  ]
+
+  eq(pushHeadsToCheck(feed), [
+    { repo: R, oid: 'cb6afdf6' },
+    { repo: R, oid: 'bbb' },
+  ], 'chỉ hỏi push lên nhánh mình không tạo — nhánh tự tạo thì push gì cũng vẫn là của mình')
+
+  eq([...pushedBranches(feed, new Set(['cb6afdf6']))].sort(), [
+    `${R}#ctalk/feature/VT-1`,
+    `${R}#ctalk/task/release-2026-11-08`,
+  ], 'push là merge commit của PR thì không nhận nhánh đích')
+
+  eq([...pushedBranches(feed, new Set())].length, 3,
+     'hỏi GitHub không được thì mọi push vẫn tính như trước')
+
+  eq([...pushedBranches([
+    ev('PushEvent', 'feature/x', { head: 'merge1' }),
+    ev('PushEvent', 'feature/x', { head: 'real2' }),
+  ], new Set(['merge1']))], [`${R}#feature/x`],
+     'còn một lần push thật thì vẫn là nhánh mình đụng tay vào')
+
+  eq(pushHeadsToCheck([ev('PushEvent', 'a', { head: 'x' }), ev('PushEvent', 'b', { head: 'x' })]).length, 1,
+     'một commit chỉ hỏi một lần')
 }
 
 
