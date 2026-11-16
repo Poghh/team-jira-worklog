@@ -852,13 +852,19 @@ export interface RoundDiff extends Result {
  * The code a round looked at, from the local clone: the whole PR
  * (merge-base…head), or for a later round only what changed since the round
  * before it.
+ *
+ * `isCode`, không phải `kind === 'pr'`: câu hỏi ở đây là "vòng này có diff để
+ * đọc không", và tự review thì có — ảnh chụp lúc bấm so với mốc trước, cả hai
+ * đã được kéo về chính `repo.localPath` thành `refs/review/self-<vòng>-…`, nên
+ * đoạn dưới không phải đổi một dòng nào. Hỏi sai câu thì tab "Thay đổi code"
+ * của tự review mở ra chỉ có một dòng đỏ "Không thấy vòng review".
  */
 export async function roundDiffAction(roundId: number, scope: 'all' | 'since'): Promise<RoundDiff> {
   const none = (message: string): RoundDiff => ({ ok: false, message, files: [], from: '', to: '', truncated: false, since: [] })
   if (!enabled()) return none(OFF.message)
   const round = getRound(roundId)
   const item = round ? getItem(round.itemId) : null
-  if (!round || !item || item.kind !== 'pr') return none('Không thấy vòng review.')
+  if (!round || !item || !isCode(item.kind)) return none('Không thấy vòng review.')
   const repo = item.repoId ? getRepo(item.repoId) : undefined
   if (!repo) return none('Repo của hồ sơ này đã bị xoá khỏi Cấu hình.')
   const from = scope === 'since' && round.prevHeadSha ? round.prevHeadSha : round.baseSha
@@ -866,7 +872,7 @@ export async function roundDiffAction(roundId: number, scope: 'all' | 'since'): 
   if (!from || !to) return none('Vòng này chưa có commit để so sánh.')
   try {
     if (!(await commitExists(repo.localPath, from)) || !(await commitExists(repo.localPath, to))) {
-      return none('Clone không còn commit của vòng này (PR bị force-push?) — chạy "Review tiếp" để lấy bản mới.')
+      return none('Clone không còn commit của vòng này (PR bị force-push, hoặc clone review đã bị xoá dựng lại) — chạy "Review tiếp" để lấy bản mới.')
     }
     let text = await diffText(repo.localPath, from, to)
     const truncated = text.length > MAX_DIFF
@@ -882,6 +888,11 @@ export async function roundDiffAction(roundId: number, scope: 'all' | 'since'): 
  * The reviewer's own comment on lines of the diff, kept as a finding of the
  * round: it shows with Claude's, can be discussed with Claude, and is posted
  * only by the same explicit "Gửi lên PR" as any other.
+ *
+ * `isCode` ở đây cũng vậy — câu hỏi là "có diff để neo comment vào không".
+ * Việc gửi lên GitHub là câu hỏi khác, và nó đã được hỏi riêng ở
+ * {@link postFindingAction} qua {@link prContext}: tự review không có PR nào
+ * để gửi, nên nút gửi tự biến mất, còn comment thì vẫn viết và vẫn lưu được.
  */
 export async function addOwnFindingAction(input: {
   roundId: number
@@ -895,7 +906,7 @@ export async function addOwnFindingAction(input: {
   if (!enabled()) return OFF
   const round = getRound(input.roundId)
   const item = round ? getItem(round.itemId) : null
-  if (!round || !item || item.kind !== 'pr') return { ok: false, message: 'Không thấy vòng review.' }
+  if (!round || !item || !isCode(item.kind)) return { ok: false, message: 'Không thấy vòng review.' }
   if (round.state !== 'done') return { ok: false, message: 'Chỉ thêm comment được vào vòng review đã xong.' }
   const body = input.body.trim()
   if (!body) return { ok: false, message: 'Comment trống.' }

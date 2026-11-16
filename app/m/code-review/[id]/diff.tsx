@@ -86,6 +86,15 @@ export function CodeTab({
   const [notice, setNotice] = useState('')
   const chat = useRef<ChatHandle>(null)
   const done = round.state === 'done'
+  /**
+   * Có một PR trên GitHub để gửi comment lên hay không.
+   *
+   * Câu hỏi riêng, không phải "đây có phải code không" — tự review đọc diff y
+   * hệt PR, chỉ là không có chỗ nào để gửi. Chữ trên màn hình vì vậy không
+   * được hứa một cái PR không tồn tại.
+   */
+  const onGithub = item.kind === 'pr'
+  const allLabel = onGithub ? 'Toàn bộ PR' : 'Toàn bộ thay đổi'
 
   useEffect(() => setViewed(new Set(readViewed(viewedKey))), [viewedKey])
 
@@ -249,7 +258,7 @@ export function CodeTab({
           <div className="flex overflow-hidden rounded-md border border-line-strong">
             {(
               [
-                ['all', 'Toàn bộ PR'],
+                ['all', allLabel],
                 ['since', `Chỉ phần đổi từ vòng trước${sinceCount != null ? ` (${sinceCount} file)` : ''} · ${shortSha(round.prevHeadSha)}…${shortSha(round.headSha)}`],
               ] as const
             ).map(([s, label]) => (
@@ -287,8 +296,8 @@ export function CodeTab({
       </div>
 
       <p className="mb-3 text-[11.5px] text-ink-3">
-        Bấm vào một dòng, hoặc kéo chuột quét cả đoạn code (Shift + bấm để nới rộng) → gửi comment thẳng lên PR, lưu lại để xem sau, hoặc hỏi Claude về đoạn
-        đó. Không có gì lên PR nếu bạn chưa bấm xác nhận gửi.
+        Bấm vào một dòng, hoặc kéo chuột quét cả đoạn code (Shift + bấm để nới rộng) → {onGithub ? 'gửi comment thẳng lên PR, ' : ''}viết comment của bạn, hoặc
+        hỏi Claude về đoạn đó. {onGithub ? 'Không có gì lên PR nếu bạn chưa bấm xác nhận gửi.' : 'Comment được giữ như một finding của vòng này — vòng sau Claude kiểm lại.'}
       </p>
 
       {!diff ? (
@@ -310,9 +319,15 @@ export function CodeTab({
                 viewed={viewed.has(f.path)}
                 fresh={fresh.has(f.path)}
                 generated={generated.get(f.path) ?? ''}
-                blob={githubRepo && f.status !== 'deleted' ? `https://github.com/${githubRepo}/blob/${round.headSha}/${f.path}` : ''}
+                blob={
+                  // `onGithub` chứ không chỉ `githubRepo`: head của tự review
+                  // là ảnh chụp dưới máy, chưa từng push — link blob theo sha
+                  // đó chắc chắn ra 404.
+                  onGithub && githubRepo && f.status !== 'deleted' ? `https://github.com/${githubRepo}/blob/${round.headSha}/${f.path}` : ''
+                }
                 sel={sel?.file === f.path ? sel : null}
                 roundId={round.id}
+                onGithub={onGithub}
                 canComment={done}
                 canAsk={done && canRun}
                 onToggle={toggle}
@@ -328,7 +343,7 @@ export function CodeTab({
             {elsewhere.length > 0 && (
               <section className={CARD}>
                 <div className="mb-2 text-[12.5px] font-medium text-ink-2">
-                  Finding ở file không có trong phần diff đang xem{scope === 'since' ? ' (thử “Toàn bộ PR”)' : ''}
+                  Finding ở file không có trong phần diff đang xem{scope === 'since' ? ` (thử “${allLabel}”)` : ''}
                 </div>
                 <div className="flex flex-col gap-2">
                   {elsewhere.map((x) => (
@@ -549,6 +564,7 @@ const FileDiff = memo(function FileDiff({
   blob,
   sel,
   roundId,
+  onGithub,
   canComment,
   canAsk,
   onToggle,
@@ -570,6 +586,8 @@ const FileDiff = memo(function FileDiff({
   blob: string
   sel: Selection | null
   roundId: number
+  /** Hồ sơ này có PR trên GitHub — xem ghi chú ở `CodeTab`. */
+  onGithub: boolean
   canComment: boolean
   canAsk: boolean
   onToggle: (path: string) => void
@@ -645,7 +663,7 @@ const FileDiff = memo(function FileDiff({
       {open &&
         (near || sel ? (
           <div ref={body}>
-            <FileBody file={file} findings={findings} sel={sel} roundId={roundId} canComment={canComment} canAsk={canAsk} onSelect={onSelect} onRange={onRange} onCancel={onCancel} onSaved={onSaved} onAsk={onAsk} renderFinding={renderFinding} />
+            <FileBody file={file} findings={findings} sel={sel} roundId={roundId} onGithub={onGithub} canComment={canComment} canAsk={canAsk} onSelect={onSelect} onRange={onRange} onCancel={onCancel} onSaved={onSaved} onAsk={onAsk} renderFinding={renderFinding} />
           </div>
         ) : (
           <div style={{ height: height.current ?? estimate(file) }} />
@@ -684,6 +702,7 @@ function FileBody({
   findings,
   sel,
   roundId,
+  onGithub,
   canComment,
   canAsk,
   onSelect,
@@ -697,6 +716,8 @@ function FileBody({
   findings: FindingView[]
   sel: Selection | null
   roundId: number
+  /** Hồ sơ này có PR trên GitHub — xem ghi chú ở `CodeTab`. */
+  onGithub: boolean
   canComment: boolean
   canAsk: boolean
   onSelect: (path: string, i: number, extend: boolean) => void
@@ -804,7 +825,7 @@ function FileBody({
                   {r.i === hi && (
                     <tr>
                       <td colSpan={3} className="border-y border-line bg-surface p-3 font-sans">
-                        <Composer file={file.path} lines={lines.slice(lo, hi + 1)} roundId={roundId} canComment={canComment} canAsk={canAsk} onCancel={onCancel} onSaved={onSaved} onAsk={onAsk} />
+                        <Composer file={file.path} lines={lines.slice(lo, hi + 1)} roundId={roundId} onGithub={onGithub} canComment={canComment} canAsk={canAsk} onCancel={onCancel} onSaved={onSaved} onAsk={onAsk} />
                       </td>
                     </tr>
                   )}
@@ -839,6 +860,7 @@ function Composer({
   file,
   lines,
   roundId,
+  onGithub,
   canComment,
   canAsk,
   onCancel,
@@ -848,6 +870,8 @@ function Composer({
   file: string
   lines: DiffLine[]
   roundId: number
+  /** Hồ sơ này có PR trên GitHub — xem ghi chú ở `CodeTab`. */
+  onGithub: boolean
   canComment: boolean
   canAsk: boolean
   onCancel: () => void
@@ -903,7 +927,7 @@ function Composer({
             {news.length > 1 && news.at(-1) !== news[0] ? `–${news.at(-1)}` : ''} · <span className="font-mono">{file}</span>
           </>
         ) : (
-          <>Dòng đã xoá — chỉ hỏi Claude được (GitHub chỉ cho comment vào bản mới ở đây).</>
+          <>Dòng đã xoá — chỉ hỏi Claude được ({onGithub ? 'GitHub chỉ cho comment vào bản mới ở đây' : 'comment neo vào dòng của bản mới, mà dòng này không còn ở đó'}).</>
         )}
       </div>
       <textarea
@@ -913,7 +937,7 @@ function Composer({
         onKeyDown={(e) => e.key === 'Escape' && onCancel()}
         rows={4}
         className={INPUT + ' leading-relaxed'}
-        placeholder="Comment của bạn (viết như sẽ đăng lên PR), hoặc câu hỏi cho Claude về đoạn này…"
+        placeholder={onGithub ? 'Comment của bạn (viết như sẽ đăng lên PR), hoặc câu hỏi cho Claude về đoạn này…' : 'Comment của bạn, hoặc câu hỏi cho Claude về đoạn này…'}
       />
       <div className="flex flex-wrap items-center gap-1.5">
         {news.length > 0 && (
