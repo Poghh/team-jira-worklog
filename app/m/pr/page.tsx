@@ -2,6 +2,7 @@ import { connection } from "next/server";
 
 import { ModuleGate } from "@/lib/modules/gate";
 import { getGitHubConfig } from "@/lib/modules/branches/config";
+import { fetchPrsByNumber } from "@/lib/modules/branches/github";
 import { cardLadder, envSteps } from "@/lib/modules/branches/model";
 import { listTaskNotes } from "@/lib/modules/branches/store";
 import { isModuleEnabled } from "@/lib/modules/state";
@@ -47,6 +48,25 @@ export default async function PrPage({
       if (!s.prs.length && (s.branchUpdatedAt ?? 0) > freshSince)
         todo.push({ ...base, base: firstEnv, pr: null, updatedAt: s.branchUpdatedAt ?? 0 });
     }
+  /* Trạng thái PR trên card là của lần quét gần nhất: PR merge hay đóng sau
+     đó vẫn nằm ở "đang mở" cho tới lần quét sau. Hỏi lại GitHub — mỗi repo
+     một truy vấn, chỉ đọc — và bỏ những PR không còn mở. Hỏi không được thì
+     giữ như card nói: thiếu câu trả lời không phải bằng chứng PR đã đóng. */
+  if (gh.token && open.length) {
+    const byRepo = new Map<string, number[]>();
+    for (const e of open) byRepo.set(e.repo, [...(byRepo.get(e.repo) ?? []), e.pr!.number]);
+    const live = new Map<string, string>();
+    await Promise.all(
+      [...byRepo].map(async ([repo, nums]) => {
+        const got = await fetchPrsByNumber(gh.token, repo, nums).catch(() => ({}));
+        for (const [n, pr] of Object.entries(got)) live.set(`${repo}#${n}`, pr.state);
+      }),
+    );
+    for (let i = open.length - 1; i >= 0; i--) {
+      const state = live.get(`${open[i].repo}#${open[i].pr!.number}`);
+      if (state && state !== "OPEN") open.splice(i, 1);
+    }
+  }
   open.sort((a, b) => b.pr!.number - a.pr!.number);
   todo.sort((a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0));
 
