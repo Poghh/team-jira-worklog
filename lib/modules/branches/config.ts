@@ -15,6 +15,7 @@ import {
 } from "./github-model";
 import {
   DEFAULT_STAGES,
+  REVIEW_PAIRS,
   cleanStages,
   parseStages,
   type StageConfig,
@@ -103,6 +104,8 @@ const SHAPES = [
   "task-column",
   "resolve-column",
   "review-last",
+  "hotfix-column",
+  "review-pairs",
 ] as const;
 
 function appliedShapes(): Set<string> {
@@ -130,6 +133,8 @@ function migrate(stages: StageConfig[]): StageConfig[] {
   if (!applied.has("task-column")) out = orderStartColumns(out);
   if (!applied.has("resolve-column")) out = addResolveColumn(out);
   if (!applied.has("review-last")) out = moveReviewLast(out);
+  if (!applied.has("hotfix-column")) out = addHotfixColumn(out);
+  if (!applied.has("review-pairs")) out = addReviewPairs(out);
 
   setRaw(K.stagesShape, SHAPES.join(" "));
   if (JSON.stringify(out) !== JSON.stringify(stages))
@@ -317,6 +322,39 @@ function addResolveColumn(stages: StageConfig[]): StageConfig[] {
   );
   return at < 0 ? stages : [...stages.slice(0, at), seed, ...stages.slice(at)];
 }
+
+/**
+ * Cột `hotfix`, chèn ngay sau cột kén `bugfix` (không có thì trước cột
+ * review). Không có chỗ nào như vậy thì thôi — pipeline tự dựng khác mẫu.
+ */
+function addHotfixColumn(stages: StageConfig[]): StageConfig[] {
+  const seed = DEFAULT_STAGES.find((s) => s.kind.trim().toLowerCase() === "hotfix");
+  if (!seed || stages.some((s) => kindList(s).includes("hotfix"))) return stages;
+  const isStart = (s: StageConfig) => !s.branch.trim() && s.reach !== "gone";
+  const bug = stages.findIndex((s) => isStart(s) && kindList(s).includes("bugfix"));
+  const at = bug >= 0 ? bug + 1 : stages.findIndex((s) => isStart(s) && s.phase === "open");
+  return at < 0 ? stages : [...stages.slice(0, at), seed, ...stages.slice(at)];
+}
+
+/**
+ * Cột review nhận mọi PR task con → nhánh cha (mục 1): thêm các cặp mặc định
+ * còn thiếu, giữ nguyên cặp người dùng đã khai.
+ */
+function addReviewPairs(stages: StageConfig[]): StageConfig[] {
+  const i = stages.findIndex((s) => !s.branch.trim() && s.reach !== "gone" && s.phase === "open");
+  if (i < 0) return stages;
+  const have = stages[i]!.pairs;
+  const key = (p: { from: string; into: string }) => `${p.from.trim().toLowerCase()}>${p.into.trim().toLowerCase()}`;
+  const missing = REVIEW_PAIRS.filter((p) => !have.some((h) => key(h) === key(p)));
+  if (!missing.length) return stages;
+  return stages.map((s, j) => (j === i ? { ...s, pairs: [...have, ...missing] } : s));
+}
+
+const kindList = (s: StageConfig) =>
+  s.kind
+    .split(",")
+    .map((k) => k.trim().toLowerCase())
+    .filter(Boolean);
 
 /** Danh sách đã bỏ trùng và bỏ rỗng, dưới dạng mảng JSON để lưu. */
 const clean = (xs: string[]) =>
