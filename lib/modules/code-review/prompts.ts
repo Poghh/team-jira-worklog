@@ -235,8 +235,33 @@ function commentsBlock(comments: PullComment[]): string {
   return `\n## Comment đã có trên PR (đừng lặp lại điều người khác đã nói)\n${list}\n`
 }
 
-function linksBlock(links: RoundLink[]): string {
-  if (!links.length) return ''
+/**
+ * Repo đối chiếu (RepoPreset.refs): cùng tính năng ở một codebase khác — vd
+ * app Classic so với app Lite. Không phải vế kia của một thay đổi, nên dặn
+ * khác: so cách làm, không đòi hai bên khớp nhau từng dòng.
+ */
+function referenceBlock(refs: RoundLink[]): string {
+  if (!refs.length) return ''
+  const ok = refs.filter((l) => !l.error)
+  const bad = refs.filter((l) => l.error)
+  const list = ok
+    .map((l) => `- **${l.repoName}** nhánh \`${l.headRef}\` (commit ${l.headSha}) — Read / Grep / Glob theo đường dẫn tuyệt đối: ${l.workdir}`)
+    .join('\n')
+  return `
+## Code đối chiếu ở repo khác — cùng sản phẩm, codebase khác
+${list || '(không chuẩn bị được repo đối chiếu nào)'}${bad.length ? `\nKhông lấy được: ${bad.map((l) => `${l.repoName} ${l.headRef} — ${l.error}`).join('; ')}` : ''}
+Repo này làm cùng những tính năng với repo đang review, và thường đã làm trước. Khi phần đang review chạm một tính năng, tìm chỗ tương ứng bên đó (Grep theo tên API, endpoint, model, chuỗi, màn hình) và so:
+- Luồng xử lý, thứ tự gọi, điều kiện, case lỗi và case biên bên kia có mà bên này thiếu hoặc làm khác.
+- Cách gọi API / SDK, tham số, giá trị mặc định, mã lỗi.
+- Bên kia đã sửa một bug ở chỗ tương ứng mà bên này lặp lại.
+Chỉ nêu khác biệt **có hệ quả** (sai hành vi, thiếu case, lệch với server); khác về cấu trúc code hay kiến trúc giữa hai codebase là bình thường, đừng nêu. Dùng \`category\` = "Lệch với bản đối chiếu" và ghi file / dòng bên kia trong nội dung. Không review chất lượng code của repo đối chiếu.
+`
+}
+
+function linksBlock(all: RoundLink[]): string {
+  const links = all.filter((l) => !l.reference)
+  const refs = referenceBlock(all.filter((l) => l.reference))
+  if (!links.length) return refs
   const ok = links.filter((l) => !l.error)
   const bad = links.filter((l) => l.error)
   const anyLocal = ok.some((l) => isLocalLink(l))
@@ -268,7 +293,7 @@ Phần "chưa commit dưới máy" **không có lượt review riêng** — nó 
       : `
  Không review chất lượng code của PR kia — nó có lượt review riêng.`
   }
-`
+${refs}`
 }
 
 const ROLE_NAME = { spec: 'Mô tả chức năng', tdd: 'TDD', other: 'Tài liệu liên quan' } as const

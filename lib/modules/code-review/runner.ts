@@ -29,7 +29,7 @@ import {
 import { type RawFinding, buildFreshRows } from './findings'
 import { getDiscussion, getPull, listPullComments } from './github'
 import { cleanupLinks, linkDirs, prepareLinks } from './links'
-import { type DocFile, type FindingStatus, confluencePages, type FindingView, type RoundLink, type TestSuggestion, anchorInDiff, isCode, isFetched, ticketPlan } from './model'
+import { type DocFile, type FindingStatus, confluencePages, type FindingView, type RoundLink, type TestSuggestion, anchorInDiff, isCode, isFetched, referenceLinks, ticketPlan } from './model'
 import { ALLOWED_TOOLS, DISALLOWED_TOOLS, ISOLATION_FLAGS, reviewEnv } from './guard'
 import { CODE_SCHEMA, DOC_SCHEMA, type ThreadTalk, codePrompt, docPrompt } from './prompts'
 import { type LogLine, bootTime, lastResult, parseLog, pidAlive, readLog, strayLines } from './proc'
@@ -271,7 +271,8 @@ async function prepareAndSpawn(roundId: number) {
       // Vế kia của một thay đổi hai repo — thường là SDK đang sửa dở dưới máy
       // cùng lúc với app. Không có nó thì Claude chỉ thấy một đầu của chỗ nối
       // và đọc mọi lệch nhau thành lỗi của bên đang soi.
-      links = await prepareLinks(roundId, item.links)
+      // Cộng repo đối chiếu khai trong Cấu hình (vd Classic đọc kèm Lite).
+      links = await prepareLinks(roundId, [...item.links, ...referenceLinks(repo!, cfg.repos, item.links)])
       updateRound(roundId, { links: JSON.stringify(links) })
       addDirs.push(...linkDirs(links))
 
@@ -338,8 +339,9 @@ async function prepareAndSpawn(roundId: number) {
         workdir = await addWorktree(r.localPath, `r${roundId}`, headSha)
       })
 
-      // The other side of a cross-repo change (SDK ↔ iOS), read-only context.
-      links = await prepareLinks(roundId, item.links)
+      // The other side of a cross-repo change (SDK ↔ iOS), read-only context,
+      // plus the repos this one is always checked against.
+      links = await prepareLinks(roundId, [...item.links, ...referenceLinks(repo!, cfg.repos, item.links)])
       updateRound(roundId, { links: JSON.stringify(links) })
       addDirs.push(...linkDirs(links))
 
