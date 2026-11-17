@@ -17,7 +17,7 @@
  * Hàm thuần: dữ kiện GitHub được đọc ở `fetchPrChecklist`, ở đây chỉ đánh giá.
  */
 
-import { kindOfBranch, resolveBranchName } from "@/lib/modules/branches/git-rules";
+import { keyInBranch, kindOfBranch, resolveBranchName } from "@/lib/modules/branches/git-rules";
 
 /** Loại PR theo sơ đồ luồng của tài liệu. */
 export type PrRoute =
@@ -70,6 +70,44 @@ export interface ChecklistContext {
   parentBranch?: string;
   /** Nhánh nguồn không còn trên GitHub (đã xoá). */
   headGone?: boolean;
+  /**
+   * Conflict đo dưới máy khi chưa có PR (git merge-tree trong clone review):
+   * danh sách file, `[]` là merge sạch, vắng là không đo được.
+   */
+  localConflicts?: string[];
+  /**
+   * Nhánh gốc khi `head` là nhánh resolve (mục 5) — PR resolve giữ label,
+   * cách merge và loại commit của nhánh gốc. Vắng khi không tìm ra.
+   */
+  originBranch?: string;
+}
+
+/** Nhánh resolve và lệnh tạo nó, theo mục 5. */
+export interface ResolvePlan {
+  branch: string;
+  commands: string;
+}
+
+/**
+ * Cách xử lý conflict theo mục 5 — chỉ cho PR làm việc vào môi trường và
+ * hotfix. Task con conflict với nhánh cha thì rebase/merge nhánh cha, PR môi
+ * trường thì Tech Lead xử lý: không có nhánh resolve.
+ */
+export function resolvePlan(ctx: Pick<ChecklistContext, "route" | "head" | "base" | "issueKeys">): ResolvePlan | null {
+  if (ctx.route !== "integration" && ctx.route !== "hotfix") return null;
+  if (kindOfBranch(ctx.head) === "resolve") return null;
+  const team = ctx.head.split("/")[0] || "ctalk";
+  const key = ctx.issueKeys[0] || keyInBranch(ctx.head) || "VT-?";
+  const branch = resolveBranchName(team, key, ctx.base);
+  return {
+    branch,
+    commands: [
+      "git fetch origin",
+      `git checkout -b ${branch} origin/${ctx.head}`,
+      `git merge origin/${ctx.base}      # sửa conflict rồi commit`,
+      `git push -u origin ${branch}`,
+    ].join("\n"),
+  };
 }
 
 export type CheckState = "ok" | "fail" | "warn" | "wait" | "unknown";
@@ -225,13 +263,13 @@ export function expectedLabel(route: PrRoute, head: string): string | null {
   if (route !== "integration" && route !== "hotfix") return null;
   const k = kindOfBranch(head);
   return k === "feature"
-    ? "type: feature"
+    ? "type:feature"
     : k === "bugfix"
-      ? "type: bugfix"
+      ? "type:bugfix"
       : k === "hotfix"
-        ? "type: hotfix"
+        ? "type:hotfix"
         : k === "task"
-          ? "type: improve"
+          ? "type:improve"
           : null;
 }
 
@@ -239,11 +277,20 @@ export function expectedLabel(route: PrRoute, head: string): string | null {
  * Gợi ý label cho người tự tạo PR (mục 6): label nào, hoặc vì sao không gắn.
  * `label` là `null` khi PR này không gắn label, hoặc app không đoán được.
  */
-export function labelAdvice(route: PrRoute, head: string): { label: string | null; note: string } {
+export function labelAdvice(
+  route: PrRoute,
+  head: string,
+  /** Nhánh gốc khi `head` là nhánh resolve. */
+  origin?: string,
+): { label: string | null; note: string } {
   if (route === "parent") return { label: null, note: "PR task con → nhánh cha không gắn label." };
   if (route === "env") return { label: null, note: "PR môi trường không gắn label." };
-  if (kindOfBranch(head) === "resolve")
-    return { label: null, note: "Nhánh resolve: giữ đúng label `type: …` của PR nhánh gốc." };
+  if (isResolveBranch(head)) {
+    const kept = origin ? expectedLabel(route, origin) : null;
+    return kept
+      ? { label: kept, note: `Nhánh resolve giữ label của nhánh gốc ${origin}.` }
+      : { label: null, note: "Nhánh resolve: giữ đúng label `type: …` của PR nhánh gốc (không tìm ra nhánh gốc)." };
+  }
   const label = expectedLabel(route, head);
   return label
     ? { label, note: "Đúng 1 label, theo loại nhánh nguồn." }
@@ -311,6 +358,33 @@ const manual = (id: string, section: CheckItem["section"], text: string, detail?
 });
 
 /** Mục 4: feature → ctalk/develop và PR môi trường dùng Merge commit; còn lại Squash and merge. */
+/** Nhánh resolve: `<team>/resolve/…` theo mục 5, hoặc kiểu cũ `<team>/task/resolve_…`. */
+export function isResolveBranch(branch: string): boolean {
+  return kindOfBranch(branch) === "resolve" || /^resolve[_-]/i.test(branch.split("/").pop() ?? "");
+}
+
+/**
+ * Nhánh gốc của một nhánh resolve trong `branches`: cùng team, cùng mã task,
+ * loại feature / bugfix / task / hotfix. `""` khi không có hoặc không phải resolve.
+ */
+export function originOfResolve(head: string, branches: readonly string[]): string {
+  if (!isResolveBranch(head)) return "";
+  const key = keyInBranch(head);
+  const team = head.split("/")[0] ?? "";
+  if (!key) return "";
+  return (
+    branches.find((b) => {
+      const k = kindOfBranch(b);
+      return (
+        b.split("/")[0] === team &&
+        (k === "feature" || k === "bugfix" || k === "task" || k === "hotfix") &&
+        !isResolveBranch(b) &&
+        keyInBranch(b) === key
+      );
+    }) ?? ""
+  );
+}
+
 export function usesSquash(route: PrRoute, head: string): boolean {
   return !(route === "env" || (route === "integration" && kindOfBranch(head) === "feature"));
 }
@@ -324,6 +398,8 @@ export function usesSquash(route: PrRoute, head: string): boolean {
 export function buildChecklist(ctx: ChecklistContext, facts: PrFacts | null): CheckItem[] {
   const out: CheckItem[] = [];
   const { route, head, base } = ctx;
+  // PR resolve giữ label, cách merge và luật commit của nhánh gốc (mục 5).
+  const like = ctx.originBranch || head;
   const merged = facts?.state === "MERGED";
   const noPr = "Chưa có PR.";
   const work = route !== "env";
@@ -366,7 +442,7 @@ export function buildChecklist(ctx: ChecklistContext, facts: PrFacts | null): Ch
     );
   }
 
-  if (route === "integration" && kindOfBranch(head) === "feature")
+  if (route === "integration" && kindOfBranch(like) === "feature")
     out.push(
       manual(
         "children-merged",
@@ -421,11 +497,15 @@ export function buildChecklist(ctx: ChecklistContext, facts: PrFacts | null): Ch
         : auto("title", "open", "Tiêu đề đúng format", "fail", `“${facts.title}” — phải là ${t.sample}`),
   );
 
-  const want = expectedLabel(route, head);
-  if (want || kindOfBranch(head) === "resolve") {
+  const want = expectedLabel(route, like);
+  if (want || isResolveBranch(head)) {
     const typed = facts?.labels.filter((l) => /^type:/i.test(l)) ?? [];
-    const resolve = kindOfBranch(head) === "resolve";
-    const ok = resolve ? typed.length === 1 : typed.length === 1 && typed[0] === want;
+    // Resolve mà không tìm ra nhánh gốc: chỉ kiểm được "đúng một label type:".
+    const resolve = isResolveBranch(head) && !want;
+    // So lỏng khoảng trắng và hoa thường: tài liệu viết `type: feature`, repo
+    // thật đặt `type:feature` — cùng một label.
+    const same = (a: string, b: string) => a.replace(/\s+/g, "").toLowerCase() === b.replace(/\s+/g, "").toLowerCase();
+    const ok = resolve ? typed.length === 1 : typed.length === 1 && same(typed[0]!, want!);
     out.push(
       facts
         ? auto(
@@ -481,14 +561,16 @@ export function buildChecklist(ctx: ChecklistContext, facts: PrFacts | null): Ch
         ? "Rebase/merge nhánh cha vào task con — không cần nhánh resolve."
         : route === "env"
           ? "Xử lý conflict giữa hai môi trường."
-          : `Không merge ${base} vào nhánh gốc. Tạo ${resolveBranchName(
-              head.split("/")[0] || "ctalk",
-              ctx.issueKeys[0] ?? "VT-?",
-              base,
-            )} từ ${head}, merge origin/${base} vào đó, đóng PR cũ, mở PR mới (giữ tiêu đề cũ).`;
+          : `Không merge ${base} vào nhánh gốc. Tạo ${resolvePlan(ctx)?.branch ?? "nhánh resolve"} từ ${head}, merge origin/${base} vào đó, đóng PR cũ (nếu có), mở PR mới (giữ tiêu đề cũ) — lệnh ở khung "Conflict" phía trên.`;
+    const files = (list: string[]) =>
+      list.length ? `\nFile conflict: ${list.slice(0, 12).join(", ")}${list.length > 12 ? ` … (+${list.length - 12})` : ""}` : "";
     out.push(
       !facts
-        ? auto("conflict", "merge", `Không conflict với ${base}`, "wait", noPr)
+        ? ctx.localConflicts === undefined
+          ? auto("conflict", "merge", `Không conflict với ${base}`, "wait", noPr)
+          : ctx.localConflicts.length
+            ? auto("conflict", "merge", `Không conflict với ${base}`, "fail", conflictFix + files(ctx.localConflicts))
+            : auto("conflict", "merge", `Không conflict với ${base}`, "ok", "Đã thử merge dưới máy (chưa có PR).")
         : facts.mergeable === "CONFLICTING"
           ? auto("conflict", "merge", `Không conflict với ${base}`, "fail", conflictFix)
           : facts.mergeable === "MERGEABLE"
@@ -511,7 +593,7 @@ export function buildChecklist(ctx: ChecklistContext, facts: PrFacts | null): Ch
 
   // Merge commit (feature → ctalk/develop) giữ nguyên từng commit, nên từng
   // commit phải đúng format. Squash thì chỉ commit cuối — kiểm ở hộp thoại.
-  const squash = usesSquash(route, head);
+  const squash = usesSquash(route, like);
   if (route === "integration" && !squash) {
     const bad = (facts?.commits ?? [])
       .map((m) => [m.split("\n")[0]!, commitProblem(m)] as const)

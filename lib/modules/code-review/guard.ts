@@ -119,6 +119,9 @@ export function assertJiraRequest(method: string, pathname: string) {
 
 const GIT_ALLOWED = new Set([
   'rev-parse',
+  // Thử merge hai nhánh để biết có conflict không (module Git & PR). Chỉ ghi
+  // object vào kho object của clone review; không đụng ref, index hay worktree.
+  'merge-tree',
   'for-each-ref',
   'fetch',
   'merge-base',

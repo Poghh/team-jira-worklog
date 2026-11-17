@@ -74,6 +74,15 @@ function readRepos(raw: string | undefined): RepoPreset[] {
             : [],
         githubRepo: String(r.githubRepo ?? ''),
         rules: String(r.rules ?? ''),
+        refs: Array.isArray(r.refs)
+          ? r.refs
+              .filter((x: unknown) => x && typeof x === 'object')
+              .map((x: { repoId?: unknown; branch?: unknown }) => ({
+                repoId: String(x.repoId ?? ''),
+                branch: String(x.branch ?? '').trim(),
+              }))
+              .filter((x: { repoId: string; branch: string }) => x.repoId && x.branch)
+          : [],
       }))
       .filter((r) => r.id)
   } catch {

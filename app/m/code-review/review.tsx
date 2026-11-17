@@ -404,6 +404,7 @@ function NewPr({
           )}
           {msg && <span className="text-[12px] text-crit">{msg}</span>}
         </div>
+        {repo && <RefNote repo={repo} repos={repos} />}
 
         {repo?.githubRepo ? (
           <>
@@ -503,6 +504,20 @@ function NewPr({
  * và diff diễn ra bên kia.
  */
 /** Chọn repo rồi tới form — cùng khuôn với tab PR. */
+/** Repo đối chiếu khai trong Cấu hình — nói ra để người review biết Claude đọc kèm gì. */
+function RefNote({ repo, repos }: { repo: RepoPreset; repos: RepoPreset[] }) {
+  const refs = repo.refs.flatMap((r) => {
+    const o = repos.find((x) => x.id === r.repoId)
+    return o ? [`${o.name} (${r.branch})`] : []
+  })
+  if (!refs.length) return null
+  return (
+    <p className="-mt-1 mb-3 text-[12px] text-ink-3">
+      🔀 Claude đọc kèm code của <b className="font-medium text-ink-2">{refs.join(', ')}</b> để đối chiếu cách làm — đổi ở Cấu hình.
+    </p>
+  )
+}
+
 function NewSelf({ repos, canRun, onDone }: { repos: RepoPreset[]; canRun: boolean; onDone: () => void }) {
   const [repoId, setRepoId] = useState(repos[0]?.id ?? '')
   const repo = repos.find((r) => r.id === repoId)
@@ -1652,7 +1667,7 @@ function NewDoc({ repos, templates, canRun }: { repos: RepoPreset[]; templates: 
 
 /* ── config ─────────────────────────────────────────────────────────────── */
 
-const blankRepo = (): RepoPreset => ({ id: '', name: '', localPath: '', workPaths: [], githubRepo: '', rules: '' })
+const blankRepo = (): RepoPreset => ({ id: '', name: '', localPath: '', workPaths: [], githubRepo: '', rules: '', refs: [] })
 
 function Config({ repos, runner, onClaude }: { repos: RepoPreset[]; runner: RunnerView; onClaude: (c: ClaudeCheck) => void }) {
   const router = useRouter()
@@ -1696,6 +1711,57 @@ function Config({ repos, runner, onClaude }: { repos: RepoPreset[]; runner: Runn
                   placeholder={'/Users/…/Repo/ios-app\n/Users/…/Repo/ios-app-2 — nhiều clone cùng một repo'}
                 />
               </label>
+              {/* Repo đối chiếu: review repo này thì Claude đọc kèm code của
+                  repo kia ở một nhánh — vd Classic so với Lite. Chỉ chọn được
+                  repo đã lưu (có id), khác chính nó. */}
+              <div className="mt-2 text-[12px] text-ink-2">
+                Đối chiếu với repo khác{' '}
+                <span className="text-ink-3">
+                  · không bắt buộc — mỗi lần review code repo này, Claude đọc kèm code repo kia ở nhánh này để so cách làm
+                </span>
+                {repo.refs.map((ref, k) => (
+                  <div key={k} className="mt-1 flex items-center gap-2">
+                    <select
+                      value={ref.repoId}
+                      onChange={(e) =>
+                        patch(i, { refs: repo.refs.map((x, j) => (j === k ? { ...x, repoId: e.target.value } : x)) })
+                      }
+                      className={INPUT + ' w-auto'}
+                    >
+                      <option value="">— chọn repo —</option>
+                      {list
+                        .filter((o) => o.id && o.id !== repo.id)
+                        .map((o) => (
+                          <option key={o.id} value={o.id}>
+                            {o.name}
+                          </option>
+                        ))}
+                    </select>
+                    <input
+                      value={ref.branch}
+                      onChange={(e) =>
+                        patch(i, { refs: repo.refs.map((x, j) => (j === k ? { ...x, branch: e.target.value } : x)) })
+                      }
+                      className={INPUT + ' w-56 font-mono'}
+                      placeholder="nhánh, vd ctalk/develop"
+                    />
+                    <button
+                      type="button"
+                      className="text-ink-3 hover:text-crit"
+                      onClick={() => patch(i, { refs: repo.refs.filter((_, j) => j !== k) })}
+                    >
+                      ✕
+                    </button>
+                  </div>
+                ))}
+                <button
+                  type="button"
+                  className="mt-1 block text-[12px] text-accent-ink hover:underline"
+                  onClick={() => patch(i, { refs: [...repo.refs, { repoId: '', branch: '' }] })}
+                >
+                  + Repo đối chiếu
+                </button>
+              </div>
               <textarea
                 value={repo.rules}
                 onChange={(e) => patch(i, { rules: e.target.value })}
@@ -1806,6 +1872,8 @@ export function LinkPicker({
   const [repoId, setRepoId] = useState(ordered[0]?.id ?? '')
   const repo = repos.find((r) => r.id === repoId)
   const [pulls, setPulls] = useState<PullRow[]>([])
+  /** Cả PR đã đóng / đã merge — làm bối cảnh cũng được, vd PR SDK đã vào develop. */
+  const [closed, setClosed] = useState(false)
   const [pick, setPick] = useState('')
   const [head, setHead] = useState('')
   const [base, setBase] = useState('')
@@ -1826,11 +1894,11 @@ export function LinkPicker({
     setPulls([])
     setPick('')
     if (!repo?.githubRepo) return
-    void listPullsAction(repo.id).then((r) => {
-      setPulls(r.pulls)
-      setMsg(r.ok ? '' : r.message)
+    void Promise.all([listPullsAction(repo.id), closed ? listPullsAction(repo.id, 'closed') : null]).then(([o, c]) => {
+      setPulls([...o.pulls, ...(c?.pulls ?? [])])
+      setMsg(!o.ok ? o.message : c && !c.ok ? c.message : '')
     })
-  }, [repo?.id, repo?.githubRepo])
+  }, [repo?.id, repo?.githubRepo, closed])
 
   const name = (id: string) => repos.find((r) => r.id === id)?.name ?? '?'
   const add = (l: PrLink) => {
@@ -1920,20 +1988,48 @@ export function LinkPicker({
         {repo?.githubRepo ? (
           <>
             <select value={pick} onChange={(e) => setPick(e.target.value)} className={INPUT + ' w-auto max-w-[420px]'}>
-              <option value="">— Chọn PR đang mở —</option>
-              {pulls.map((p) => (
-                <option key={p.number} value={p.number}>
-                  #{p.number} {p.title.slice(0, 70)}
-                </option>
-              ))}
+              <option value="">{closed ? '— Chọn PR —' : '— Chọn PR đang mở —'}</option>
+              <optgroup label="Đang mở">
+                {pulls
+                  .filter((p) => !p.closedAs)
+                  .map((p) => (
+                    <option key={p.number} value={p.number}>
+                      #{p.number} {p.title.slice(0, 70)}
+                    </option>
+                  ))}
+              </optgroup>
+              {closed && (
+                <optgroup label="Đã đóng / đã merge">
+                  {pulls
+                    .filter((p) => p.closedAs)
+                    .map((p) => (
+                      <option key={p.number} value={p.number}>
+                        #{p.number} {p.title.slice(0, 64)} · {p.closedAs === 'merged' ? 'đã merge' : 'đã đóng'}
+                      </option>
+                    ))}
+                </optgroup>
+              )}
             </select>
+            <label className="flex items-center gap-1 text-[12px] text-ink-2">
+              <input type="checkbox" checked={closed} onChange={(e) => setClosed(e.target.checked)} />
+              Cả PR đã đóng
+            </label>
             <button
               type="button"
               className={BTN}
               disabled={!pick}
               onClick={() => {
                 const p = pulls.find((x) => String(x.number) === pick)
-                if (p) add({ repoId, prNumber: p.number, headRef: p.headRef, baseRef: p.baseRef, title: p.title, url: p.url })
+                if (p)
+                  add({
+                    repoId,
+                    prNumber: p.number,
+                    headRef: p.headRef,
+                    baseRef: p.baseRef,
+                    title: p.closedAs ? `${p.title} (${p.closedAs === 'merged' ? 'đã merge' : 'đã đóng'})` : p.title,
+                    url: p.url,
+                    ...(p.baseSha ? { baseSha: p.baseSha } : {}),
+                  })
               }}
             >
               + Liên kết

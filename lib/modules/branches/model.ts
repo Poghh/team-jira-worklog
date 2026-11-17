@@ -168,10 +168,30 @@ export function parseStages(raw: string): StageConfig[] {
               ]
             : [],
       }))
-      .filter((s) => s.name);
+      .filter((s) => s.name)
+      .map(stickResolve);
   } catch {
     return [];
   }
+}
+
+/**
+ * Cột kén `resolve` luôn "dính": giữ nhánh resolve ở đó cả khi PR đang mở,
+ * tới khi nhánh bị xoá sau merge.
+ *
+ * Luật của team (Git & Task Management Rules, mục 5): nhánh resolve chỉ chở
+ * code của nhánh gốc qua conflict, PR của nó thay PR cũ, và nó bị xoá ngay
+ * sau khi merge. Không phải một bậc của việc nên không chạy dọc các cột môi
+ * trường. Cấu hình lưu bằng form có thể mang `phase: "nopr"` (cột resolve dựng
+ * lại bằng nút "+ cột loại nhánh") — khi đó nhánh resolve rời cột ngay lúc mở
+ * PR. Ép ở đây, lúc đọc, để mọi cấu hình đều theo cùng một luật.
+ */
+function stickResolve(s: StageConfig): StageConfig {
+  const isResolve = s.kind
+    .split(",")
+    .map((k) => k.trim().toLowerCase())
+    .includes("resolve");
+  return isResolve && !s.branch && s.reach !== "gone" && s.phase !== "" ? { ...s, phase: "" } : s;
 }
 
 /**
@@ -230,6 +250,15 @@ export function cleanStages(list: StageConfig[]): StageConfig[] {
     .filter((s) => s.name);
 }
 
+/** Các cặp mặc định của cột review — xem cột `review` trong {@link DEFAULT_STAGES}. */
+export const REVIEW_PAIRS: StagePair[] = [
+  { from: "task", into: "feature" },
+  { from: "task", into: "bugfix" },
+  { from: "task", into: "hotfix" },
+  { from: "task", into: "task" },
+  { from: "bugfix", into: "feature" },
+];
+
 export const DEFAULT_STAGES: StageConfig[] = [
   // Bốn cột trước khi code đi đâu, xếp theo mức việc chứ không theo thời gian:
   // `task` thấp nhất, rồi `bugfix`, rồi `review`, rồi `feature`.
@@ -282,6 +311,17 @@ export const DEFAULT_STAGES: StageConfig[] = [
     pairs: [],
     kind: "bugfix",
   },
+  // Hotfix (mục 1): tách từ master, PR thẳng vào staging. Cột này giữ nhánh
+  // hotfix lúc chưa mở PR; mở PR vào staging thì card sang cột staging.
+  {
+    name: "hotfix",
+    expects: "prog",
+    branch: "",
+    phase: "nopr",
+    reach: "queued",
+    pairs: [],
+    kind: "hotfix",
+  },
   {
     name: "feature",
     expects: "prog",
@@ -311,7 +351,10 @@ export const DEFAULT_STAGES: StageConfig[] = [
     branch: "",
     phase: "open",
     reach: "queued",
-    pairs: [],
+    // PR task con → nhánh cha (mục 1): task con thuộc feature, bugfix, hotfix
+    // hoặc improve (`task/`). `bugfix → feature` là cách team đang làm thật
+    // (bug của một feature chưa release sửa trên nhánh bugfix riêng).
+    pairs: REVIEW_PAIRS,
     kind: "",
   },
 

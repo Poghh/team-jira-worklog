@@ -12,7 +12,11 @@ import {
   type CheckItem,
   type PrRoute,
   buildChecklist,
+  type ResolvePlan,
   envHead,
+  isResolveBranch,
+  originOfResolve,
+  resolvePlan,
   isUncountedFile,
   labelAdvice,
   routeOf,
@@ -20,6 +24,8 @@ import {
   usesSquash,
 } from "@/lib/modules/pr/checklist";
 import { getPrChecks, setPrCheck } from "@/lib/modules/pr/store";
+import { getReviewConfig } from "@/lib/modules/code-review/config";
+import { conflictFiles, withRepoLock } from "@/lib/modules/code-review/git";
 import {
   type IssueRef,
   changesFromCommits,
@@ -49,6 +55,12 @@ export interface PrGuideView {
    * không gợi ý mô tả (PR môi trường).
    */
   body: Parameters<typeof suggestPrBody>[0] | null;
+  /**
+   * Conflict với nhánh đích — từ PR (GitHub) hoặc thử merge dưới máy khi chưa
+   * có PR. `resolve` là nhánh resolve theo mục 5 (`null` khi đường này xử lý
+   * conflict cách khác). `null` cả cụm khi không conflict hoặc chưa biết.
+   */
+  conflict: { files: string[]; local: boolean; resolve: ResolvePlan | null } | null;
   /** Commit message cho hộp thoại Squash and merge; `null` khi PR này dùng Merge commit. */
   squashMessage: string | null;
   /** Mẫu tiêu đề của đường này. */
@@ -87,7 +99,12 @@ export async function prGuideAction(input: {
   if (!cfg.token) return { ok: false, message: "Chưa có GitHub token — vào Settings của module Nhánh" };
 
   const envs = envSteps(getStages()).map((s) => s.branch);
-  const route = routeOf(branch, base, envs);
+  // Nhánh resolve đi đường của nhánh gốc (hotfix resolve vẫn là hotfix vào
+  // staging) và giữ label, cách merge của nó. Tìm nhánh gốc trên GitHub.
+  const origin = isResolveBranch(branch)
+    ? originOfResolve(branch, await fetchBranchNames(cfg.token, repo).catch(() => []))
+    : "";
+  const route = routeOf(origin || branch, base, envs);
   const head = route === "env" && !envs.includes(branch) ? envHead(base, envs) : branch;
   if (!head) return { ok: false, message: `Không biết nhánh nào PR vào ${base}` };
 
@@ -119,6 +136,15 @@ export async function prGuideAction(input: {
   try {
     const frRef = feature ? { ...feature, url: urlOf(feature.key, card?.jiraUrls) } : null;
     const gh = await fetchPrChecklist(cfg.token, repo, head, base);
+    // Chưa có PR thì GitHub không nói gì về conflict: thử merge trong clone
+    // review của module Code review (cùng repo), nếu có. Không có clone hay
+    // git lỗi thì để trống — checklist hiện "chưa kiểm được".
+    let localConflicts: string[] | undefined;
+    if (!gh.facts && gh.headExists && route !== "env") {
+      const clone = getReviewConfig().repos.find((r) => r.githubRepo === repo)?.localPath;
+      if (clone)
+        localConflicts = await withRepoLock(clone, () => conflictFiles(clone, base, head)).catch(() => undefined);
+    }
     // Commit của PR; chưa có PR thì so nhánh như trang compare của GitHub.
     const commits =
       route === "env"
@@ -138,7 +164,10 @@ export async function prGuideAction(input: {
       issueKeys: issues.map((i) => i.key),
       parentBranch: route === "parent" ? base : undefined,
       headGone: !gh.headExists,
+      localConflicts,
+      originBranch: origin || undefined,
     };
+    const conflicting = gh.facts ? gh.facts.mergeable === "CONFLICTING" : Boolean(localConflicts?.length);
     return {
       ok: true,
       message: "",
@@ -160,8 +189,11 @@ export async function prGuideAction(input: {
           fallback: card?.title,
         }),
         feature: frRef,
-        squashMessage: usesSquash(route, head)
-          ? suggestSquashMessage({ route, head, parentBranch: ctx.parentBranch, issues, feature, fallback: card?.title })
+        conflict: conflicting
+          ? { files: localConflicts ?? [], local: !gh.facts, resolve: resolvePlan(ctx) }
+          : null,
+        squashMessage: usesSquash(route, origin || head)
+          ? suggestSquashMessage({ route, head: origin || head, parentBranch: ctx.parentBranch, issues, feature, fallback: card?.title })
           : null,
         body:
           route === "env"
@@ -176,7 +208,7 @@ export async function prGuideAction(input: {
                 changes: changesFromCommits(commits),
               },
         titleSample: titlePattern(ctx).sample,
-        label: labelAdvice(route, head),
+        label: labelAdvice(route, head, origin || undefined),
       },
     };
   } catch (error) {

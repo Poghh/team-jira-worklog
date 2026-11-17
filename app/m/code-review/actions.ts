@@ -30,6 +30,7 @@ import {
   type PullSummary,
   type ReviewEvent,
   getDiscussion,
+  listClosedPulls,
   listOpenPulls,
   postInlineComment,
   postIssueComment,
@@ -117,13 +118,17 @@ export interface PullRow extends PullSummary {
   live: boolean
 }
 
-export async function listPullsAction(repoId: string): Promise<Result & { pulls: PullRow[] }> {
+export async function listPullsAction(
+  repoId: string,
+  /** `closed`: PR đã đóng / đã merge — chỉ để liên kết làm bối cảnh. */
+  state: 'open' | 'closed' = 'open',
+): Promise<Result & { pulls: PullRow[] }> {
   if (!enabled()) return { ...OFF, pulls: [] }
   const repo = getRepo(repoId)
   if (!repo) return { ok: false, message: 'Không thấy repo.', pulls: [] }
   if (!repo.githubRepo) return { ok: false, message: 'Repo này chưa điền owner/name GitHub.', pulls: [] }
   try {
-    const pulls = await listOpenPulls(repo.githubRepo)
+    const pulls = state === 'closed' ? await listClosedPulls(repo.githubRepo) : await listOpenPulls(repo.githubRepo)
     return {
       ok: true,
       message: '',
@@ -995,7 +1000,17 @@ export async function saveReposAction(repos: RepoPreset[]): Promise<Result> {
       .replace(/\/+$/, '')
     if (githubRepo && !/^[\w.-]+\/[\w.-]+$/.test(githubRepo))
       return { ok: false, message: `${name}: GitHub repo phải có dạng owner/name.` }
-    clean.push({ id: r.id || crypto.randomUUID(), name, localPath, workPaths, githubRepo, rules: r.rules })
+    // Repo đối chiếu: phải là một repo đã lưu khác repo này, có nhánh.
+    const refs: RepoPreset['refs'] = []
+    for (const ref of r.refs ?? []) {
+      const branch = ref.branch.trim()
+      if (!ref.repoId && !branch) continue
+      if (!ref.repoId || ref.repoId === r.id || !repos.some((x) => x.id === ref.repoId))
+        return { ok: false, message: `${name}: chọn repo đối chiếu là một repo khác đã lưu.` }
+      if (!branch) return { ok: false, message: `${name}: repo đối chiếu cần tên nhánh, vd ctalk/develop.` }
+      if (!refs.some((x) => x.repoId === ref.repoId)) refs.push({ repoId: ref.repoId, branch })
+    }
+    clean.push({ id: r.id || crypto.randomUUID(), name, localPath, workPaths, githubRepo, rules: r.rules, refs })
   }
   setRepos(clean)
   revalidatePath('/m/code-review')

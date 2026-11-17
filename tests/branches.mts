@@ -30,6 +30,8 @@ import {
   envHead,
   expectedLabel,
   labelAdvice,
+  resolvePlan,
+  originOfResolve,
   isUncountedFile,
   routeOf,
   sdkVersionFromProjectYml,
@@ -147,7 +149,7 @@ const ts = (s: string) => Math.floor(new Date(s).getTime() / 1000)
 
 /* ── pipeline shape ─────────────────────────────────────────────────────── */
 const S = DEFAULT_STAGES
-eq(S.length, 15, 'cột resolve, bốn cột đầu, chín cột môi trường, và cột cuối')
+eq(S.length, 16, 'cột resolve, năm cột đầu (có hotfix), chín cột môi trường, và cột cuối')
 eq(S[S.length - 1].name, 'done', 'the terminal column is last')
 eq(cleanupStep(S)?.name, 'done', 'the terminal column is found by reach, not by name')
 eq(cleanupStep(S.slice(0, -1)), null, 'a pipeline without one has no terminal column')
@@ -199,7 +201,7 @@ eq(ruleOf('feature'), 'nhánh feature chưa mở PR — hoặc PR còn draft, ho
 // feature mở PR tính ra đích `review` mà `advanceStage` coi là lùi nên chặn
 // lại — card đứng yên ở `feature` mãi mãi. `bugfix` và `task` thì vào được,
 // nên lỗi chỉ rơi vào một loại nhánh và không ai thấy.
-eq(S.slice(0, 5).map((x) => x.name), ['resolve', 'task', 'bugfix', 'feature', 'review'],
+eq(S.slice(0, 6).map((x) => x.name), ['resolve', 'task', 'bugfix', 'hotfix', 'feature', 'review'],
    'resolve đứng đầu, các cột theo loại nhánh, rồi review sau cùng')
 {
   const names = S.map((x) => x.name)
@@ -207,8 +209,10 @@ eq(S.slice(0, 5).map((x) => x.name), ['resolve', 'task', 'bugfix', 'feature', 'r
 
   /* Cột "PR đang mở" là một **cặp**. Chưa khai vế đích thì nó im — không vơ
      hết như bản cũ, vốn chỉ hỏi "có PR đang mở" và chạy đúng do may. */
-  eq(S.find((x) => x.phase === 'open')?.pairs.length, 0, 'mặc định chưa khai cặp nào')
-  eq(stageFor({}, openPr, S, [openPr], [], 'ctalk/bugfix/VT-1') === 'review', false,
+  eq(S.find((x) => x.phase === 'open')?.pairs.map((p) => `${p.from}>${p.into}`),
+     ['task>feature', 'task>bugfix', 'task>hotfix', 'task>task', 'bugfix>feature'],
+     'mặc định: mọi PR task con → nhánh cha (mục 1), cộng bugfix → feature')
+  eq(stageFor({}, openPr, pairsOn(S, []), [openPr], [], 'ctalk/bugfix/VT-1') === 'review', false,
      'cột review chưa khai đích thì không nhận nhánh nào')
 
   /* Khai cặp rồi thì nhận, và cả ba loại nhánh đều đi tới được — `review` phải
@@ -296,16 +300,16 @@ eq(S.slice(0, 5).map((x) => x.name), ['resolve', 'task', 'bugfix', 'feature', 'r
    bước review". Dịch sai chiều nào cũng là mất cấu hình, nên kiểm cả hai. */
 {
   const G = toGroups(DEFAULT_STAGES)
-  eq(G.map((g) => g.tag), ['kind', 'kind', 'kind', 'kind', 'review', 'env', 'env', 'env', 'end'],
-     'mặc định 15 cột gom thành 9 nhóm')
-  eq(G.map((g) => g.cols.length), [1, 1, 1, 1, 1, 3, 3, 3, 1], 'môi trường là ba cột, còn lại một')
-  eq(G.map(groupName), ['resolve', 'task', 'bugfix', 'feature', 'review', 'develop', 'integration', 'staging', 'done'],
+  eq(G.map((g) => g.tag), ['kind', 'kind', 'kind', 'kind', 'kind', 'review', 'env', 'env', 'env', 'end'],
+     'mặc định 16 cột gom thành 10 nhóm')
+  eq(G.map((g) => g.cols.length), [1, 1, 1, 1, 1, 1, 3, 3, 3, 1], 'môi trường là ba cột, còn lại một')
+  eq(G.map(groupName), ['resolve', 'task', 'bugfix', 'hotfix', 'feature', 'review', 'develop', 'integration', 'staging', 'done'],
      'tên nhóm môi trường là tên cột "chờ PR", không phải "đã merge X"')
   eq(fromGroups(G), DEFAULT_STAGES, 'gom rồi trải lại ra đúng danh sách cũ')
 
   /* Ngưỡng của môi trường là ngưỡng cột "đã build" — hai cột trước hỏi ngưỡng
      test thì mọi card đều lệch, và `migrate` vốn đã sửa ngược lại kiểu ấy. */
-  const dev = G[5]
+  const dev = G[6]
   eq(groupExpects(dev), 'test', 'ngưỡng môi trường đọc từ cột "đã build"')
   eq(setGroupExpects(dev, 'done').cols.map((s) => s.expects), ['prog', 'prog', 'done'],
      'đặt ngưỡng chỉ chạm cột cuối')
@@ -412,7 +416,7 @@ eq(S.slice(0, 5).map((x) => x.name), ['resolve', 'task', 'bugfix', 'feature', 'r
      giữ `kind` khi `phase === "nopr"`, nên bấm Lưu một lần là mọi nhánh
      resolve nhảy sang cột task. */
   eq(cleanStages(DEFAULT_STAGES).filter((x) => x.kind).map((x) => x.kind),
-     ['resolve', 'task', 'bugfix', 'feature'], 'lưu rồi vẫn còn đủ bốn cột kén loại')
+     ['resolve', 'task', 'bugfix', 'hotfix', 'feature'], 'lưu rồi vẫn còn đủ năm cột kén loại')
   eq(stageFor({}, null, cleanStages(DEFAULT_STAGES), [], [], 'ctalk/resolve/VT-1'), 'resolve',
      'và nhánh resolve vẫn về đúng cột resolve sau khi lưu')
 
@@ -421,12 +425,26 @@ eq(S.slice(0, 5).map((x) => x.name), ['resolve', 'task', 'bugfix', 'feature', 'r
   eq(parseStages(JSON.stringify(cleanStages(DEFAULT_STAGES))), cleanStages(DEFAULT_STAGES),
      'mặc định đi qua lưu-rồi-đọc không đổi')
 }
-eq(S.filter((x) => x.kind).map((x) => x.kind), ['resolve', 'task', 'bugfix', 'feature'],
-   'bốn cột kén loại, resolve trước')
+eq(S.filter((x) => x.kind).map((x) => x.kind), ['resolve', 'task', 'bugfix', 'hotfix', 'feature'],
+   'năm cột kén loại, resolve trước')
 // Cột resolve không kén PR — nhánh ở lại đó suốt đời.
 eq(S.find((x) => x.kind === 'resolve')?.phase, '', 'cột resolve không đặt điều kiện PR')
 eq(stageRule(S.find((x) => x.kind === 'resolve')!), 'nhánh resolve — ở lại đây bất kể PR tới đâu',
    'và nói ra điều đó')
+{
+  /* Cấu hình lưu bằng form có thể mang `phase: "nopr"` cho cột resolve — thế
+     thì nhánh resolve rời cột ngay khi mở PR. Đọc lên là ép về "dính". */
+  const saved = S.map((x) => (x.kind === 'resolve' ? { ...x, phase: 'nopr' as const } : x))
+  const read = parseStages(JSON.stringify(saved))
+  eq(read.find((x) => x.kind === 'resolve')?.phase, '', 'cột resolve đọc lên luôn "dính"')
+  const pr = { number: 1962, url: '', state: 'OPEN', isDraft: false, baseRefName: 'ctalk/develop' }
+  eq(stageFor({}, pr, read, [pr], [], 'ctalk/resolve/VT-4551_ctalk-develop'), 'resolve',
+     'nhánh resolve có PR vào ctalk/develop vẫn ở cột resolve')
+  eq(advanceStage('develop', 'resolve', read.map((x) => x.name), read), 'resolve',
+     'card resolve đã lỡ nằm ở develop được kéo về cột resolve — cột dính không phải bậc tiến')
+  eq(advanceStage('đã merge develop', 'task', read.map((x) => x.name), read), '',
+     'luật chỉ-tiến vẫn giữ với cột thường')
+}
 
 eq(kindMatches('ctalk/feature/VT-2583_FR-4', 'feature'), true, 'đoạn giữa khớp')
 eq(kindMatches('feature/VT-1', 'feature'), true, 'không có tiền tố team vẫn khớp')
@@ -455,8 +473,9 @@ eq(stageFor(none, null, S, []), 'task', 'no PR -> cột đầu')
 eq(stageFor(none, null, S, [], [], 'ctalk/feature/VT-2583'), 'feature', 'nhánh feature -> cột feature')
 eq(stageFor(none, null, S, [], [], 'ctalk/bugfix/VT-451'), 'bugfix', 'nhánh bugfix -> cột bugfix')
 eq(stageFor(none, null, S, [], [], 'ctalk/task/abc'), 'task', 'nhánh task -> cột task')
-// Không còn cột không kén nào: `release`, `hotfix`, `chore` và nhánh không có
-// `/` rơi về cột đầu tiên — `task`. 17/220 nhánh thật rơi vào diện này.
+eq(stageFor(none, null, S, [], [], 'ctalk/hotfix/VT-301'), 'hotfix', 'nhánh hotfix -> cột hotfix (mục 1)')
+// Không còn cột không kén nào: `release`, `chore` và nhánh không có `/` rơi
+// về cột đầu tiên — `task`. 17/220 nhánh thật rơi vào diện này.
 eq(stageFor(none, null, S, [], [], 'ctalk/release/2026.09'), 'task',
    'loại không có cột riêng rơi về cột đầu')
 eq(stageFor(none, null, S, [], [], 'linh-tinh'), 'task', 'nhánh không theo quy ước cũng vậy')
@@ -1714,10 +1733,10 @@ eq(baseFreshness(roundTrip, NOW).upToDate, true, 'và đọc ra đúng kết lu�
   eq(titlePattern({ route: 'parent', base: 'ctalk/bugfix/VT-245' }).sample.startsWith('[Bugfix]'), true, 'prefix theo loại nhánh cha')
   eq(titlePattern({ route: 'env', base: 'staging' }).re.test('[Staging] Release 14/11'), true, 'PR môi trường staging')
 
-  eq(expectedLabel('integration', 'ctalk/task/VT-311'), 'type: improve', 'task/* mang label type: improve')
+  eq(expectedLabel('integration', 'ctalk/task/VT-311'), 'type:improve', 'task/* mang label type:improve')
   eq(expectedLabel('parent', 'ctalk/task/VT-311'), null, 'task con → nhánh cha không gắn label')
   eq(expectedLabel('env', 'develop'), null, 'PR môi trường không gắn label')
-  eq(labelAdvice('integration', 'ctalk/bugfix/VT-1').label, 'type: bugfix', 'gợi ý label theo nhánh bugfix')
+  eq(labelAdvice('integration', 'ctalk/bugfix/VT-1').label, 'type:bugfix', 'gợi ý label theo nhánh bugfix')
   eq(labelAdvice('parent', 'ctalk/task/VT-2').label, null, 'task con → nhánh cha: gợi ý không gắn label')
   eq(labelAdvice('integration', 'ctalk/task/resolve_VT-1_ctalk_develop').label, null, 'resolve: giữ label nhánh gốc, không đoán')
 
@@ -1757,7 +1776,7 @@ eq(baseFreshness(roundTrip, NOW).upToDate, true, 'và đọc ra đúng kết lu�
   })
   const pr = (o: Partial<PrFacts>): PrFacts => ({
     number: 1, url: 'u', state: 'OPEN', title: '[CTalk] Fix avatar not updating (VT-245)',
-    body: 'https://x.atlassian.net/browse/VT-245', labels: ['type: bugfix'], mergeable: 'MERGEABLE', ci: 'SUCCESS',
+    body: 'https://x.atlassian.net/browse/VT-245', labels: ['type:bugfix'], mergeable: 'MERGEABLE', ci: 'SUCCESS',
     additions: 10, deletions: 0, changedFiles: 1, files: [{ path: 'a.swift', additions: 10, deletions: 0 }], commits: ['fix: x'], ...o,
   })
   const st = (items: ReturnType<typeof buildChecklist>, id: string) => items.find((i) => i.id === id)?.state
@@ -1775,8 +1794,8 @@ eq(baseFreshness(roundTrip, NOW).upToDate, true, 'và đọc ra đúng kết lu�
 
   eq(st(buildChecklist(ctx({ behind: 12 }), null), 'sync-master'), 'fail', 'tụt master là chưa đạt')
   eq(st(buildChecklist(ctx({ sdkVersion: '2026.11.13-dev.1' }), null), 'sdk-version'), 'fail', 'SDK sai môi trường')
-  eq(st(buildChecklist(ctx({}), pr({ labels: ['pr-bugfix'] })), 'label'), 'fail', 'label pr-bugfix không phải type: bugfix')
-  eq(st(buildChecklist(ctx({}), pr({ labels: ['type: bugfix', 'type: feature'] })), 'label'), 'fail', 'hai label type là sai')
+  eq(st(buildChecklist(ctx({}), pr({ labels: ['pr-bugfix'] })), 'label'), 'fail', 'label pr-bugfix không phải type:bugfix')
+  eq(st(buildChecklist(ctx({}), pr({ labels: ['type:bugfix', 'type:feature'] })), 'label'), 'fail', 'hai label type là sai')
   eq(st(buildChecklist(ctx({}), pr({ mergeable: 'CONFLICTING' })), 'conflict'), 'fail', 'conflict')
   eq(buildChecklist(ctx({}), pr({ mergeable: 'CONFLICTING' })).find((i) => i.id === 'conflict')?.detail?.includes('ctalk/resolve/VT-245_ctalk-develop'), true,
      'conflict chỉ đúng tên nhánh resolve')
@@ -1784,7 +1803,7 @@ eq(baseFreshness(roundTrip, NOW).upToDate, true, 'và đọc ra đúng kết lu�
   eq(st(buildChecklist(ctx({}), pr({ body: '' })), 'body-jira'), 'fail', 'mô tả thiếu link Jira')
 
   const feature = ctx({ head: 'ctalk/feature/VT-100_video-call', issueKeys: ['VT-100'] })
-  const fpr = pr({ title: '[CTalk] Video call (VT-100)', labels: ['type: feature'], commits: ['feat(call): add ui', 'WIP'] })
+  const fpr = pr({ title: '[CTalk] Video call (VT-100)', labels: ['type:feature'], commits: ['feat(call): add ui', 'WIP'] })
   eq(st(buildChecklist(feature, fpr), 'commits'), 'fail', 'feature merge commit: soi từng commit')
   eq(buildChecklist(feature, fpr).find((i) => i.id === 'merge-method')?.text, 'Bấm Merge commit (không squash)', 'feature dùng Merge commit')
   eq(ids(good).includes('commits'), false, 'bugfix squash: không soi từng commit')
@@ -1864,6 +1883,27 @@ eq(baseFreshness(roundTrip, NOW).upToDate, true, 'và đọc ra đúng kết lu�
   eq(titlePattern({ route: 'env', base: 'develop' }).re.test(env), true, 'PR môi trường đúng format')
 
 
+}
+
+/* ── conflict: nhánh resolve theo mục 5 ─────────────────────────────── */
+{
+  const p = resolvePlan({ route: 'integration', head: 'ctalk/bugfix/VT-245', base: 'ctalk/develop', issueKeys: [] })
+  eq(p?.branch, 'ctalk/resolve/VT-245_ctalk-develop', 'resolve: mã task từ tên nhánh, đích làm phẳng')
+  eq(p?.commands.split('\n')[1], 'git checkout -b ctalk/resolve/VT-245_ctalk-develop origin/ctalk/bugfix/VT-245', 'resolve: tách từ nhánh gốc')
+  eq(resolvePlan({ route: 'integration', head: 'hir/feature/VT-400_profile', base: 'ctalk/develop', issueKeys: ['VT-400'] })?.branch,
+     'hir/resolve/VT-400_ctalk-develop', 'resolve: giữ team của nhánh gốc, bỏ mô tả')
+  eq(resolvePlan({ route: 'hotfix', head: 'ctalk/hotfix/VT-301', base: 'staging', issueKeys: [] })?.branch, 'ctalk/resolve/VT-301_staging', 'resolve hotfix vào staging')
+  eq(resolvePlan({ route: 'parent', head: 'ctalk/task/VT-2', base: 'ctalk/feature/VT-1', issueKeys: [] }), null, 'task con conflict nhánh cha: không cần resolve')
+}
+
+/* ── nhánh resolve giữ label của nhánh gốc ──────────────────────────── */
+{
+  const all = ['ctalk/feature/VT-4551_per-request-signature', 'ctalk/task/VT-4551_x', 'hir/feature/VT-4551', 'ctalk/resolve/VT-4551_ctalk-develop']
+  eq(originOfResolve('ctalk/resolve/VT-4551_ctalk-develop', all), 'ctalk/feature/VT-4551_per-request-signature', 'resolve: nhánh gốc cùng team, cùng mã')
+  eq(originOfResolve('ctalk/feature/VT-4551', all), '', 'không phải resolve thì không có nhánh gốc')
+  eq(labelAdvice('integration', 'ctalk/resolve/VT-4551_ctalk-develop', 'ctalk/feature/VT-4551_per-request-signature').label, 'type:feature',
+     'resolve của feature giữ type:feature')
+  eq(labelAdvice('integration', 'ctalk/resolve/VT-9_ctalk-develop').label, null, 'không tìm ra nhánh gốc thì không đoán label')
 }
 
 console.log(bad ? `\n${bad}/${n} FAILED` : `\nall ${n} ok`)

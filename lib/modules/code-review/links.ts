@@ -76,7 +76,10 @@ export async function prepareLinks(roundId: number, links: PrLink[]): Promise<Ro
           headSha = await revParse(repo.localPath, `origin/${l.headRef}`)
         }
         // A repo a document is checked against has a branch and no base: code, no diff.
-        baseSha = l.baseRef ? await mergeBase(repo.localPath, `origin/${l.baseRef}`, headSha) : headSha
+        // PR đã merge: đo từ đỉnh đích lúc PR còn mở, không thì merge-base với
+        // đích hiện tại là chính head (đã merge vào) và diff rỗng.
+        const from = l.baseSha && (await commitExists(repo.localPath, l.baseSha)) ? l.baseSha : `origin/${l.baseRef}`
+        baseSha = l.baseRef ? await mergeBase(repo.localPath, from, headSha) : headSha
         const workdir = await addWorktree(repo.localPath, `r${roundId}-l${i}`, headSha)
         return { headSha, baseSha, workdir }
       })

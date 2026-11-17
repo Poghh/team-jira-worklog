@@ -275,6 +275,38 @@ export interface RepoPreset {
   githubRepo: string
   /** Project-specific review checklist, appended to every prompt for this repo. */
   rules: string
+  /**
+   * Repo khác mà mỗi lần review code của repo này Claude đọc kèm để đối chiếu.
+   *
+   * Thật: app Classic (`viptalk-ios`) và app Lite (`viptalk-ios-x`) làm cùng
+   * những tính năng trên hai codebase. Review một PR bên Classic thì bản Lite
+   * đã chạy là chuẩn để so — cùng API, cùng luồng, cùng case lỗi. Chỉ đọc code
+   * ở nhánh khai ở đây; không có diff, không review repo kia.
+   */
+  refs: RepoRef[]
+}
+
+/** Một repo đối chiếu của {@link RepoPreset}: đọc code ở nhánh nào. */
+export interface RepoRef {
+  repoId: string
+  /** Nhánh trên origin, vd `ctalk/develop`. */
+  branch: string
+}
+
+/**
+ * Link đối chiếu tự thêm vào mỗi vòng review code của `repo` — mỗi repo khai
+ * trong `refs` một link, chỉ có nhánh (không base → không diff). Bỏ qua repo
+ * mà người dùng đã tự liên kết ở hồ sơ này: thứ họ chọn cụ thể hơn.
+ */
+export function referenceLinks(repo: RepoPreset, repos: RepoPreset[], chosen: PrLink[]): PrLink[] {
+  return repo.refs
+    .filter((r) => r.repoId !== repo.id && r.branch && !chosen.some((l) => l.repoId === r.repoId))
+    .flatMap((r) => {
+      const other = repos.find((x) => x.id === r.repoId)
+      return other
+        ? [{ repoId: r.repoId, prNumber: null, headRef: r.branch, baseRef: '', title: `${other.name} · ${r.branch}`, url: '', reference: true }]
+        : []
+    })
 }
 
 /**
@@ -303,6 +335,16 @@ export interface PrLink {
    * xếp hàng (ảnh chụp và HEAD của nó), không phải tên nhánh.
    */
   workPath?: string
+  /**
+   * Link tự thêm từ {@link RepoPreset.refs}: code để đối chiếu cách làm, không
+   * phải vế kia của cùng một thay đổi — prompt nói với Claude khác hẳn.
+   */
+  reference?: boolean
+  /**
+   * PR đã đóng / đã merge: đỉnh nhánh đích lúc PR còn mở, để diff đo từ đó —
+   * xem `PullSummary.baseSha`.
+   */
+  baseSha?: string
 }
 
 /**

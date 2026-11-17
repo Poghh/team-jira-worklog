@@ -1300,6 +1300,16 @@ export function advanceStage(
     const s = stages.find((x) => x.name === name);
     return Boolean(s && !s.branch.trim() && s.reach !== "gone" && s.phase === "nopr");
   };
+  // Cột "dính" (kén loại, không điều kiện PR — cột resolve) không phải một bậc
+  // tiến: nó nhận nhánh theo loại bất kể PR đã đi tới đâu. Card tính ra đích
+  // này thì về đó, kể cả khi đang đứng ở cột môi trường xa hơn — nếu không,
+  // card resolve từng bị kéo sang `develop` (trước khi cột resolve "dính")
+  // kẹt ở đó mãi vì luật chỉ-tiến.
+  const sticky = (name: string) => {
+    const s = stages.find((x) => x.name === name);
+    return Boolean(s && !s.branch.trim() && s.reach !== "gone" && !s.phase && s.kind.trim());
+  };
+  if (sticky(target)) return target;
   return starting(current) && starting(target) ? target : "";
 }
 
