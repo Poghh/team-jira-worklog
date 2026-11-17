@@ -30,6 +30,8 @@ import {
   envHead,
   expectedLabel,
   labelAdvice,
+  resolvePlan,
+  originOfResolve,
   isUncountedFile,
   routeOf,
   sdkVersionFromProjectYml,
@@ -1731,10 +1733,10 @@ eq(baseFreshness(roundTrip, NOW).upToDate, true, 'và đọc ra đúng kết lu�
   eq(titlePattern({ route: 'parent', base: 'ctalk/bugfix/VT-245' }).sample.startsWith('[Bugfix]'), true, 'prefix theo loại nhánh cha')
   eq(titlePattern({ route: 'env', base: 'staging' }).re.test('[Staging] Release 14/11'), true, 'PR môi trường staging')
 
-  eq(expectedLabel('integration', 'ctalk/task/VT-311'), 'type: improve', 'task/* mang label type: improve')
+  eq(expectedLabel('integration', 'ctalk/task/VT-311'), 'type:improve', 'task/* mang label type:improve')
   eq(expectedLabel('parent', 'ctalk/task/VT-311'), null, 'task con → nhánh cha không gắn label')
   eq(expectedLabel('env', 'develop'), null, 'PR môi trường không gắn label')
-  eq(labelAdvice('integration', 'ctalk/bugfix/VT-1').label, 'type: bugfix', 'gợi ý label theo nhánh bugfix')
+  eq(labelAdvice('integration', 'ctalk/bugfix/VT-1').label, 'type:bugfix', 'gợi ý label theo nhánh bugfix')
   eq(labelAdvice('parent', 'ctalk/task/VT-2').label, null, 'task con → nhánh cha: gợi ý không gắn label')
   eq(labelAdvice('integration', 'ctalk/task/resolve_VT-1_ctalk_develop').label, null, 'resolve: giữ label nhánh gốc, không đoán')
 
@@ -1774,7 +1776,7 @@ eq(baseFreshness(roundTrip, NOW).upToDate, true, 'và đọc ra đúng kết lu�
   })
   const pr = (o: Partial<PrFacts>): PrFacts => ({
     number: 1, url: 'u', state: 'OPEN', title: '[CTalk] Fix avatar not updating (VT-245)',
-    body: 'https://x.atlassian.net/browse/VT-245', labels: ['type: bugfix'], mergeable: 'MERGEABLE', ci: 'SUCCESS',
+    body: 'https://x.atlassian.net/browse/VT-245', labels: ['type:bugfix'], mergeable: 'MERGEABLE', ci: 'SUCCESS',
     additions: 10, deletions: 0, changedFiles: 1, files: [{ path: 'a.swift', additions: 10, deletions: 0 }], commits: ['fix: x'], ...o,
   })
   const st = (items: ReturnType<typeof buildChecklist>, id: string) => items.find((i) => i.id === id)?.state
@@ -1792,8 +1794,8 @@ eq(baseFreshness(roundTrip, NOW).upToDate, true, 'và đọc ra đúng kết lu�
 
   eq(st(buildChecklist(ctx({ behind: 12 }), null), 'sync-master'), 'fail', 'tụt master là chưa đạt')
   eq(st(buildChecklist(ctx({ sdkVersion: '2026.11.13-dev.1' }), null), 'sdk-version'), 'fail', 'SDK sai môi trường')
-  eq(st(buildChecklist(ctx({}), pr({ labels: ['pr-bugfix'] })), 'label'), 'fail', 'label pr-bugfix không phải type: bugfix')
-  eq(st(buildChecklist(ctx({}), pr({ labels: ['type: bugfix', 'type: feature'] })), 'label'), 'fail', 'hai label type là sai')
+  eq(st(buildChecklist(ctx({}), pr({ labels: ['pr-bugfix'] })), 'label'), 'fail', 'label pr-bugfix không phải type:bugfix')
+  eq(st(buildChecklist(ctx({}), pr({ labels: ['type:bugfix', 'type:feature'] })), 'label'), 'fail', 'hai label type là sai')
   eq(st(buildChecklist(ctx({}), pr({ mergeable: 'CONFLICTING' })), 'conflict'), 'fail', 'conflict')
   eq(buildChecklist(ctx({}), pr({ mergeable: 'CONFLICTING' })).find((i) => i.id === 'conflict')?.detail?.includes('ctalk/resolve/VT-245_ctalk-develop'), true,
      'conflict chỉ đúng tên nhánh resolve')
@@ -1801,7 +1803,7 @@ eq(baseFreshness(roundTrip, NOW).upToDate, true, 'và đọc ra đúng kết lu�
   eq(st(buildChecklist(ctx({}), pr({ body: '' })), 'body-jira'), 'fail', 'mô tả thiếu link Jira')
 
   const feature = ctx({ head: 'ctalk/feature/VT-100_video-call', issueKeys: ['VT-100'] })
-  const fpr = pr({ title: '[CTalk] Video call (VT-100)', labels: ['type: feature'], commits: ['feat(call): add ui', 'WIP'] })
+  const fpr = pr({ title: '[CTalk] Video call (VT-100)', labels: ['type:feature'], commits: ['feat(call): add ui', 'WIP'] })
   eq(st(buildChecklist(feature, fpr), 'commits'), 'fail', 'feature merge commit: soi từng commit')
   eq(buildChecklist(feature, fpr).find((i) => i.id === 'merge-method')?.text, 'Bấm Merge commit (không squash)', 'feature dùng Merge commit')
   eq(ids(good).includes('commits'), false, 'bugfix squash: không soi từng commit')
@@ -1881,6 +1883,27 @@ eq(baseFreshness(roundTrip, NOW).upToDate, true, 'và đọc ra đúng kết lu�
   eq(titlePattern({ route: 'env', base: 'develop' }).re.test(env), true, 'PR môi trường đúng format')
 
 
+}
+
+/* ── conflict: nhánh resolve theo mục 5 ─────────────────────────────── */
+{
+  const p = resolvePlan({ route: 'integration', head: 'ctalk/bugfix/VT-245', base: 'ctalk/develop', issueKeys: [] })
+  eq(p?.branch, 'ctalk/resolve/VT-245_ctalk-develop', 'resolve: mã task từ tên nhánh, đích làm phẳng')
+  eq(p?.commands.split('\n')[1], 'git checkout -b ctalk/resolve/VT-245_ctalk-develop origin/ctalk/bugfix/VT-245', 'resolve: tách từ nhánh gốc')
+  eq(resolvePlan({ route: 'integration', head: 'hir/feature/VT-400_profile', base: 'ctalk/develop', issueKeys: ['VT-400'] })?.branch,
+     'hir/resolve/VT-400_ctalk-develop', 'resolve: giữ team của nhánh gốc, bỏ mô tả')
+  eq(resolvePlan({ route: 'hotfix', head: 'ctalk/hotfix/VT-301', base: 'staging', issueKeys: [] })?.branch, 'ctalk/resolve/VT-301_staging', 'resolve hotfix vào staging')
+  eq(resolvePlan({ route: 'parent', head: 'ctalk/task/VT-2', base: 'ctalk/feature/VT-1', issueKeys: [] }), null, 'task con conflict nhánh cha: không cần resolve')
+}
+
+/* ── nhánh resolve giữ label của nhánh gốc ──────────────────────────── */
+{
+  const all = ['ctalk/feature/VT-4551_per-request-signature', 'ctalk/task/VT-4551_x', 'hir/feature/VT-4551', 'ctalk/resolve/VT-4551_ctalk-develop']
+  eq(originOfResolve('ctalk/resolve/VT-4551_ctalk-develop', all), 'ctalk/feature/VT-4551_per-request-signature', 'resolve: nhánh gốc cùng team, cùng mã')
+  eq(originOfResolve('ctalk/feature/VT-4551', all), '', 'không phải resolve thì không có nhánh gốc')
+  eq(labelAdvice('integration', 'ctalk/resolve/VT-4551_ctalk-develop', 'ctalk/feature/VT-4551_per-request-signature').label, 'type:feature',
+     'resolve của feature giữ type:feature')
+  eq(labelAdvice('integration', 'ctalk/resolve/VT-9_ctalk-develop').label, null, 'không tìm ra nhánh gốc thì không đoán label')
 }
 
 console.log(bad ? `\n${bad}/${n} FAILED` : `\nall ${n} ok`)

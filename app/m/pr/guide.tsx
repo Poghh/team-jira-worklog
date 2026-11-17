@@ -478,6 +478,7 @@ function Guide({ target }: { target: Target }) {
 
       {/* Gợi ý cho PR: tiêu đề và label luôn hiện — thứ cần copy nhiều nhất;
           mô tả và commit squash dài, gập lại cho checklist khỏi bị đẩy xuống. */}
+      {view.conflict && <ConflictBox view={view} conflict={view.conflict} />}
       <div className="mx-4 mt-3 flex flex-col gap-2 rounded-md bg-surface-2 px-3 py-2.5">
         <div className="flex items-start gap-2">
           <span className="w-[64px] shrink-0 pt-px text-[12px] font-semibold text-ink-2">Tiêu đề</span>
@@ -557,6 +558,62 @@ function Guide({ target }: { target: Target }) {
         ✓ ✗ app tự kiểm từ GitHub mỗi lần mở · ô vuông là tick tay, lưu theo PR (repo + nhánh nguồn + đích) · Theo “Git
         &amp; Task Management Rules”; không kiểm số approve. App không tạo hay sửa PR.
       </footer>
+    </div>
+  );
+}
+
+/**
+ * Conflict với nhánh đích và cách xử lý theo mục 5: nhánh resolve tách từ
+ * nhánh gốc, merge nhánh đích vào đó — không merge nhánh đích vào nhánh gốc.
+ */
+function ConflictBox({
+  view,
+  conflict,
+}: {
+  view: PrGuideView;
+  conflict: NonNullable<PrGuideView["conflict"]>;
+}) {
+  const r = conflict.resolve;
+  return (
+    <div className="mx-4 mt-3 flex flex-col gap-1.5 rounded-md border-l-[3px] border-warn bg-warn-soft px-3 py-2.5 text-[12.5px]">
+      <div className="font-semibold text-warn">
+        ⚠ Conflict với <code className="font-mono">{view.base}</code>
+        <span className="ml-1.5 text-[11px] font-normal text-ink-3">
+          {conflict.local ? "· thử merge dưới máy, chưa có PR" : "· GitHub báo trên PR"}
+        </span>
+      </div>
+      {conflict.files.length > 0 && (
+        <div className="text-[11.5px] text-ink-2">
+          {conflict.files.length} file:{" "}
+          <span className="font-mono">
+            {conflict.files.slice(0, 8).join(", ")}
+            {conflict.files.length > 8 ? ` … (+${conflict.files.length - 8})` : ""}
+          </span>
+        </div>
+      )}
+      {r ? (
+        <>
+          <div className="flex items-center gap-2">
+            <span className="shrink-0 text-ink-2">Nhánh resolve</span>
+            <code className="min-w-0 flex-1 break-all font-mono font-semibold">{r.branch}</code>
+            <CopyBtn text={r.branch} what="tên nhánh resolve" />
+          </div>
+          <div className="flex items-start gap-2">
+            <pre className="min-w-0 flex-1 whitespace-pre-wrap break-all font-mono text-[11.5px] text-ink-2">{r.commands}</pre>
+            <CopyBtn text={r.commands} what="lệnh tạo nhánh resolve" />
+          </div>
+          <p className="text-[11px] text-ink-3">
+            Không merge {view.base} vào nhánh gốc. {conflict.local ? "Tạo PR từ nhánh resolve" : "Đóng PR cũ, mở PR mới từ nhánh resolve"}, giữ
+            tiêu đề cũ; mô tả ghi {conflict.local ? "" : "link PR cũ, "}các file conflict và cách xử lý.
+          </p>
+        </>
+      ) : (
+        <p className="text-[11.5px] text-ink-2">
+          {view.route === "parent"
+            ? "Task con conflict với nhánh cha: rebase hoặc merge nhánh cha vào task con — không cần nhánh resolve."
+            : "PR môi trường: Tech Lead xử lý conflict giữa hai môi trường."}
+        </p>
+      )}
     </div>
   );
 }

@@ -183,6 +183,29 @@ export async function fetchFromWork(
   return (await git(repoPath, ['rev-parse', `${dst}^{commit}`])).trim()
 }
 
+/**
+ * File conflict nếu merge `origin/<head>` vào `origin/<base>` — `[]` là merge
+ * sạch. Kéo hai nhánh về rồi `git merge-tree --write-tree`: merge thử hoàn toàn
+ * trong kho object, không checkout, không đổi ref nào. Cần git ≥ 2.38.
+ */
+export async function conflictFiles(repoPath: string, baseRef: string, headRef: string): Promise<string[]> {
+  await git(
+    repoPath,
+    ['fetch', 'origin', `+refs/heads/${baseRef}:refs/remotes/origin/${baseRef}`, `+refs/heads/${headRef}:refs/remotes/origin/${headRef}`],
+    180_000,
+  )
+  try {
+    await git(repoPath, ['merge-tree', '--write-tree', '--name-only', '--no-messages', `origin/${baseRef}`, `origin/${headRef}`], 120_000)
+    return []
+  } catch (err) {
+    // Mã 1 là "có conflict": dòng đầu là tree, các dòng sau là file conflict.
+    const e = err as { code?: number; stdout?: string }
+    if (e.code === 1 && typeof e.stdout === 'string')
+      return [...new Set(e.stdout.split('\n').slice(1).map((l) => l.trim()).filter(Boolean))]
+    throw err
+  }
+}
+
 export async function fetchAll(repoPath: string) {
   await git(repoPath, ['fetch', 'origin', '+refs/heads/*:refs/remotes/origin/*'], 180_000)
 }
