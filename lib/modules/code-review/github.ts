@@ -24,6 +24,14 @@ export interface PullSummary {
   url: string
   draft: boolean
   updatedAt: string
+  /** Chỉ có ở danh sách PR đã đóng: merge rồi hay đóng bỏ. */
+  closedAs?: 'merged' | 'closed'
+  /**
+   * Đỉnh nhánh đích lúc PR còn mở. PR đã merge bằng merge commit thì head đã
+   * nằm trong nhánh đích, nên merge-base với đích hiện tại ra chính head —
+   * diff rỗng. Đo từ đỉnh cũ này mới ra đúng phần PR mang vào.
+   */
+  baseSha?: string
 }
 
 export interface PullDetail extends PullSummary {
@@ -93,8 +101,9 @@ interface RawPull {
   title: string
   user: { login: string } | null
   head: { ref: string; sha: string }
-  base: { ref: string }
+  base: { ref: string; sha: string }
   html_url: string
+  merged_at?: string | null
   draft?: boolean
   updated_at: string
   body: string | null
@@ -115,6 +124,12 @@ const toSummary = (p: RawPull): PullSummary => ({
 export async function listOpenPulls(repo: string): Promise<PullSummary[]> {
   const rows = await gh<RawPull[]>(`/repos/${repo}/pulls?state=open&per_page=50&sort=updated&direction=desc`)
   return rows.map(toSummary)
+}
+
+/** PR đã đóng hoặc đã merge, mới cập nhật trước — để liên kết làm bối cảnh. */
+export async function listClosedPulls(repo: string): Promise<PullSummary[]> {
+  const rows = await gh<RawPull[]>(`/repos/${repo}/pulls?state=closed&per_page=50&sort=updated&direction=desc`)
+  return rows.map((p) => ({ ...toSummary(p), closedAs: p.merged_at ? 'merged' : 'closed', baseSha: p.base.sha }))
 }
 
 export async function getPull(repo: string, number: number): Promise<PullDetail> {

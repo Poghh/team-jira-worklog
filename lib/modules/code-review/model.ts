@@ -340,6 +340,11 @@ export interface PrLink {
    * phải vế kia của cùng một thay đổi — prompt nói với Claude khác hẳn.
    */
   reference?: boolean
+  /**
+   * PR đã đóng / đã merge: đỉnh nhánh đích lúc PR còn mở, để diff đo từ đó —
+   * xem `PullSummary.baseSha`.
+   */
+  baseSha?: string
 }
 
 /**

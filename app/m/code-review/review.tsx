@@ -1872,6 +1872,8 @@ export function LinkPicker({
   const [repoId, setRepoId] = useState(ordered[0]?.id ?? '')
   const repo = repos.find((r) => r.id === repoId)
   const [pulls, setPulls] = useState<PullRow[]>([])
+  /** Cả PR đã đóng / đã merge — làm bối cảnh cũng được, vd PR SDK đã vào develop. */
+  const [closed, setClosed] = useState(false)
   const [pick, setPick] = useState('')
   const [head, setHead] = useState('')
   const [base, setBase] = useState('')
@@ -1892,11 +1894,11 @@ export function LinkPicker({
     setPulls([])
     setPick('')
     if (!repo?.githubRepo) return
-    void listPullsAction(repo.id).then((r) => {
-      setPulls(r.pulls)
-      setMsg(r.ok ? '' : r.message)
+    void Promise.all([listPullsAction(repo.id), closed ? listPullsAction(repo.id, 'closed') : null]).then(([o, c]) => {
+      setPulls([...o.pulls, ...(c?.pulls ?? [])])
+      setMsg(!o.ok ? o.message : c && !c.ok ? c.message : '')
     })
-  }, [repo?.id, repo?.githubRepo])
+  }, [repo?.id, repo?.githubRepo, closed])
 
   const name = (id: string) => repos.find((r) => r.id === id)?.name ?? '?'
   const add = (l: PrLink) => {
@@ -1986,20 +1988,48 @@ export function LinkPicker({
         {repo?.githubRepo ? (
           <>
             <select value={pick} onChange={(e) => setPick(e.target.value)} className={INPUT + ' w-auto max-w-[420px]'}>
-              <option value="">— Chọn PR đang mở —</option>
-              {pulls.map((p) => (
-                <option key={p.number} value={p.number}>
-                  #{p.number} {p.title.slice(0, 70)}
-                </option>
-              ))}
+              <option value="">{closed ? '— Chọn PR —' : '— Chọn PR đang mở —'}</option>
+              <optgroup label="Đang mở">
+                {pulls
+                  .filter((p) => !p.closedAs)
+                  .map((p) => (
+                    <option key={p.number} value={p.number}>
+                      #{p.number} {p.title.slice(0, 70)}
+                    </option>
+                  ))}
+              </optgroup>
+              {closed && (
+                <optgroup label="Đã đóng / đã merge">
+                  {pulls
+                    .filter((p) => p.closedAs)
+                    .map((p) => (
+                      <option key={p.number} value={p.number}>
+                        #{p.number} {p.title.slice(0, 64)} · {p.closedAs === 'merged' ? 'đã merge' : 'đã đóng'}
+                      </option>
+                    ))}
+                </optgroup>
+              )}
             </select>
+            <label className="flex items-center gap-1 text-[12px] text-ink-2">
+              <input type="checkbox" checked={closed} onChange={(e) => setClosed(e.target.checked)} />
+              Cả PR đã đóng
+            </label>
             <button
               type="button"
               className={BTN}
               disabled={!pick}
               onClick={() => {
                 const p = pulls.find((x) => String(x.number) === pick)
-                if (p) add({ repoId, prNumber: p.number, headRef: p.headRef, baseRef: p.baseRef, title: p.title, url: p.url })
+                if (p)
+                  add({
+                    repoId,
+                    prNumber: p.number,
+                    headRef: p.headRef,
+                    baseRef: p.baseRef,
+                    title: p.closedAs ? `${p.title} (${p.closedAs === 'merged' ? 'đã merge' : 'đã đóng'})` : p.title,
+                    url: p.url,
+                    ...(p.baseSha ? { baseSha: p.baseSha } : {}),
+                  })
               }}
             >
               + Liên kết

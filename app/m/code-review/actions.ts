@@ -30,6 +30,7 @@ import {
   type PullSummary,
   type ReviewEvent,
   getDiscussion,
+  listClosedPulls,
   listOpenPulls,
   postInlineComment,
   postIssueComment,
@@ -117,13 +118,17 @@ export interface PullRow extends PullSummary {
   live: boolean
 }
 
-export async function listPullsAction(repoId: string): Promise<Result & { pulls: PullRow[] }> {
+export async function listPullsAction(
+  repoId: string,
+  /** `closed`: PR đã đóng / đã merge — chỉ để liên kết làm bối cảnh. */
+  state: 'open' | 'closed' = 'open',
+): Promise<Result & { pulls: PullRow[] }> {
   if (!enabled()) return { ...OFF, pulls: [] }
   const repo = getRepo(repoId)
   if (!repo) return { ok: false, message: 'Không thấy repo.', pulls: [] }
   if (!repo.githubRepo) return { ok: false, message: 'Repo này chưa điền owner/name GitHub.', pulls: [] }
   try {
-    const pulls = await listOpenPulls(repo.githubRepo)
+    const pulls = state === 'closed' ? await listClosedPulls(repo.githubRepo) : await listOpenPulls(repo.githubRepo)
     return {
       ok: true,
       message: '',
