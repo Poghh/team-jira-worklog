@@ -38,7 +38,7 @@ import {
   sdkVersionMatches,
   titlePattern,
 } from '@/lib/modules/pr/checklist'
-import { changesFromCommits, cleanSummary, suggestPrBody, suggestPrTitle, suggestSquashMessage } from '@/lib/modules/pr/suggest'
+import { changesFromCommits, cleanSummary, commitHeadline, suggestPrBody, suggestPrTitle, suggestSquashMessage } from '@/lib/modules/pr/suggest'
 import {
   nextEnvToRequest,
   DEFAULT_STAGES,
@@ -1953,6 +1953,23 @@ eq(baseFreshness(roundTrip, NOW).upToDate, true, 'và đọc ra đúng kết lu�
   eq(suggestPrTitle({ ...p, issues: [task] }), '[Feature] Per-request Signature For Trusted Device (VT-6469)', 'task thường: vẫn lấy FR')
   eq(suggestSquashMessage({ ...p, issues: [bug] }).split('\n')[0], 'fix: Face ID prompts twice on unlock', 'task bug: commit fix')
   eq(suggestSquashMessage({ ...p, issues: [task] }).split('\n')[0].startsWith('feat:'), true, 'task thường vào feature: feat')
+}
+
+/* ── tiêu đề theo commit ──────────────────────────────────────────── */
+{
+  // Thật, 26/11: VT-6469 (Bug) "Verify FaceID 3 lần mới vào được Homechat…",
+  // nhánh có đúng một commit.
+  const h = commitHeadline(['fix: skip auth-protected items when listing keychain keys'])
+  eq(h, { text: 'Skip auth-protected items when listing keychain keys', type: 'fix' }, 'bỏ type, viết hoa đầu, giữ loại')
+  eq(commitHeadline(["Merge branch 'x'", 'chore: tidy', 'feat(auth): add biometric gate\n\nRef: VT-1'])?.text, 'Add biometric gate',
+     'bỏ merge, ưu tiên commit fix/feat')
+  eq(commitHeadline(['update things'])?.type, '', 'commit không theo mục 3 thì không có loại')
+  eq(commitHeadline([]), null, 'không có commit')
+  const p = { route: 'parent' as const, head: 'ctalk/task/VT-6469_face-id-prompts', base: 'ctalk/feature/VT-4551_x',
+    parentBranch: 'ctalk/feature/VT-4551_x', issues: [{ key: 'VT-6469', summary: 'Verify FaceID 3 lần', url: 'u', type: 'Bug' }] }
+  eq(suggestPrTitle({ ...p, text: h!.text }), '[Feature] Skip auth-protected items when listing keychain keys (VT-6469)', 'tiêu đề theo commit')
+  eq(suggestSquashMessage({ ...p, text: h!.text, type: h!.type }),
+     'fix: Skip auth-protected items when listing keychain keys\n\nRef: VT-6469', 'squash theo commit')
 }
 
 console.log(bad ? `\n${bad}/${n} FAILED` : `\nall ${n} ok`)

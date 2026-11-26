@@ -396,6 +396,8 @@ function CompareBar({
 /** Checklist cho đúng một PR. Gắn `key` theo PR để đổi PR là làm mới hết. */
 function Guide({ target }: { target: Target }) {
   const [view, setView] = useState<PrGuideView | null>(null);
+  /** Chọn nguồn tiêu đề — gắn với đúng view đã chọn, đọc lại thì về mặc định của view mới. */
+  const [pick, setPick] = useState<{ view: PrGuideView; commit: boolean } | null>(null);
   const [error, setError] = useState("");
   const [pending, start] = useTransition();
 
@@ -429,6 +431,10 @@ function Guide({ target }: { target: Target }) {
       </div>
     );
 
+  const byCommit = Boolean(view.byCommit) && (pick?.view === view ? pick.commit : view.preferCommit);
+  const title = byCommit && view.byCommit ? view.byCommit.title : view.suggestedTitle;
+  // PR dùng Merge commit thì không có commit squash, dù tiêu đề lấy từ đâu.
+  const squash = view.squashMessage && byCommit && view.byCommit?.squash ? view.byCommit.squash : view.squashMessage;
   const ticked = new Set(view.ticked);
   const prog = checklistProgress(view.items, ticked);
   const sections = (["before", "open", "merge", "after"] as const).filter((s) =>
@@ -487,12 +493,32 @@ function Guide({ target }: { target: Target }) {
         <div className="flex items-start gap-2">
           <span className="w-[64px] shrink-0 pt-px text-[12px] font-semibold text-ink-2">Tiêu đề</span>
           <span className="min-w-0 flex-1">
-            <code className="break-words font-mono text-[12.5px]">{view.suggestedTitle}</code>
+            <code className="break-words font-mono text-[12.5px]">{title}</code>
+            {view.byCommit && (
+              <span className="mt-1 flex items-center gap-1 text-[11px]">
+                <span className="text-ink-3">Theo</span>
+                {([false, true] as const).map((c) => (
+                  <button
+                    key={String(c)}
+                    type="button"
+                    onClick={() => setPick({ view, commit: c })}
+                    className={
+                      "rounded border px-1.5 " +
+                      (c === byCommit ? "border-line-strong bg-surface font-semibold text-ink" : "border-line text-ink-3 hover:bg-surface")
+                    }
+                  >
+                    {c ? "Commit" : "Jira"}
+                  </button>
+                ))}
+              </span>
+            )}
             <span
               className="mt-0.5 block text-[11px] text-ink-3"
               title={`Mẫu: ${view.titleSample}`}
             >
-              {view.titleFromBug ? (
+              {byCommit ? (
+                "từ commit của nhánh — sửa lại cho gọn nếu cần"
+              ) : view.titleFromBug ? (
                 <>
                   từ task bug{" "}
                   <a href={view.titleFromBug.url} target="_blank" rel="noreferrer" className="underline hover:text-ink-2">
@@ -529,7 +555,7 @@ function Guide({ target }: { target: Target }) {
               </span>
             )}
           </span>
-          <CopyBtn text={view.suggestedTitle} what="tiêu đề PR" />
+          <CopyBtn text={title} what="tiêu đề PR" />
         </div>
         <div className="flex items-center gap-2">
           <span className="w-[64px] shrink-0 text-[12px] font-semibold text-ink-2">Label</span>
@@ -548,18 +574,18 @@ function Guide({ target }: { target: Target }) {
           </span>
         </div>
         {view.body && <BodySuggestion view={view} input={view.body} />}
-        {view.squashMessage && (
+        {squash && (
           <details className="group border-t border-line pt-2">
             <summary className="flex cursor-pointer list-none items-center gap-2 text-[12px] font-semibold text-ink-2">
               <span className="text-ink-3 group-open:rotate-90">▸</span>
               <span className="flex-1">Commit khi Squash and merge</span>
               {/* Copy không được bật/tắt khối gập. */}
               <span onClick={(e) => e.preventDefault()}>
-                <CopyBtn text={view.squashMessage} what="commit message" />
+                <CopyBtn text={squash} what="commit message" />
               </span>
             </summary>
             <pre className="mt-1 whitespace-pre-wrap break-words font-mono text-[12px] text-ink-2">
-              {view.squashMessage}
+              {squash}
             </pre>
             <p className="text-[11px] text-ink-3">
               Thay nội dung GitHub điền sẵn: dòng đầu vào ô tiêu đề, phần còn lại vào ô mô tả.

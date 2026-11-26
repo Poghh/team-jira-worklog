@@ -30,6 +30,7 @@ import {
   type IssueRef,
   bugIssue,
   changesFromCommits,
+  commitHeadline,
   suggestPrBody,
   suggestPrTitle,
   suggestSquashMessage,
@@ -54,6 +55,13 @@ export interface PrGuideView {
   issues: IssueRef[];
   /** Task bug mà thân tiêu đề lấy tên; `null` khi tiêu đề lấy từ FR hay task thường. */
   titleFromBug: IssueRef | null;
+  /**
+   * Tiêu đề và commit squash dựng từ commit của nhánh thay vì summary Jira.
+   * `null` khi không có commit (PR môi trường, nhánh chưa có gì khác đích).
+   */
+  byCommit: { text: string; title: string; squash: string | null } | null;
+  /** Mặc định hiện bản theo commit — task bug: summary Jira tả triệu chứng, commit nói việc đã sửa. */
+  preferCommit: boolean;
   /**
    * Đầu vào của khung mô tả PR (`suggestPrBody`) — trình duyệt tự dựng lại khi
    * người dùng đổi danh sách thay đổi (vd. nhờ Claude đọc diff). `null` khi
@@ -196,6 +204,8 @@ export async function prGuideAction(input: {
       sdkChanged,
       envFrom: envFrom || undefined,
     };
+    const titleIn = { route, head, base, parentBranch: ctx.parentBranch, issues, feature, fallback: card?.title };
+    const headline = route === "env" ? null : commitHeadline(commits);
     const conflicting = gh.facts ? gh.facts.mergeable === "CONFLICTING" : Boolean(localConflicts?.length);
     return {
       ok: true,
@@ -208,15 +218,7 @@ export async function prGuideAction(input: {
         items: buildChecklist(ctx, gh.facts),
         ticked: getPrChecks(pair),
         pr: gh.facts ? { number: gh.facts.number, url: gh.facts.url, state: gh.facts.state } : null,
-        suggestedTitle: suggestPrTitle({
-          route,
-          head,
-          base,
-          parentBranch: ctx.parentBranch,
-          issues,
-          feature,
-          fallback: card?.title,
-        }),
+        suggestedTitle: suggestPrTitle(titleIn),
         feature: frRef,
         issues,
         titleFromBug: route === "env" ? null : bugIssue(issues),
@@ -227,6 +229,24 @@ export async function prGuideAction(input: {
         squashMessage: usesSquash(route, origin || head)
           ? suggestSquashMessage({ route, head: origin || head, parentBranch: ctx.parentBranch, issues, feature, fallback: card?.title })
           : null,
+        byCommit: headline
+          ? {
+              text: headline.text,
+              title: suggestPrTitle({ ...titleIn, text: headline.text }),
+              squash: usesSquash(route, origin || head)
+                ? suggestSquashMessage({
+                    route,
+                    head: origin || head,
+                    parentBranch: ctx.parentBranch,
+                    issues,
+                    feature,
+                    text: headline.text,
+                    type: headline.type || undefined,
+                  })
+                : null,
+            }
+          : null,
+        preferCommit: Boolean(headline && bugIssue(issues)),
         body:
           route === "env"
             ? null
