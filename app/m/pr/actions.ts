@@ -146,11 +146,19 @@ export async function prGuideAction(input: {
         localConflicts = await withRepoLock(clone, () => conflictFiles(clone, base, head)).catch(() => undefined);
     }
     // Commit của PR; chưa có PR thì so nhánh như trang compare của GitHub.
-    const commits =
-      route === "env"
-        ? []
-        : (gh.facts?.commits ??
-          (gh.headExists ? ((await fetchCompare(cfg.token, repo, base, head).catch(() => null))?.commits ?? []) : []));
+    // Chưa có PR thì so nhánh như trang compare của GitHub: commit và file.
+    const compare = !gh.facts && gh.headExists ? await fetchCompare(cfg.token, repo, base, head).catch(() => null) : null;
+    const commits = route === "env" ? [] : (gh.facts?.commits ?? compare?.commits ?? []);
+    // PR có đổi project.yml không. Danh sách file bị GitHub cắt (100 file của
+    // PR, 300 của compare) thì không kết luận được — để trống.
+    const paths = gh.facts
+      ? gh.facts.changedFiles > gh.facts.files.length
+        ? null
+        : gh.facts.files.map((f) => f.path)
+      : compare && compare.files.length < 300
+        ? compare.files.map((f) => f.path)
+        : null;
+    const sdkChanged = paths ? paths.some((p) => /(^|\/)project\.yml$/.test(p)) : undefined;
     const pair = { repo, head, base };
     const ctx = {
       repo,
@@ -166,6 +174,7 @@ export async function prGuideAction(input: {
       headGone: !gh.headExists,
       localConflicts,
       originBranch: origin || undefined,
+      sdkChanged,
     };
     const conflicting = gh.facts ? gh.facts.mergeable === "CONFLICTING" : Boolean(localConflicts?.length);
     return {

@@ -1907,6 +1907,18 @@ eq(baseFreshness(roundTrip, NOW).upToDate, true, 'và đọc ra đúng kết lu�
   eq(labelAdvice('integration', 'ctalk/resolve/VT-9_ctalk-develop').label, null, 'không tìm ra nhánh gốc thì không đoán label')
 }
 
+/* ── phiên bản SDK chỉ kiểm khi PR đổi project.yml ──────────────────── */
+{
+  // Thật: PR #1976 từ nhánh feature tách master (`2026.11.15`) vào ctalk/develop,
+  // không đổi project.yml — develop giữ `…-ctalkdev.1`, không có gì sai.
+  const base = { repo: 'o/ios', head: 'ctalk/feature/VT-2323_x', base: 'ctalk/develop', route: 'integration' as const,
+    behind: 0, sdkVersion: '2026.11.15', issueKeys: ['VT-2323'] }
+  const st = (sdkChanged?: boolean) => buildChecklist({ ...base, sdkChanged }, null).find((i) => i.id === 'sdk-version')?.state
+  eq(st(false), 'ok', 'PR không đổi project.yml thì không bắt lỗi phiên bản nguồn')
+  eq(st(true), 'fail', 'PR đổi project.yml thì phiên bản phải đúng môi trường đích')
+  eq(st(undefined), 'fail', 'không biết PR có đổi không thì kiểm như cũ')
+}
+
 /* ── bản build chỉ ghi tên FR, không mã, không số ───────────────────── */
 {
   // Thật, 25/11: build develop 20261125095920 ghi "CTalk: FR Defect Detection
