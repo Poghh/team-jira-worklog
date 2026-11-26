@@ -5,6 +5,7 @@ import { getGitHubConfig } from "@/lib/modules/branches/config";
 import { fetchPrsByNumber } from "@/lib/modules/branches/github";
 import { cardLadder, envSteps } from "@/lib/modules/branches/model";
 import { listTaskNotes } from "@/lib/modules/branches/store";
+import { getReviewConfig } from "@/lib/modules/code-review/config";
 import { isModuleEnabled } from "@/lib/modules/state";
 
 import { type PrEntry, PrGuide } from "./guide";
@@ -100,9 +101,18 @@ export default async function PrPage({
     initial = { issueKey: "", title: "", repo, branch: one(sp.head), bases: [], base: wantBase, pr: null };
   }
 
+  /* Repo của bảng Nhánh, rồi tới repo khai ở Code review mà bảng không quét
+     (vd. viptalk-ios Classic) — soát PR được mà không phải bày nhánh của nó
+     lên bảng. Repo khai ở Code review còn có bản clone để kiểm conflict. */
+  const repos = [...gh.repos];
+  for (const r of getReviewConfig().repos) {
+    const name = r.githubRepo.trim();
+    if (name && !repos.includes(name)) repos.push(name);
+  }
+
   return (
     <ModuleGate id="pr">
-      <PrGuide open={open} todo={todo} repos={gh.repos} initial={initial} freshDays={FRESH_DAYS} />
+      <PrGuide open={open} todo={todo} repos={repos} initial={initial} freshDays={FRESH_DAYS} />
     </ModuleGate>
   );
 }
