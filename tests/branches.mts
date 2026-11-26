@@ -38,7 +38,7 @@ import {
   sdkVersionMatches,
   titlePattern,
 } from '@/lib/modules/pr/checklist'
-import { changesFromCommits, cleanSummary, suggestPrBody, suggestPrTitle, suggestSquashMessage } from '@/lib/modules/pr/suggest'
+import { changesFromCommits, cleanSummary, commitHeadline, suggestPrBody, suggestPrTitle, suggestSquashMessage } from '@/lib/modules/pr/suggest'
 import {
   nextEnvToRequest,
   DEFAULT_STAGES,
@@ -89,6 +89,7 @@ import {
   buildCarries,
   cardsInBuild,
   frTokens,
+  workName,
   joinBuilds,
   newBuilds,
   parseBuildNumber,
@@ -1904,6 +1905,71 @@ eq(baseFreshness(roundTrip, NOW).upToDate, true, 'và đọc ra đúng kết lu�
   eq(labelAdvice('integration', 'ctalk/resolve/VT-4551_ctalk-develop', 'ctalk/feature/VT-4551_per-request-signature').label, 'type:feature',
      'resolve của feature giữ type:feature')
   eq(labelAdvice('integration', 'ctalk/resolve/VT-9_ctalk-develop').label, null, 'không tìm ra nhánh gốc thì không đoán label')
+}
+
+/* ── phiên bản SDK chỉ kiểm khi PR đổi project.yml ──────────────────── */
+{
+  // Thật: PR #1976 từ nhánh feature tách master (`2026.11.15`) vào ctalk/develop,
+  // không đổi project.yml — develop giữ `…-ctalkdev.1`, không có gì sai.
+  const base = { repo: 'o/ios', head: 'ctalk/feature/VT-2323_x', base: 'ctalk/develop', route: 'integration' as const,
+    behind: 0, sdkVersion: '2026.11.15', issueKeys: ['VT-2323'] }
+  const st = (sdkChanged?: boolean) => buildChecklist({ ...base, sdkChanged }, null).find((i) => i.id === 'sdk-version')?.state
+  eq(st(false), 'ok', 'PR không đổi project.yml thì không bắt lỗi phiên bản nguồn')
+  eq(st(true), 'fail', 'PR đổi project.yml thì phiên bản phải đúng môi trường đích')
+  eq(st(undefined), 'fail', 'không biết PR có đổi không thì kiểm như cũ')
+}
+
+/* ── nhánh làm việc gõ tay vào môi trường bị báo sai đích ──────────── */
+{
+  const ctx = (head: string) => ({ repo: 'o/ios', head, base: 'develop', route: 'env' as const,
+    behind: null, sdkVersion: null, issueKeys: [], envFrom: 'ctalk/develop' })
+  const item = (head: string) => buildChecklist(ctx(head), null).find((i) => i.id === 'env-source')
+  eq(item('cxp/bugfix/fix-unitest')?.state, 'fail', 'nhánh làm việc PR vào develop là sai đích')
+  eq(item('ctalk/develop'), undefined, 'ctalk/develop → develop là PR môi trường đúng')
+}
+
+/* ── bản build chỉ ghi tên FR, không mã, không số ───────────────────── */
+{
+  // Thật, 25/11: build develop 20261125095920 ghi "CTalk: FR Defect Detection
+  // & Fixing - iPhone Duo / iOS 27"; card VT-2323 mang summary Jira.
+  const card = (id: number, title: string) => ({ id, issueKeys: ['VT-' + id], title, sides: [{ branch: 'x' }] })
+  const duo = card(2323, '[CTALK][iOS Lite] Defect Detection & Fixing – iPhone Duo / iOS 27')
+  const other = card(4553, 'VT 4553 refresh token')
+  const note = '- CTalk: FR Defect Detection & Fixing - iPhone Duo / iOS 27'
+  eq(workName(duo.title), workName('FR Defect Detection & Fixing - iPhone Duo / iOS 27'), 'nhãn, chữ FR, kiểu gạch nối không tính')
+  eq(cardsInBuild([duo, other], B(note), P).map((c) => c.id), [2323], 'ghi chú chỉ có tên FR khớp đúng card')
+  eq(cardsInBuild([duo, card(9, duo.title)], B(note), P).map((c) => c.id), [], 'hai card trùng tên thì không gắn')
+  eq(cardsInBuild([card(1, 'Fix bug')], B('- CTalk: Fix bug'), P).map((c) => c.id), [], 'tên quá ngắn không khớp')
+}
+
+/* ── task bug vào nhánh feature: tên task, commit fix ─────────────── */
+{
+  const fr = { key: 'VT-4551', summary: '[CTALK] Per-request Signature For Trusted Device' }
+  const bug = { key: 'VT-6469', summary: '[iOS] Face ID prompts twice on unlock', url: 'u', type: 'Bug' }
+  const task = { ...bug, type: 'Task' }
+  const p = { route: 'parent' as const, head: 'ctalk/task/VT-6469_face-id-prompts', base: 'ctalk/feature/VT-4551_x',
+    parentBranch: 'ctalk/feature/VT-4551_x', feature: fr }
+  eq(suggestPrTitle({ ...p, issues: [bug] }), '[Feature] Face ID prompts twice on unlock (VT-6469)', 'task bug: tiêu đề lấy tên task')
+  eq(suggestPrTitle({ ...p, issues: [task] }), '[Feature] Per-request Signature For Trusted Device (VT-6469)', 'task thường: vẫn lấy FR')
+  eq(suggestSquashMessage({ ...p, issues: [bug] }).split('\n')[0], 'fix: Face ID prompts twice on unlock', 'task bug: commit fix')
+  eq(suggestSquashMessage({ ...p, issues: [task] }).split('\n')[0].startsWith('feat:'), true, 'task thường vào feature: feat')
+}
+
+/* ── tiêu đề theo commit ──────────────────────────────────────────── */
+{
+  // Thật, 26/11: VT-6469 (Bug) "Verify FaceID 3 lần mới vào được Homechat…",
+  // nhánh có đúng một commit.
+  const h = commitHeadline(['fix: skip auth-protected items when listing keychain keys'])
+  eq(h, { text: 'Skip auth-protected items when listing keychain keys', type: 'fix' }, 'bỏ type, viết hoa đầu, giữ loại')
+  eq(commitHeadline(["Merge branch 'x'", 'chore: tidy', 'feat(auth): add biometric gate\n\nRef: VT-1'])?.text, 'Add biometric gate',
+     'bỏ merge, ưu tiên commit fix/feat')
+  eq(commitHeadline(['update things'])?.type, '', 'commit không theo mục 3 thì không có loại')
+  eq(commitHeadline([]), null, 'không có commit')
+  const p = { route: 'parent' as const, head: 'ctalk/task/VT-6469_face-id-prompts', base: 'ctalk/feature/VT-4551_x',
+    parentBranch: 'ctalk/feature/VT-4551_x', issues: [{ key: 'VT-6469', summary: 'Verify FaceID 3 lần', url: 'u', type: 'Bug' }] }
+  eq(suggestPrTitle({ ...p, text: h!.text }), '[Feature] Skip auth-protected items when listing keychain keys (VT-6469)', 'tiêu đề theo commit')
+  eq(suggestSquashMessage({ ...p, text: h!.text, type: h!.type }),
+     'fix: Skip auth-protected items when listing keychain keys\n\nRef: VT-6469', 'squash theo commit')
 }
 
 console.log(bad ? `\n${bad}/${n} FAILED` : `\nall ${n} ok`)

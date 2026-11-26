@@ -17,7 +17,7 @@ import {
   SECTION_TITLES,
   checklistProgress,
 } from "@/lib/modules/pr/checklist";
-import { cleanSummary, suggestPrBody } from "@/lib/modules/pr/suggest";
+import { cleanSummary, isBugType, suggestPrBody } from "@/lib/modules/pr/suggest";
 
 /** Một dòng trong danh sách: một PR đã có, hoặc một PR nên tạo. */
 export interface PrEntry {
@@ -396,6 +396,8 @@ function CompareBar({
 /** Checklist cho đúng một PR. Gắn `key` theo PR để đổi PR là làm mới hết. */
 function Guide({ target }: { target: Target }) {
   const [view, setView] = useState<PrGuideView | null>(null);
+  /** Chọn nguồn tiêu đề — gắn với đúng view đã chọn, đọc lại thì về mặc định của view mới. */
+  const [pick, setPick] = useState<{ view: PrGuideView; commit: boolean } | null>(null);
   const [error, setError] = useState("");
   const [pending, start] = useTransition();
 
@@ -429,6 +431,10 @@ function Guide({ target }: { target: Target }) {
       </div>
     );
 
+  const byCommit = Boolean(view.byCommit) && (pick?.view === view ? pick.commit : view.preferCommit);
+  const title = byCommit && view.byCommit ? view.byCommit.title : view.suggestedTitle;
+  // PR dùng Merge commit thì không có commit squash, dù tiêu đề lấy từ đâu.
+  const squash = view.squashMessage && byCommit && view.byCommit?.squash ? view.byCommit.squash : view.squashMessage;
   const ticked = new Set(view.ticked);
   const prog = checklistProgress(view.items, ticked);
   const sections = (["before", "open", "merge", "after"] as const).filter((s) =>
@@ -478,17 +484,49 @@ function Guide({ target }: { target: Target }) {
 
       {/* Gợi ý cho PR: tiêu đề và label luôn hiện — thứ cần copy nhiều nhất;
           mô tả và commit squash dài, gập lại cho checklist khỏi bị đẩy xuống. */}
-      {view.conflict && <ConflictBox view={view} conflict={view.conflict} />}
+      {view.conflict ? (
+        <ConflictBox view={view} conflict={view.conflict} />
+      ) : (
+        view.resolve && <ResolveHint key={view.resolve.branch} view={view} plan={view.resolve} />
+      )}
       <div className="mx-4 mt-3 flex flex-col gap-2 rounded-md bg-surface-2 px-3 py-2.5">
         <div className="flex items-start gap-2">
           <span className="w-[64px] shrink-0 pt-px text-[12px] font-semibold text-ink-2">Tiêu đề</span>
           <span className="min-w-0 flex-1">
-            <code className="break-words font-mono text-[12.5px]">{view.suggestedTitle}</code>
+            <code className="break-words font-mono text-[12.5px]">{title}</code>
+            {view.byCommit && (
+              <span className="mt-1 flex items-center gap-1 text-[11px]">
+                <span className="text-ink-3">Theo</span>
+                {([false, true] as const).map((c) => (
+                  <button
+                    key={String(c)}
+                    type="button"
+                    onClick={() => setPick({ view, commit: c })}
+                    className={
+                      "rounded border px-1.5 " +
+                      (c === byCommit ? "border-line-strong bg-surface font-semibold text-ink" : "border-line text-ink-3 hover:bg-surface")
+                    }
+                  >
+                    {c ? "Commit" : "Jira"}
+                  </button>
+                ))}
+              </span>
+            )}
             <span
               className="mt-0.5 block text-[11px] text-ink-3"
               title={`Mẫu: ${view.titleSample}`}
             >
-              {view.feature ? (
+              {byCommit ? (
+                "từ commit của nhánh — sửa lại cho gọn nếu cần"
+              ) : view.titleFromBug ? (
+                <>
+                  từ task bug{" "}
+                  <a href={view.titleFromBug.url} target="_blank" rel="noreferrer" className="underline hover:text-ink-2">
+                    {view.titleFromBug.key}
+                  </a>{" "}
+                  — PR sửa lỗi lấy tên task, không lấy FR
+                </>
+              ) : view.feature ? (
                 <>
                   từ FR{" "}
                   <a href={view.feature.url} target="_blank" rel="noreferrer" className="underline hover:text-ink-2">
@@ -500,8 +538,24 @@ function Guide({ target }: { target: Target }) {
                 "từ summary task — không tìm thấy FR (Epic)"
               )}
             </span>
+            {view.issues.some((i) => i.type) && (
+              <span className="mt-0.5 flex flex-wrap gap-x-2 text-[11px] text-ink-3">
+                {view.issues.map((i) => (
+                  <span key={i.key}>
+                    <a href={i.url} target="_blank" rel="noreferrer" className="font-mono hover:underline">
+                      {i.key}
+                    </a>
+                    {i.type && (
+                      <span className={isBugType(i.type) ? "ml-1 rounded bg-crit-soft px-1 text-crit" : "ml-1"}>
+                        · {i.type}
+                      </span>
+                    )}
+                  </span>
+                ))}
+              </span>
+            )}
           </span>
-          <CopyBtn text={view.suggestedTitle} what="tiêu đề PR" />
+          <CopyBtn text={title} what="tiêu đề PR" />
         </div>
         <div className="flex items-center gap-2">
           <span className="w-[64px] shrink-0 text-[12px] font-semibold text-ink-2">Label</span>
@@ -520,18 +574,18 @@ function Guide({ target }: { target: Target }) {
           </span>
         </div>
         {view.body && <BodySuggestion view={view} input={view.body} />}
-        {view.squashMessage && (
+        {squash && (
           <details className="group border-t border-line pt-2">
             <summary className="flex cursor-pointer list-none items-center gap-2 text-[12px] font-semibold text-ink-2">
               <span className="text-ink-3 group-open:rotate-90">▸</span>
               <span className="flex-1">Commit khi Squash and merge</span>
               {/* Copy không được bật/tắt khối gập. */}
               <span onClick={(e) => e.preventDefault()}>
-                <CopyBtn text={view.squashMessage} what="commit message" />
+                <CopyBtn text={squash} what="commit message" />
               </span>
             </summary>
             <pre className="mt-1 whitespace-pre-wrap break-words font-mono text-[12px] text-ink-2">
-              {view.squashMessage}
+              {squash}
             </pre>
             <p className="text-[11px] text-ink-3">
               Thay nội dung GitHub điền sẵn: dòng đầu vào ô tiêu đề, phần còn lại vào ô mô tả.
@@ -558,6 +612,60 @@ function Guide({ target }: { target: Target }) {
         ✓ ✗ app tự kiểm từ GitHub mỗi lần mở · ô vuông là tick tay, lưu theo PR (repo + nhánh nguồn + đích) · Theo “Git
         &amp; Task Management Rules”; không kiểm số approve. App không tạo hay sửa PR.
       </footer>
+    </div>
+  );
+}
+
+/** Tên nhánh resolve và lệnh tạo nó, mỗi thứ một nút copy. */
+function ResolveSteps({ plan }: { plan: NonNullable<PrGuideView["resolve"]> }) {
+  return (
+    <>
+      <div className="flex items-center gap-2">
+        <span className="shrink-0 text-ink-2">Nhánh resolve</span>
+        <code className="min-w-0 flex-1 break-all font-mono font-semibold">{plan.branch}</code>
+        <CopyBtn text={plan.branch} what="tên nhánh resolve" />
+      </div>
+      <div className="flex items-start gap-2">
+        <pre className="min-w-0 flex-1 whitespace-pre-wrap break-all font-mono text-[11.5px] text-ink-2">{plan.commands}</pre>
+        <CopyBtn text={plan.commands} what="lệnh tạo nhánh resolve" />
+      </div>
+    </>
+  );
+}
+
+/**
+ * Nút xem trước nhánh resolve khi app chưa thấy conflict — conflict có thể
+ * chỉ hiện lúc bấm merge trên GitHub, hoặc app không đo được (không có clone).
+ */
+function ResolveHint({ view, plan }: { view: PrGuideView; plan: NonNullable<PrGuideView["resolve"]> }) {
+  const [open, setOpen] = useState(false);
+  if (!open)
+    return (
+      <div className="mx-4 mt-3">
+        <button
+          type="button"
+          onClick={() => setOpen(true)}
+          className="rounded-md border border-line px-2 py-0.5 text-[12px] text-ink-2 hover:bg-surface-2"
+        >
+          ⑂ Gợi ý nhánh resolve
+        </button>
+      </div>
+    );
+  return (
+    <div className="mx-4 mt-3 flex flex-col gap-1.5 rounded-md border border-line px-3 py-2.5 text-[12.5px]">
+      <div className="flex items-center gap-2">
+        <span className="flex-1 font-semibold text-ink-2">
+          Nếu conflict với <code className="font-mono">{view.base}</code>
+        </span>
+        <button type="button" onClick={() => setOpen(false)} className="text-[11px] text-ink-3 hover:text-ink">
+          Thu gọn
+        </button>
+      </div>
+      <ResolveSteps plan={plan} />
+      <p className="text-[11px] text-ink-3">
+        Theo mục 5: tách từ nhánh gốc, merge {view.base} vào nhánh resolve rồi PR nhánh resolve — không merge {view.base} vào
+        nhánh gốc. PR resolve giữ tiêu đề, label và cách merge của nhánh gốc.
+      </p>
     </div>
   );
 }
@@ -593,15 +701,7 @@ function ConflictBox({
       )}
       {r ? (
         <>
-          <div className="flex items-center gap-2">
-            <span className="shrink-0 text-ink-2">Nhánh resolve</span>
-            <code className="min-w-0 flex-1 break-all font-mono font-semibold">{r.branch}</code>
-            <CopyBtn text={r.branch} what="tên nhánh resolve" />
-          </div>
-          <div className="flex items-start gap-2">
-            <pre className="min-w-0 flex-1 whitespace-pre-wrap break-all font-mono text-[11.5px] text-ink-2">{r.commands}</pre>
-            <CopyBtn text={r.commands} what="lệnh tạo nhánh resolve" />
-          </div>
+          <ResolveSteps plan={r} />
           <p className="text-[11px] text-ink-3">
             Không merge {view.base} vào nhánh gốc. {conflict.local ? "Tạo PR từ nhánh resolve" : "Đóng PR cũ, mở PR mới từ nhánh resolve"}, giữ
             tiêu đề cũ; mô tả ghi {conflict.local ? "" : "link PR cũ, "}các file conflict và cách xử lý.

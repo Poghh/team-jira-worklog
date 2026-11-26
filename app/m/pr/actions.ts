@@ -28,7 +28,9 @@ import { getReviewConfig } from "@/lib/modules/code-review/config";
 import { conflictFiles, withRepoLock } from "@/lib/modules/code-review/git";
 import {
   type IssueRef,
+  bugIssue,
   changesFromCommits,
+  commitHeadline,
   suggestPrBody,
   suggestPrTitle,
   suggestSquashMessage,
@@ -49,6 +51,17 @@ export interface PrGuideView {
   suggestedTitle: string;
   /** FR (Epic Jira) mà thân tiêu đề gợi ý lấy từ; `null` khi không tìm được. */
   feature: { key: string; summary: string; url: string } | null;
+  /** Task của PR kèm loại Jira — hiện cạnh tiêu đề. */
+  issues: IssueRef[];
+  /** Task bug mà thân tiêu đề lấy tên; `null` khi tiêu đề lấy từ FR hay task thường. */
+  titleFromBug: IssueRef | null;
+  /**
+   * Tiêu đề và commit squash dựng từ commit của nhánh thay vì summary Jira.
+   * `null` khi không có commit (PR môi trường, nhánh chưa có gì khác đích).
+   */
+  byCommit: { text: string; title: string; squash: string | null } | null;
+  /** Mặc định hiện bản theo commit — task bug: summary Jira tả triệu chứng, commit nói việc đã sửa. */
+  preferCommit: boolean;
   /**
    * Đầu vào của khung mô tả PR (`suggestPrBody`) — trình duyệt tự dựng lại khi
    * người dùng đổi danh sách thay đổi (vd. nhờ Claude đọc diff). `null` khi
@@ -61,6 +74,12 @@ export interface PrGuideView {
    * conflict cách khác). `null` cả cụm khi không conflict hoặc chưa biết.
    */
   conflict: { files: string[]; local: boolean; resolve: ResolvePlan | null } | null;
+  /**
+   * Nhánh resolve của PR này theo mục 5, có conflict hay chưa — để bấm xem
+   * trước. `null` khi đường này không dùng nhánh resolve (task con, môi trường,
+   * hay chính nó đã là nhánh resolve).
+   */
+  resolve: ResolvePlan | null;
   /** Commit message cho hộp thoại Squash and merge; `null` khi PR này dùng Merge commit. */
   squashMessage: string | null;
   /** Mẫu tiêu đề của đường này. */
@@ -105,7 +124,11 @@ export async function prGuideAction(input: {
     ? originOfResolve(branch, await fetchBranchNames(cfg.token, repo).catch(() => []))
     : "";
   const route = routeOf(origin || branch, base, envs);
-  const head = route === "env" && !envs.includes(branch) ? envHead(base, envs) : branch;
+  /* Từ card, bậc môi trường là PR của Tech Lead (`ctalk/develop → develop`),
+     không phải của nhánh card — đổi nguồn. Gõ tay ở thanh base ← compare thì
+     người dùng muốn soát đúng nhánh họ gõ: giữ nguyên, checklist báo sai đích. */
+  const envFrom = route === "env" ? envHead(base, envs) : "";
+  const head = input.cardId && route === "env" && !envs.includes(branch) ? envFrom : branch;
   if (!head) return { ok: false, message: `Không biết nhánh nào PR vào ${base}` };
 
   const card = input.cardId ? getTaskNote(input.cardId) : null;
@@ -124,9 +147,13 @@ export async function prGuideAction(input: {
   if (getSetting(SETTING_KEYS.jiraApiToken)) {
     if (issues.length) {
       const found = await getIssueStatuses(issues.map((i) => i.key)).catch(
-        () => ({}) as Record<string, { summary: string }>,
+        () => ({}) as Record<string, { summary: string; issueTypeName?: string }>,
       );
-      issues = issues.map((i) => ({ ...i, summary: found[i.key]?.summary ?? "" }));
+      issues = issues.map((i) => ({
+        ...i,
+        summary: found[i.key]?.summary ?? "",
+        type: found[i.key]?.issueTypeName || undefined,
+      }));
     }
     // FR (Epic) của việc: từ mã task, hoặc — task con không mã — từ nhánh cha.
     const frFrom = route === "env" ? [] : [...keys, route === "parent" ? keyInBranch(base) : ""].filter(Boolean);
@@ -146,11 +173,19 @@ export async function prGuideAction(input: {
         localConflicts = await withRepoLock(clone, () => conflictFiles(clone, base, head)).catch(() => undefined);
     }
     // Commit của PR; chưa có PR thì so nhánh như trang compare của GitHub.
-    const commits =
-      route === "env"
-        ? []
-        : (gh.facts?.commits ??
-          (gh.headExists ? ((await fetchCompare(cfg.token, repo, base, head).catch(() => null))?.commits ?? []) : []));
+    // Chưa có PR thì so nhánh như trang compare của GitHub: commit và file.
+    const compare = !gh.facts && gh.headExists ? await fetchCompare(cfg.token, repo, base, head).catch(() => null) : null;
+    const commits = route === "env" ? [] : (gh.facts?.commits ?? compare?.commits ?? []);
+    // PR có đổi project.yml không. Danh sách file bị GitHub cắt (100 file của
+    // PR, 300 của compare) thì không kết luận được — để trống.
+    const paths = gh.facts
+      ? gh.facts.changedFiles > gh.facts.files.length
+        ? null
+        : gh.facts.files.map((f) => f.path)
+      : compare && compare.files.length < 300
+        ? compare.files.map((f) => f.path)
+        : null;
+    const sdkChanged = paths ? paths.some((p) => /(^|\/)project\.yml$/.test(p)) : undefined;
     const pair = { repo, head, base };
     const ctx = {
       repo,
@@ -166,7 +201,11 @@ export async function prGuideAction(input: {
       headGone: !gh.headExists,
       localConflicts,
       originBranch: origin || undefined,
+      sdkChanged,
+      envFrom: envFrom || undefined,
     };
+    const titleIn = { route, head, base, parentBranch: ctx.parentBranch, issues, feature, fallback: card?.title };
+    const headline = route === "env" ? null : commitHeadline(commits);
     const conflicting = gh.facts ? gh.facts.mergeable === "CONFLICTING" : Boolean(localConflicts?.length);
     return {
       ok: true,
@@ -179,22 +218,35 @@ export async function prGuideAction(input: {
         items: buildChecklist(ctx, gh.facts),
         ticked: getPrChecks(pair),
         pr: gh.facts ? { number: gh.facts.number, url: gh.facts.url, state: gh.facts.state } : null,
-        suggestedTitle: suggestPrTitle({
-          route,
-          head,
-          base,
-          parentBranch: ctx.parentBranch,
-          issues,
-          feature,
-          fallback: card?.title,
-        }),
+        suggestedTitle: suggestPrTitle(titleIn),
         feature: frRef,
+        issues,
+        titleFromBug: route === "env" ? null : bugIssue(issues),
         conflict: conflicting
           ? { files: localConflicts ?? [], local: !gh.facts, resolve: resolvePlan(ctx) }
           : null,
+        resolve: resolvePlan(ctx),
         squashMessage: usesSquash(route, origin || head)
           ? suggestSquashMessage({ route, head: origin || head, parentBranch: ctx.parentBranch, issues, feature, fallback: card?.title })
           : null,
+        byCommit: headline
+          ? {
+              text: headline.text,
+              title: suggestPrTitle({ ...titleIn, text: headline.text }),
+              squash: usesSquash(route, origin || head)
+                ? suggestSquashMessage({
+                    route,
+                    head: origin || head,
+                    parentBranch: ctx.parentBranch,
+                    issues,
+                    feature,
+                    text: headline.text,
+                    type: headline.type || undefined,
+                  })
+                : null,
+            }
+          : null,
+        preferCommit: Boolean(headline && bugIssue(issues)),
         body:
           route === "env"
             ? null

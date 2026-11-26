@@ -19,6 +19,19 @@ export interface IssueRef {
   /** `""` khi Jira không trả lời được. */
   summary: string;
   url: string;
+  /** Loại issue trên Jira (`Bug`, `Task`, `Sub-task`…); vắng khi chưa đọc được. */
+  type?: string;
+}
+
+/** Loại Jira là bug (`Bug`, `Sub-bug`, `Bug QC`…). */
+export const isBugType = (type?: string) => /bug/i.test(type ?? "");
+
+/**
+ * Task bug đầu tiên của PR — có thì tiêu đề lấy tên task đó chứ không lấy FR:
+ * PR sửa một lỗi QC báo trong FR, tên FR không nói gì về lỗi được sửa.
+ */
+export function bugIssue(issues: IssueRef[]): IssueRef | null {
+  return issues.find((i) => isBugType(i.type) && i.summary) ?? null;
 }
 
 /**
@@ -40,13 +53,19 @@ const ddmmyyyy = (d: Date) =>
 
 type TitleInput = {
   issues: IssueRef[];
+  /** Thân tiêu đề chọn sẵn (vd. từ commit) — có thì bỏ qua Jira. */
+  text?: string;
+  /** Loại commit chọn sẵn (`fix`, `feat`…) — từ commit conventional. */
+  type?: string;
   feature?: { key: string; summary: string } | null;
   fallback?: string;
 };
 
-/** Thân tiêu đề (từ FR, rồi summary task, rồi tiêu đề card) và các mã task. */
+/** Thân tiêu đề (task bug, rồi FR, rồi summary task, rồi tiêu đề card) và các mã task. */
 function titleParts(input: TitleInput): { text: string; keys: string[] } {
   const text =
+    (input.text ?? "").trim() ||
+    cleanSummary(bugIssue(input.issues)?.summary ?? "") ||
     cleanSummary(input.feature?.summary ?? "") ||
     cleanSummary(input.issues.find((i) => i.summary)?.summary ?? "") ||
     cleanSummary(input.fallback ?? "") ||
@@ -64,15 +83,20 @@ function titleParts(input: TitleInput): { text: string; keys: string[] } {
  * `type` theo loại nhánh của việc — PR task con vào nhánh cha thì theo nhánh
  * cha: feature → `feat`, bugfix/hotfix → `fix`. Nhánh task (improve) không
  * nói được là feat hay refactor: mô tả bắt đầu bằng "Fix/Sửa" thì `fix`, còn
- * lại `refactor` — người merge sửa nếu cần. Không đoán scope.
+ * lại `refactor` — người merge sửa nếu cần. Task là Bug trên Jira thì luôn
+ * `fix`. Không đoán scope.
  */
 export function suggestSquashMessage(
   input: TitleInput & { route: PrRoute; head: string; parentBranch?: string },
 ): string {
   const { text, keys } = titleParts(input);
   const kind = kindOfBranch(input.route === "parent" ? (input.parentBranch ?? input.head) : input.head);
-  const type =
-    kind === "feature"
+  // Task bug thì là sửa lỗi, dù nó đi vào nhánh feature.
+  const type = input.type
+    ? input.type
+    : input.issues.some((i) => isBugType(i.type))
+    ? "fix"
+    : kind === "feature"
       ? "feat"
       : kind === "bugfix" || kind === "hotfix" || /^(fix|sửa)\b/i.test(text)
         ? "fix"
@@ -104,6 +128,8 @@ export function suggestPrTitle(input: {
   feature?: { key: string; summary: string } | null;
   /** Thân tiêu đề khi Jira không có summary — thường là tiêu đề card. */
   fallback?: string;
+  /** Thân tiêu đề chọn sẵn (từ commit) — có thì bỏ qua Jira. */
+  text?: string;
   date?: Date;
 }): string {
   const { route, head, base, issues } = input;
@@ -173,19 +199,44 @@ export function suggestPrBody(input: {
  * và mã task ở đầu (`VT-5225 | VT-5660 | …`), bỏ commit merge, bỏ trùng.
  * Thân commit có gạch đầu dòng (không phải `Ref:`) thì lấy thêm các dòng đó.
  */
+/** Một dòng commit thành câu mô tả: bỏ `type(scope):`, mã task, chấm cuối; viết hoa đầu. */
+function commitLine(line: string): string {
+  const t = line
+    .replace(/^[a-z]+(\([^)]*\))?!?:\s*/i, "")
+    .replace(/^(\s*[A-Z][A-Z0-9]+-\d+\s*[|,:]?\s*)+/, "")
+    .replace(/^[|:\-–]\s*/, "")
+    .replace(/\s*\((?:[A-Z][A-Z0-9]+-\d+[,\s]*)+\)\s*$/, "")
+    .replace(/[.。]+$/, "")
+    .trim();
+  return t ? t[0].toUpperCase() + t.slice(1) : "";
+}
+
+const isMergeCommit = (subject: string) => /^Merge (branch|pull request|remote-tracking|commit)\b/i.test(subject);
+
+/**
+ * Thân tiêu đề lấy từ commit, cho khi summary Jira là lời tả triệu chứng
+ * ("Verify FaceID 3 lần mới vào được Homechat…") chứ không phải việc đã sửa.
+ *
+ * Commit `fix:`/`feat:` đầu tiên (GitHub trả commit cũ trước — commit đầu là
+ * việc chính, sau đó là sửa review), không có thì commit đầu tiên. `type` là
+ * loại conventional của commit đó, `""` khi commit không viết theo mục 3.
+ */
+export function commitHeadline(messages: string[]): { text: string; type: string } | null {
+  const subjects = messages.map((m) => m.split("\n")[0] ?? "").filter((s) => s.trim() && !isMergeCommit(s));
+  const pick = subjects.find((s) => /^(fix|feat)(\([^)]*\))?!?:/i.test(s)) ?? subjects[0];
+  if (!pick) return null;
+  const text = commitLine(pick);
+  if (!text) return null;
+  const type = pick.match(/^([a-z]+)(\([^)]*\))?!?:/i)?.[1]?.toLowerCase() ?? "";
+  return { text, type };
+}
+
 export function changesFromCommits(messages: string[]): string[] {
   const seen = new Set<string>();
   const out: string[] = [];
   const add = (line: string) => {
-    const t = line
-      .replace(/^[a-z]+(\([^)]*\))?!?:\s*/i, "")
-      .replace(/^(\s*[A-Z][A-Z0-9]+-\d+\s*[|,:]?\s*)+/, "")
-      .replace(/^[|:\-–]\s*/, "")
-      .replace(/\s*\((?:[A-Z][A-Z0-9]+-\d+[,\s]*)+\)\s*$/, "")
-      .replace(/[.。]+$/, "")
-      .trim();
-    if (!t) return;
-    const text = t[0].toUpperCase() + t.slice(1);
+    const text = commitLine(line);
+    if (!text) return;
     const k = text.toLowerCase();
     if (seen.has(k)) return;
     seen.add(k);
@@ -193,7 +244,7 @@ export function changesFromCommits(messages: string[]): string[] {
   };
   for (const m of messages) {
     const [subject = "", ...rest] = m.split("\n");
-    if (/^Merge (branch|pull request|remote-tracking|commit)\b/i.test(subject)) continue;
+    if (isMergeCommit(subject)) continue;
     add(subject);
     for (const l of rest) {
       const b = l.match(/^\s*[-*•]\s+(.*)$/);

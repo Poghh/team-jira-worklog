@@ -64,6 +64,14 @@ export interface ChecklistContext {
   behind: number | null;
   /** `MatrixRustSDK.exactVersion` trong `project.yml` ở nhánh nguồn; `null` = repo không có. */
   sdkVersion: string | null;
+  /**
+   * PR có đổi `project.yml` không — `false` thì merge xong nhánh đích giữ
+   * nguyên phiên bản SDK của nó, phiên bản ở nhánh nguồn không có ý nghĩa gì.
+   * Vắng khi không biết (chưa so được, hoặc danh sách file bị cắt).
+   */
+  sdkChanged?: boolean;
+  /** PR môi trường: nhánh duy nhất được PR vào `base` (môi trường đứng trước nó). */
+  envFrom?: string;
   /** Mã task của card, để soi tiêu đề và `Ref:`. */
   issueKeys: string[];
   /** Nhánh cha khi `route === "parent"`. */
@@ -406,6 +414,20 @@ export function buildChecklist(ctx: ChecklistContext, facts: PrFacts | null): Ch
 
   /* ── Trước khi tạo PR ─────────────────────────────────────────────── */
 
+  if (route === "env" && ctx.envFrom && head !== ctx.envFrom) {
+    out.push(
+      auto(
+        "env-source",
+        "before",
+        `Đúng nhánh PR vào ${base}`,
+        "fail",
+        `${base} chỉ nhận PR từ ${ctx.envFrom} (PR môi trường của Tech Lead). ` +
+          `Nhánh làm việc như ${head} PR vào ${INTEGRATION}` +
+          (kindOfBranch(head) === "hotfix" ? "; hotfix đi thẳng vào staging." : "."),
+      ),
+    );
+  }
+
   if (work) {
     out.push(
       branchNameOk(head)
@@ -452,7 +474,20 @@ export function buildChecklist(ctx: ChecklistContext, facts: PrFacts | null): Ch
       ),
     );
 
-  if (ctx.sdkVersion !== null && route !== "parent") {
+  if (ctx.sdkVersion !== null && route !== "parent" && ctx.sdkChanged === false) {
+    // Nhánh tách từ master mang phiên bản của master (vd `2026.11.15`), nhưng
+    // PR không chạm project.yml thì merge vào ctalk/develop vẫn giữ
+    // `…-ctalkdev.N` của develop. Kiểm phiên bản nguồn ở đây là báo sai.
+    out.push(
+      auto(
+        "sdk-version",
+        "before",
+        "MatrixRustSDK trong project.yml khớp môi trường đích",
+        "ok",
+        `PR không đổi project.yml — ${base} giữ phiên bản SDK của nó.`,
+      ),
+    );
+  } else if (ctx.sdkVersion !== null && route !== "parent") {
     const ok = sdkVersionMatches(ctx.sdkVersion, base);
     const suffix = sdkSuffixFor(base);
     out.push(

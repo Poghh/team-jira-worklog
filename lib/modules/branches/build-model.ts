@@ -229,6 +229,37 @@ export function frTokens(text: string): string[] {
   return out;
 }
 
+/**
+ * Tên việc rút về dạng so được: bỏ nhãn `[CTALK][iOS Lite]`, bỏ chữ `FR` đứng
+ * trơ ở đầu, gạch nối kiểu gì (`-`, `–`, `—`) hay dấu câu cũng thành khoảng trắng.
+ *
+ * Bảng release viết dòng ghi chú bằng `taskId || description`: việc không có
+ * mã thì ghi chú là tên FR — `CTalk: FR Defect Detection & Fixing - iPhone Duo
+ * / iOS 27` — còn card mang summary Jira `[CTALK][iOS Lite] Defect Detection &
+ * Fixing – iPhone Duo / iOS 27`. Không có mã, không có số FR, chỉ còn tên.
+ */
+export function workName(text: string): string {
+  return text
+    .replace(/\[[^\]]*\]/g, " ")
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}]+/gu, " ")
+    .trim()
+    .replace(/^fr\s+(?=\D)/, "")
+    .trim();
+}
+
+/** Tên việc mỗi dòng ghi chú gọi: bỏ gạch đầu dòng và nhãn `CTalk:`. */
+function noteNames(notes: string): string[] {
+  const out: string[] = [];
+  for (const line of notes.split(/\r?\n/)) {
+    const body = line.replace(/^\s*[-•*]\s*/, "").replace(/^[^:\n]{1,20}:\s*/, "");
+    const name = workName(body);
+    // Ngắn quá thì trùng bừa ("fix bug") — tên FR thật luôn dài hơn.
+    if (name.length >= 12 && !out.includes(name)) out.push(name);
+  }
+  return out;
+}
+
 /** Mọi FR một card tự nhận: tên nhánh của mọi nửa, và tiêu đề. */
 function cardFrTokens(card: {
   title: string;
@@ -264,7 +295,8 @@ export function cardsInBuild<
   if (!build.notes.trim()) return [];
   const keys = new Set(buildCarries(build, projectKeys));
   const frs = new Set(frTokens(build.notes));
-  if (!keys.size && !frs.size) return [];
+  const names = new Set(noteNames(build.notes));
+  if (!keys.size && !frs.size && !names.size) return [];
 
   /** FR → card nào nhận nó. Nhiều hơn một là không ai được nhận. */
   const owners = new Map<string, number[]>();
@@ -279,8 +311,20 @@ export function cardsInBuild<
     [...owners.values()].flatMap((ids) => (ids.length === 1 ? ids : [])),
   );
 
+  /* Tên việc: cùng luật "chỉ đúng một card nhận" như FR — hai card trùng tên
+     thì ghi chú không nói được là card nào. */
+  const byName = new Set<number>();
+  if (names.size) {
+    const named = new Map<string, number[]>();
+    for (const c of cards) {
+      const n = workName(c.title);
+      if (names.has(n)) named.set(n, [...(named.get(n) ?? []), c.id]);
+    }
+    for (const ids of named.values()) if (ids.length === 1) byName.add(ids[0]!);
+  }
+
   return cards.filter(
-    (c) => c.issueKeys.some((k) => keys.has(k)) || byFr.has(c.id),
+    (c) => c.issueKeys.some((k) => keys.has(k)) || byFr.has(c.id) || byName.has(c.id),
   );
 }
 
