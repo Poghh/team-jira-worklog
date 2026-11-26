@@ -61,6 +61,12 @@ export interface PrGuideView {
    * conflict cách khác). `null` cả cụm khi không conflict hoặc chưa biết.
    */
   conflict: { files: string[]; local: boolean; resolve: ResolvePlan | null } | null;
+  /**
+   * Nhánh resolve của PR này theo mục 5, có conflict hay chưa — để bấm xem
+   * trước. `null` khi đường này không dùng nhánh resolve (task con, môi trường,
+   * hay chính nó đã là nhánh resolve).
+   */
+  resolve: ResolvePlan | null;
   /** Commit message cho hộp thoại Squash and merge; `null` khi PR này dùng Merge commit. */
   squashMessage: string | null;
   /** Mẫu tiêu đề của đường này. */
@@ -206,6 +212,7 @@ export async function prGuideAction(input: {
         conflict: conflicting
           ? { files: localConflicts ?? [], local: !gh.facts, resolve: resolvePlan(ctx) }
           : null,
+        resolve: resolvePlan(ctx),
         squashMessage: usesSquash(route, origin || head)
           ? suggestSquashMessage({ route, head: origin || head, parentBranch: ctx.parentBranch, issues, feature, fallback: card?.title })
           : null,

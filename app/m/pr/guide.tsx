@@ -478,7 +478,11 @@ function Guide({ target }: { target: Target }) {
 
       {/* Gợi ý cho PR: tiêu đề và label luôn hiện — thứ cần copy nhiều nhất;
           mô tả và commit squash dài, gập lại cho checklist khỏi bị đẩy xuống. */}
-      {view.conflict && <ConflictBox view={view} conflict={view.conflict} />}
+      {view.conflict ? (
+        <ConflictBox view={view} conflict={view.conflict} />
+      ) : (
+        view.resolve && <ResolveHint key={view.resolve.branch} view={view} plan={view.resolve} />
+      )}
       <div className="mx-4 mt-3 flex flex-col gap-2 rounded-md bg-surface-2 px-3 py-2.5">
         <div className="flex items-start gap-2">
           <span className="w-[64px] shrink-0 pt-px text-[12px] font-semibold text-ink-2">Tiêu đề</span>
@@ -562,6 +566,60 @@ function Guide({ target }: { target: Target }) {
   );
 }
 
+/** Tên nhánh resolve và lệnh tạo nó, mỗi thứ một nút copy. */
+function ResolveSteps({ plan }: { plan: NonNullable<PrGuideView["resolve"]> }) {
+  return (
+    <>
+      <div className="flex items-center gap-2">
+        <span className="shrink-0 text-ink-2">Nhánh resolve</span>
+        <code className="min-w-0 flex-1 break-all font-mono font-semibold">{plan.branch}</code>
+        <CopyBtn text={plan.branch} what="tên nhánh resolve" />
+      </div>
+      <div className="flex items-start gap-2">
+        <pre className="min-w-0 flex-1 whitespace-pre-wrap break-all font-mono text-[11.5px] text-ink-2">{plan.commands}</pre>
+        <CopyBtn text={plan.commands} what="lệnh tạo nhánh resolve" />
+      </div>
+    </>
+  );
+}
+
+/**
+ * Nút xem trước nhánh resolve khi app chưa thấy conflict — conflict có thể
+ * chỉ hiện lúc bấm merge trên GitHub, hoặc app không đo được (không có clone).
+ */
+function ResolveHint({ view, plan }: { view: PrGuideView; plan: NonNullable<PrGuideView["resolve"]> }) {
+  const [open, setOpen] = useState(false);
+  if (!open)
+    return (
+      <div className="mx-4 mt-3">
+        <button
+          type="button"
+          onClick={() => setOpen(true)}
+          className="rounded-md border border-line px-2 py-0.5 text-[12px] text-ink-2 hover:bg-surface-2"
+        >
+          ⑂ Gợi ý nhánh resolve
+        </button>
+      </div>
+    );
+  return (
+    <div className="mx-4 mt-3 flex flex-col gap-1.5 rounded-md border border-line px-3 py-2.5 text-[12.5px]">
+      <div className="flex items-center gap-2">
+        <span className="flex-1 font-semibold text-ink-2">
+          Nếu conflict với <code className="font-mono">{view.base}</code>
+        </span>
+        <button type="button" onClick={() => setOpen(false)} className="text-[11px] text-ink-3 hover:text-ink">
+          Thu gọn
+        </button>
+      </div>
+      <ResolveSteps plan={plan} />
+      <p className="text-[11px] text-ink-3">
+        Theo mục 5: tách từ nhánh gốc, merge {view.base} vào nhánh resolve rồi PR nhánh resolve — không merge {view.base} vào
+        nhánh gốc. PR resolve giữ tiêu đề, label và cách merge của nhánh gốc.
+      </p>
+    </div>
+  );
+}
+
 /**
  * Conflict với nhánh đích và cách xử lý theo mục 5: nhánh resolve tách từ
  * nhánh gốc, merge nhánh đích vào đó — không merge nhánh đích vào nhánh gốc.
@@ -593,15 +651,7 @@ function ConflictBox({
       )}
       {r ? (
         <>
-          <div className="flex items-center gap-2">
-            <span className="shrink-0 text-ink-2">Nhánh resolve</span>
-            <code className="min-w-0 flex-1 break-all font-mono font-semibold">{r.branch}</code>
-            <CopyBtn text={r.branch} what="tên nhánh resolve" />
-          </div>
-          <div className="flex items-start gap-2">
-            <pre className="min-w-0 flex-1 whitespace-pre-wrap break-all font-mono text-[11.5px] text-ink-2">{r.commands}</pre>
-            <CopyBtn text={r.commands} what="lệnh tạo nhánh resolve" />
-          </div>
+          <ResolveSteps plan={r} />
           <p className="text-[11px] text-ink-3">
             Không merge {view.base} vào nhánh gốc. {conflict.local ? "Tạo PR từ nhánh resolve" : "Đóng PR cũ, mở PR mới từ nhánh resolve"}, giữ
             tiêu đề cũ; mô tả ghi {conflict.local ? "" : "link PR cũ, "}các file conflict và cách xử lý.
