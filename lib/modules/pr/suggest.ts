@@ -19,6 +19,19 @@ export interface IssueRef {
   /** `""` khi Jira không trả lời được. */
   summary: string;
   url: string;
+  /** Loại issue trên Jira (`Bug`, `Task`, `Sub-task`…); vắng khi chưa đọc được. */
+  type?: string;
+}
+
+/** Loại Jira là bug (`Bug`, `Sub-bug`, `Bug QC`…). */
+export const isBugType = (type?: string) => /bug/i.test(type ?? "");
+
+/**
+ * Task bug đầu tiên của PR — có thì tiêu đề lấy tên task đó chứ không lấy FR:
+ * PR sửa một lỗi QC báo trong FR, tên FR không nói gì về lỗi được sửa.
+ */
+export function bugIssue(issues: IssueRef[]): IssueRef | null {
+  return issues.find((i) => isBugType(i.type) && i.summary) ?? null;
 }
 
 /**
@@ -44,9 +57,10 @@ type TitleInput = {
   fallback?: string;
 };
 
-/** Thân tiêu đề (từ FR, rồi summary task, rồi tiêu đề card) và các mã task. */
+/** Thân tiêu đề (task bug, rồi FR, rồi summary task, rồi tiêu đề card) và các mã task. */
 function titleParts(input: TitleInput): { text: string; keys: string[] } {
   const text =
+    cleanSummary(bugIssue(input.issues)?.summary ?? "") ||
     cleanSummary(input.feature?.summary ?? "") ||
     cleanSummary(input.issues.find((i) => i.summary)?.summary ?? "") ||
     cleanSummary(input.fallback ?? "") ||
@@ -64,15 +78,18 @@ function titleParts(input: TitleInput): { text: string; keys: string[] } {
  * `type` theo loại nhánh của việc — PR task con vào nhánh cha thì theo nhánh
  * cha: feature → `feat`, bugfix/hotfix → `fix`. Nhánh task (improve) không
  * nói được là feat hay refactor: mô tả bắt đầu bằng "Fix/Sửa" thì `fix`, còn
- * lại `refactor` — người merge sửa nếu cần. Không đoán scope.
+ * lại `refactor` — người merge sửa nếu cần. Task là Bug trên Jira thì luôn
+ * `fix`. Không đoán scope.
  */
 export function suggestSquashMessage(
   input: TitleInput & { route: PrRoute; head: string; parentBranch?: string },
 ): string {
   const { text, keys } = titleParts(input);
   const kind = kindOfBranch(input.route === "parent" ? (input.parentBranch ?? input.head) : input.head);
-  const type =
-    kind === "feature"
+  // Task bug thì là sửa lỗi, dù nó đi vào nhánh feature.
+  const type = input.issues.some((i) => isBugType(i.type))
+    ? "fix"
+    : kind === "feature"
       ? "feat"
       : kind === "bugfix" || kind === "hotfix" || /^(fix|sửa)\b/i.test(text)
         ? "fix"

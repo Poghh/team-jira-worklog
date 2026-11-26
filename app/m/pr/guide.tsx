@@ -17,7 +17,7 @@ import {
   SECTION_TITLES,
   checklistProgress,
 } from "@/lib/modules/pr/checklist";
-import { cleanSummary, suggestPrBody } from "@/lib/modules/pr/suggest";
+import { cleanSummary, isBugType, suggestPrBody } from "@/lib/modules/pr/suggest";
 
 /** Một dòng trong danh sách: một PR đã có, hoặc một PR nên tạo. */
 export interface PrEntry {
@@ -492,7 +492,15 @@ function Guide({ target }: { target: Target }) {
               className="mt-0.5 block text-[11px] text-ink-3"
               title={`Mẫu: ${view.titleSample}`}
             >
-              {view.feature ? (
+              {view.titleFromBug ? (
+                <>
+                  từ task bug{" "}
+                  <a href={view.titleFromBug.url} target="_blank" rel="noreferrer" className="underline hover:text-ink-2">
+                    {view.titleFromBug.key}
+                  </a>{" "}
+                  — PR sửa lỗi lấy tên task, không lấy FR
+                </>
+              ) : view.feature ? (
                 <>
                   từ FR{" "}
                   <a href={view.feature.url} target="_blank" rel="noreferrer" className="underline hover:text-ink-2">
@@ -504,6 +512,22 @@ function Guide({ target }: { target: Target }) {
                 "từ summary task — không tìm thấy FR (Epic)"
               )}
             </span>
+            {view.issues.some((i) => i.type) && (
+              <span className="mt-0.5 flex flex-wrap gap-x-2 text-[11px] text-ink-3">
+                {view.issues.map((i) => (
+                  <span key={i.key}>
+                    <a href={i.url} target="_blank" rel="noreferrer" className="font-mono hover:underline">
+                      {i.key}
+                    </a>
+                    {i.type && (
+                      <span className={isBugType(i.type) ? "ml-1 rounded bg-crit-soft px-1 text-crit" : "ml-1"}>
+                        · {i.type}
+                      </span>
+                    )}
+                  </span>
+                ))}
+              </span>
+            )}
           </span>
           <CopyBtn text={view.suggestedTitle} what="tiêu đề PR" />
         </div>

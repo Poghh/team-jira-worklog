@@ -28,6 +28,7 @@ import { getReviewConfig } from "@/lib/modules/code-review/config";
 import { conflictFiles, withRepoLock } from "@/lib/modules/code-review/git";
 import {
   type IssueRef,
+  bugIssue,
   changesFromCommits,
   suggestPrBody,
   suggestPrTitle,
@@ -49,6 +50,10 @@ export interface PrGuideView {
   suggestedTitle: string;
   /** FR (Epic Jira) mà thân tiêu đề gợi ý lấy từ; `null` khi không tìm được. */
   feature: { key: string; summary: string; url: string } | null;
+  /** Task của PR kèm loại Jira — hiện cạnh tiêu đề. */
+  issues: IssueRef[];
+  /** Task bug mà thân tiêu đề lấy tên; `null` khi tiêu đề lấy từ FR hay task thường. */
+  titleFromBug: IssueRef | null;
   /**
    * Đầu vào của khung mô tả PR (`suggestPrBody`) — trình duyệt tự dựng lại khi
    * người dùng đổi danh sách thay đổi (vd. nhờ Claude đọc diff). `null` khi
@@ -134,9 +139,13 @@ export async function prGuideAction(input: {
   if (getSetting(SETTING_KEYS.jiraApiToken)) {
     if (issues.length) {
       const found = await getIssueStatuses(issues.map((i) => i.key)).catch(
-        () => ({}) as Record<string, { summary: string }>,
+        () => ({}) as Record<string, { summary: string; issueTypeName?: string }>,
       );
-      issues = issues.map((i) => ({ ...i, summary: found[i.key]?.summary ?? "" }));
+      issues = issues.map((i) => ({
+        ...i,
+        summary: found[i.key]?.summary ?? "",
+        type: found[i.key]?.issueTypeName || undefined,
+      }));
     }
     // FR (Epic) của việc: từ mã task, hoặc — task con không mã — từ nhánh cha.
     const frFrom = route === "env" ? [] : [...keys, route === "parent" ? keyInBranch(base) : ""].filter(Boolean);
@@ -209,6 +218,8 @@ export async function prGuideAction(input: {
           fallback: card?.title,
         }),
         feature: frRef,
+        issues,
+        titleFromBug: route === "env" ? null : bugIssue(issues),
         conflict: conflicting
           ? { files: localConflicts ?? [], local: !gh.facts, resolve: resolvePlan(ctx) }
           : null,

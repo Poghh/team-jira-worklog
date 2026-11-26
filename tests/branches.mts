@@ -1942,5 +1942,18 @@ eq(baseFreshness(roundTrip, NOW).upToDate, true, 'và đọc ra đúng kết lu�
   eq(cardsInBuild([card(1, 'Fix bug')], B('- CTalk: Fix bug'), P).map((c) => c.id), [], 'tên quá ngắn không khớp')
 }
 
+/* ── task bug vào nhánh feature: tên task, commit fix ─────────────── */
+{
+  const fr = { key: 'VT-4551', summary: '[CTALK] Per-request Signature For Trusted Device' }
+  const bug = { key: 'VT-6469', summary: '[iOS] Face ID prompts twice on unlock', url: 'u', type: 'Bug' }
+  const task = { ...bug, type: 'Task' }
+  const p = { route: 'parent' as const, head: 'ctalk/task/VT-6469_face-id-prompts', base: 'ctalk/feature/VT-4551_x',
+    parentBranch: 'ctalk/feature/VT-4551_x', feature: fr }
+  eq(suggestPrTitle({ ...p, issues: [bug] }), '[Feature] Face ID prompts twice on unlock (VT-6469)', 'task bug: tiêu đề lấy tên task')
+  eq(suggestPrTitle({ ...p, issues: [task] }), '[Feature] Per-request Signature For Trusted Device (VT-6469)', 'task thường: vẫn lấy FR')
+  eq(suggestSquashMessage({ ...p, issues: [bug] }).split('\n')[0], 'fix: Face ID prompts twice on unlock', 'task bug: commit fix')
+  eq(suggestSquashMessage({ ...p, issues: [task] }).split('\n')[0].startsWith('feat:'), true, 'task thường vào feature: feat')
+}
+
 console.log(bad ? `\n${bad}/${n} FAILED` : `\nall ${n} ok`)
 process.exit(bad ? 1 : 0)
