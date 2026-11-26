@@ -1919,6 +1919,15 @@ eq(baseFreshness(roundTrip, NOW).upToDate, true, 'và đọc ra đúng kết lu�
   eq(st(undefined), 'fail', 'không biết PR có đổi không thì kiểm như cũ')
 }
 
+/* ── nhánh làm việc gõ tay vào môi trường bị báo sai đích ──────────── */
+{
+  const ctx = (head: string) => ({ repo: 'o/ios', head, base: 'develop', route: 'env' as const,
+    behind: null, sdkVersion: null, issueKeys: [], envFrom: 'ctalk/develop' })
+  const item = (head: string) => buildChecklist(ctx(head), null).find((i) => i.id === 'env-source')
+  eq(item('cxp/bugfix/fix-unitest')?.state, 'fail', 'nhánh làm việc PR vào develop là sai đích')
+  eq(item('ctalk/develop'), undefined, 'ctalk/develop → develop là PR môi trường đúng')
+}
+
 /* ── bản build chỉ ghi tên FR, không mã, không số ───────────────────── */
 {
   // Thật, 25/11: build develop 20261125095920 ghi "CTalk: FR Defect Detection

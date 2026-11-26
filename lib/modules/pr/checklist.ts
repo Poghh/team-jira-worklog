@@ -70,6 +70,8 @@ export interface ChecklistContext {
    * Vắng khi không biết (chưa so được, hoặc danh sách file bị cắt).
    */
   sdkChanged?: boolean;
+  /** PR môi trường: nhánh duy nhất được PR vào `base` (môi trường đứng trước nó). */
+  envFrom?: string;
   /** Mã task của card, để soi tiêu đề và `Ref:`. */
   issueKeys: string[];
   /** Nhánh cha khi `route === "parent"`. */
@@ -411,6 +413,20 @@ export function buildChecklist(ctx: ChecklistContext, facts: PrFacts | null): Ch
   const work = route !== "env";
 
   /* ── Trước khi tạo PR ─────────────────────────────────────────────── */
+
+  if (route === "env" && ctx.envFrom && head !== ctx.envFrom) {
+    out.push(
+      auto(
+        "env-source",
+        "before",
+        `Đúng nhánh PR vào ${base}`,
+        "fail",
+        `${base} chỉ nhận PR từ ${ctx.envFrom} (PR môi trường của Tech Lead). ` +
+          `Nhánh làm việc như ${head} PR vào ${INTEGRATION}` +
+          (kindOfBranch(head) === "hotfix" ? "; hotfix đi thẳng vào staging." : "."),
+      ),
+    );
+  }
 
   if (work) {
     out.push(

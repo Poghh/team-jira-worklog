@@ -105,7 +105,11 @@ export async function prGuideAction(input: {
     ? originOfResolve(branch, await fetchBranchNames(cfg.token, repo).catch(() => []))
     : "";
   const route = routeOf(origin || branch, base, envs);
-  const head = route === "env" && !envs.includes(branch) ? envHead(base, envs) : branch;
+  /* Từ card, bậc môi trường là PR của Tech Lead (`ctalk/develop → develop`),
+     không phải của nhánh card — đổi nguồn. Gõ tay ở thanh base ← compare thì
+     người dùng muốn soát đúng nhánh họ gõ: giữ nguyên, checklist báo sai đích. */
+  const envFrom = route === "env" ? envHead(base, envs) : "";
+  const head = input.cardId && route === "env" && !envs.includes(branch) ? envFrom : branch;
   if (!head) return { ok: false, message: `Không biết nhánh nào PR vào ${base}` };
 
   const card = input.cardId ? getTaskNote(input.cardId) : null;
@@ -175,6 +179,7 @@ export async function prGuideAction(input: {
       localConflicts,
       originBranch: origin || undefined,
       sdkChanged,
+      envFrom: envFrom || undefined,
     };
     const conflicting = gh.facts ? gh.facts.mergeable === "CONFLICTING" : Boolean(localConflicts?.length);
     return {
