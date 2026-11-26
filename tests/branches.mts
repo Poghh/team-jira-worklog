@@ -89,6 +89,7 @@ import {
   buildCarries,
   cardsInBuild,
   frTokens,
+  workName,
   joinBuilds,
   newBuilds,
   parseBuildNumber,
@@ -1904,6 +1905,20 @@ eq(baseFreshness(roundTrip, NOW).upToDate, true, 'và đọc ra đúng kết lu�
   eq(labelAdvice('integration', 'ctalk/resolve/VT-4551_ctalk-develop', 'ctalk/feature/VT-4551_per-request-signature').label, 'type:feature',
      'resolve của feature giữ type:feature')
   eq(labelAdvice('integration', 'ctalk/resolve/VT-9_ctalk-develop').label, null, 'không tìm ra nhánh gốc thì không đoán label')
+}
+
+/* ── bản build chỉ ghi tên FR, không mã, không số ───────────────────── */
+{
+  // Thật, 25/11: build develop 20261125095920 ghi "CTalk: FR Defect Detection
+  // & Fixing - iPhone Duo / iOS 27"; card VT-2323 mang summary Jira.
+  const card = (id: number, title: string) => ({ id, issueKeys: ['VT-' + id], title, sides: [{ branch: 'x' }] })
+  const duo = card(2323, '[CTALK][iOS Lite] Defect Detection & Fixing – iPhone Duo / iOS 27')
+  const other = card(4553, 'VT 4553 refresh token')
+  const note = '- CTalk: FR Defect Detection & Fixing - iPhone Duo / iOS 27'
+  eq(workName(duo.title), workName('FR Defect Detection & Fixing - iPhone Duo / iOS 27'), 'nhãn, chữ FR, kiểu gạch nối không tính')
+  eq(cardsInBuild([duo, other], B(note), P).map((c) => c.id), [2323], 'ghi chú chỉ có tên FR khớp đúng card')
+  eq(cardsInBuild([duo, card(9, duo.title)], B(note), P).map((c) => c.id), [], 'hai card trùng tên thì không gắn')
+  eq(cardsInBuild([card(1, 'Fix bug')], B('- CTalk: Fix bug'), P).map((c) => c.id), [], 'tên quá ngắn không khớp')
 }
 
 console.log(bad ? `\n${bad}/${n} FAILED` : `\nall ${n} ok`)
