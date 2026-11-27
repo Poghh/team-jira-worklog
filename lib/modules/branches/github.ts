@@ -490,6 +490,53 @@ export async function fetchBranchPrs(
 }
 
 /**
+ * PR đã merge **vào** từng nhánh, khoá `repo#branch` — để card nhánh cha biết
+ * task con, bug nào đã gộp vào nó. Hai mươi nhánh một truy vấn, như
+ * {@link fetchBranchPrs}; nhánh nào GitHub không trả lời thì vắng khỏi kết quả.
+ */
+export async function fetchMergedInto(
+  token: string,
+  items: Array<{ repo: string; branch: string }>,
+): Promise<Map<string, Array<{ number: number; head: string; title: string }>>> {
+  const out = new Map<string, Array<{ number: number; head: string; title: string }>>();
+  const byRepo = new Map<string, string[]>();
+  for (const it of items) byRepo.set(it.repo, [...(byRepo.get(it.repo) ?? []), it.branch]);
+
+  for (const [repo, branchNames] of byRepo) {
+    const [owner, name] = repo.split("/");
+    if (!owner || !name) continue;
+    for (let i = 0; i < branchNames.length; i += 20) {
+      const chunk = branchNames.slice(i, i + 20);
+      const vars: Record<string, unknown> = { owner, name };
+      const decls = ["$owner: String!", "$name: String!"];
+      const fields = chunk.map((branch, bi) => {
+        vars[`b${bi}`] = branch;
+        decls.push(`$b${bi}: String!`);
+        return `b${bi}: pullRequests(baseRefName: $b${bi}, states: MERGED, first: 50, orderBy: { field: UPDATED_AT, direction: DESC }) {
+                  nodes { number headRefName title }
+                }`;
+      });
+      const data = await graphql<{
+        repository: Record<string, { nodes: Array<{ number: number; headRefName: string; title: string }> } | null> | null;
+      }>(
+        token,
+        `query(${decls.join(", ")}) { repository(owner: $owner, name: $name) { ${fields.join("\n")} } }`,
+        vars,
+      );
+      chunk.forEach((branch, bi) => {
+        const got = data.repository?.[`b${bi}`];
+        if (got)
+          out.set(
+            `${repo}#${branch}`,
+            got.nodes.map((n) => ({ number: n.number, head: n.headRefName, title: n.title })),
+          );
+      });
+    }
+  }
+  return out;
+}
+
+/**
  * How far each branch is from each environment.
  *
  * Answers "where has this code actually got to", which is not the same question

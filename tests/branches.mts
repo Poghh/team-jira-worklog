@@ -72,6 +72,9 @@ import {
   sortByStatus,
   stageDrift,
   withLocalState,
+  mergedChildren,
+  parseMergedChildren,
+  serializeMergedChildren,
 } from '@/lib/modules/branches/model'
 import {
   toGroups,
@@ -1970,6 +1973,25 @@ eq(baseFreshness(roundTrip, NOW).upToDate, true, 'và đọc ra đúng kết lu�
   eq(suggestPrTitle({ ...p, text: h!.text }), '[Feature] Skip auth-protected items when listing keychain keys (VT-6469)', 'tiêu đề theo commit')
   eq(suggestSquashMessage({ ...p, text: h!.text, type: h!.type }),
      'fix: Skip auth-protected items when listing keychain keys\n\nRef: VT-6469', 'squash theo commit')
+}
+
+/* ── task con đã gộp vào nhánh cha ──────────────────────────────────── */
+{
+  // Thật, 26/11: VT-6469 (Bug QC) sửa trên ctalk/task/VT-6469_face-id-prompts
+  // rồi PR vào nhánh feature của VT-4551 — card VT-4551 không hề biết.
+  const card = { issueKeys: ['VT-4551'], sides: [{ repo: 'o/ios', branch: 'ctalk/feature/VT-4551_per-request-signature' }] }
+  const into = new Map([['o/ios#ctalk/feature/VT-4551_per-request-signature', [
+    { number: 2010, head: 'ctalk/task/VT-6469_face-id-prompts', title: '[Feature] Skip auth-protected items (VT-6469)' },
+    { number: 2001, head: 'ctalk/develop', title: 'Sync develop' },
+    { number: 1990, head: 'ctalk/task/VT-4551_x', title: '[Feature] Per-request signature (VT-4551)' },
+    { number: 1985, head: 'ctalk/task/implement_dpop_sign', title: 'implement dpop sign' },
+  ]]])
+  const keysOf = (t: string) => [...t.matchAll(/VT-\d+/g)].map((m) => m[0])
+  const got = mergedChildren(card, into, ['ctalk/develop', 'develop', 'staging'], keysOf)
+  eq(got.map((c) => [c.number, c.keys]), [[2010, ['VT-6469']]],
+     'chỉ giữ PR mang mã khác mã card; bỏ PR từ môi trường, PR không mã')
+  eq(parseMergedChildren(serializeMergedChildren(got)), got, 'lưu rồi đọc lại y nguyên')
+  eq(parseMergedChildren(''), [], 'cột trống là danh sách rỗng')
 }
 
 console.log(bad ? `\n${bad}/${n} FAILED` : `\nall ${n} ok`)

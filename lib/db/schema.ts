@@ -372,6 +372,8 @@ export const taskNotes = sqliteTable(
      * single build to name, and deriving them means they cannot drift.
      */
     builds: text("builds").notNull().default(""),
+    /** JSON `MergedChild[]`: PR task con đã merge vào nhánh của card. */
+    mergedInto: text("merged_into").notNull().default(""),
     /** When a GitHub scan last wrote to this card. Null for hand-made cards. */
     syncedAt: integer("synced_at"),
     createdAt: integer("created_at").notNull().default(now),

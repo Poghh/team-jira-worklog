@@ -101,6 +101,17 @@ type Card = TaskNoteRow & {
    */
   statuses: Array<{ key: string; real: string; name: string | null }>;
   issueTypeName: string | null;
+  /** Task con đã gộp vào nhánh của card, mỗi mã một dòng, kèm Jira nói gì về nó. */
+  children: Array<{
+    key: string;
+    real: string;
+    name: string | null;
+    type: string | null;
+    repo: string;
+    pr: number;
+    head: string;
+    title: string;
+  }>;
 };
 
 export function BranchBoard({
@@ -603,6 +614,71 @@ function Inbound({
   );
 }
 
+/**
+ * Task con đã gộp vào nhánh của card, gập lại thành một huy hiệu: "2 bug đã
+ * gộp · 1 chưa test". Mở ra là từng task, có nút chuyển trạng thái.
+ *
+ * Không tô đỏ: bug đã sửa và gộp vào không phải lỗi của card — màu trung tính,
+ * chỉ chữ "bug" là phân biệt. "Chưa test" là trạng thái còn trước READY TO TEST.
+ */
+function MergedChildren({
+  card,
+  baseUrl,
+  onStatusChanged,
+}: {
+  card: Card;
+  baseUrl: string;
+  onStatusChanged: (key: string, name: string) => void;
+}) {
+  const bugs = card.children.filter((c) => isBug(c.type)).length;
+  const others = card.children.length - bugs;
+  const untested = card.children.filter((c) => c.name && ["todo", "prog"].includes(statusTone(c.name))).length;
+  const kinds = [bugs && `${bugs} bug`, others && `${others} task`].filter(Boolean).join(" · ");
+  return (
+    <CardRow label="Đã gộp">
+      <details className="group/m min-w-0 flex-1" onClick={(e) => e.stopPropagation()}>
+        <summary className="flex cursor-pointer list-none items-center gap-1 font-mono text-[9.5px] text-ink-2">
+          <span className="text-ink-3 group-open/m:rotate-90">▸</span>
+          <span className="rounded-full border border-line-strong px-1.5 py-px font-semibold">{kinds}</span>
+          {untested > 0 && <span className="text-ink-3">· {untested} chưa test</span>}
+        </summary>
+        <span className="mt-1 flex min-w-0 flex-col gap-1">
+          {[...card.children]
+            .sort((a, b) => Number(isBug(b.type)) - Number(isBug(a.type)))
+            .map((c) => (
+              <span key={c.key} className="flex min-w-0 flex-wrap items-center gap-1">
+                <a
+                  href={jiraLinkFor(c.key, card.jiraUrls, baseUrl)}
+                  target="_blank"
+                  rel="noreferrer"
+                  title={
+                    `${c.key}${c.type ? ` · ${c.type}` : ""}\n` +
+                    `Gộp qua PR #${c.pr} (${c.repo}) từ ${c.head}\n${c.title}\n\nBấm để mở trên Jira.`
+                  }
+                  className="rounded-[3px] border border-line-strong px-1.5 py-px font-mono text-[9.5px] font-semibold text-ink-2 hover:underline"
+                >
+                  {c.key}
+                  {isBug(c.type) && <span className="font-normal text-ink-3"> · bug</span>}
+                </a>
+                {c.name && (
+                  <StatusPill
+                    issueKey={c.real}
+                    statusName={c.name}
+                    compact
+                    onChanged={(name) => onStatusChanged(c.key, name)}
+                  />
+                )}
+              </span>
+            ))}
+        </span>
+      </details>
+    </CardRow>
+  );
+}
+
+/** Loại Jira là bug (`Bug`, `Sub-bug`…). */
+const isBug = (type: string | null) => /bug/i.test(type ?? "");
+
 function CardRow({
   label,
   children,
@@ -918,6 +994,25 @@ function Board({
           statusKey: lag?.key ?? r.issueKey,
           statuses: keyStatuses(r.issueKeys, live, statuses),
           issueTypeName: statuses[r.issueKey]?.issueTypeName ?? null,
+          children: [
+            ...new Map(
+              r.mergedInto.flatMap((m) =>
+                m.keys.map((k) => [
+                  k,
+                  {
+                    key: k,
+                    real: statuses[k]?.key ?? k,
+                    name: live[k] ?? statuses[k]?.statusName ?? null,
+                    type: statuses[k]?.issueTypeName ?? null,
+                    repo: m.repo,
+                    pr: m.number,
+                    head: m.head,
+                    title: m.title,
+                  },
+                ] as const),
+              ),
+            ).values(),
+          ],
         };
       }),
     [rows, statuses, live],
@@ -1875,6 +1970,8 @@ function NoteCard({
 
       {/* Task con đã gộp vào nhánh này — bug QC sửa trên nhánh task rồi PR vào
           feature thì card feature mới biết mà nhắc test. Bug lên đầu. */}
+      {card.children.length > 0 && <MergedChildren card={card} baseUrl={baseUrl} onStatusChanged={onStatusChanged} />}
+
       {/* Rendered only when it has something in it: an empty flex child still
           consumes the card's row gap, which showed up as a stray blank line. */}
       {(card.localOnly ||

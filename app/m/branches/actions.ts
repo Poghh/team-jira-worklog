@@ -16,6 +16,7 @@ import { type IssueLite, guessTeam } from "@/lib/modules/branches/git-rules";
 import { type JiraIssue, jiraFetch, searchJql } from "@/lib/jira/client";
 import { suggestBranchSlugs } from "@/lib/ai/claude";
 import { localIndex, readLocalBranches } from "@/lib/modules/branches/local";
+import { extractIssueKeys } from "@/lib/jira/branch-keys";
 import {
   type EnvBuild,
   type CardBuild,
@@ -26,6 +27,7 @@ import {
 import {
   type PinnedPr,
   fetchBranchPrs,
+  fetchMergedInto,
   fetchPrsByNumber,
   fetchRepos,
   fetchViewer,
@@ -50,6 +52,7 @@ import {
   type StageConfig,
   type TaskNoteShape,
   envSteps,
+  mergedChildren,
   orderSides,
   withLocalState,
 } from "@/lib/modules/branches/model";
@@ -66,6 +69,7 @@ import {
   listTaskNotes,
   moveTaskNote,
   setCardBuilds,
+  setCardMergedInto,
   setCardPrs,
   saveTaskNote,
   setNoteBody,
@@ -702,10 +706,29 @@ export async function refreshPrsAction(): Promise<
     });
 
     const changed = setCardPrs(writes);
+
+    /* Task con đã gộp vào nhánh cha. Hỏi riêng, và hỏng thì bỏ qua: không biết
+       thêm điều này không được làm mất phần PR vừa ghi ở trên. Nhánh môi
+       trường thì không hỏi — PR vào đó là việc của mọi người, không phải task
+       con của card nào. */
+    const envBranches = envSteps(stages).map((s) => s.branch);
+    const parents = [...wanted.values()].filter((w) => !envBranches.includes(w.branch) && w.branch !== "master");
+    const into = await fetchMergedInto(cfg.token, parents).catch(() => null);
+    let gathered = 0;
+    if (into) {
+      const rows = cards.flatMap((c) => {
+        const next = mergedChildren(c, into, envBranches, (t) => extractIssueKeys(t, cfg.projectKeys));
+        return JSON.stringify(next) === JSON.stringify(c.mergedInto) ? [] : [{ id: c.id, mergedInto: next }];
+      });
+      gathered = setCardMergedInto(rows);
+    }
+
     return {
       ok: true,
-      message: changed ? `${changed} card đổi PR` : "",
-      changed,
+      message: [changed ? `${changed} card đổi PR` : "", gathered ? `${gathered} card có task con mới gộp vào` : ""]
+        .filter(Boolean)
+        .join(" · "),
+      changed: changed + gathered,
     };
   } catch (error) {
     return {

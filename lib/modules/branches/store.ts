@@ -27,11 +27,14 @@ import { taskNotes } from "@/lib/db/schema";
 
 import {
   type CardSide,
+  type MergedChild,
   type TaskNoteRow,
   type TaskNoteShape,
   parseIssueKeys,
   parseJiraUrls,
+  parseMergedChildren,
   serializeJiraUrls,
+  serializeMergedChildren,
 } from "./model";
 
 export type { TaskNoteRow } from "./model";
@@ -69,6 +72,7 @@ function toRow(r: typeof taskNotes.$inferSelect): TaskNoteRow {
     buildBranch: r.buildBranch,
     buildAt: r.buildAt,
     builds: parseCardBuilds(r.builds, r),
+    mergedInto: parseMergedChildren(r.mergedInto),
     syncedAt: r.syncedAt,
     updatedAt: r.updatedAt,
   };
@@ -516,6 +520,18 @@ export function markBranchesGone(ids: number[]): number {
  * measured things it never looked at, and would clear a gone-branch mark on
  * the strength of a query that cannot tell whether the branch exists.
  */
+/** Ghi danh sách PR đã gộp vào card; trả số card đổi. */
+export function setCardMergedInto(rows: Array<{ id: number; mergedInto: MergedChild[] }>): number {
+  let n = 0;
+  for (const r of rows)
+    n += db
+      .update(taskNotes)
+      .set({ mergedInto: serializeMergedChildren(r.mergedInto) })
+      .where(eq(taskNotes.id, r.id))
+      .run().changes;
+  return n;
+}
+
 export function setCardPrs(
   rows: Array<{
     id: number;
