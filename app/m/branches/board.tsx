@@ -111,6 +111,8 @@ type Card = TaskNoteRow & {
     pr: number;
     head: string;
     title: string;
+    /** Bản build mang task này, mỗi môi trường một bản. */
+    builds: Array<{ branch: string; build: string; at: number }>;
   }>;
 };
 
@@ -616,7 +618,8 @@ function Inbound({
 
 /**
  * Task con đã gộp vào nhánh của card, gập lại thành một huy hiệu: "2 bug đã
- * gộp · 1 chưa test". Mở ra là từng task, có nút chuyển trạng thái.
+ * gộp · 1 chưa test". Mở ra là từng task, có nút chuyển trạng thái và bản build
+ * riêng của nó.
  *
  * Không tô đỏ: bug đã sửa và gộp vào không phải lỗi của card — màu trung tính,
  * chỉ chữ "bug" là phân biệt. "Chưa test" là trạng thái còn trước READY TO TEST.
@@ -668,6 +671,15 @@ function MergedChildren({
                     onChanged={(name) => onStatusChanged(c.key, name)}
                   />
                 )}
+                {c.builds.map((b) => (
+                  <span
+                    key={b.branch}
+                    title={`${c.key} đã ra bản build ${b.build} của ${b.branch} — ghi chú "What to Test" của bản đó gọi tên nó.`}
+                    className="rounded-[3px] border border-good bg-good-soft px-1 py-px font-mono text-[9.5px] text-good"
+                  >
+                    ⚙ {shortBuild(b.build)}
+                  </span>
+                ))}
               </span>
             ))}
         </span>
@@ -1008,6 +1020,7 @@ function Board({
                     pr: m.number,
                     head: m.head,
                     title: m.title,
+                    builds: r.childBuilds[k] ?? [],
                   },
                 ] as const),
               ),

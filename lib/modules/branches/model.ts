@@ -1118,6 +1118,35 @@ export interface TaskNoteRow extends TaskNoteShape, GitHubLink {
   updatedAt: number;
   /** PR task con đã merge vào nhánh của card — xem {@link MergedChild}. */
   mergedInto: MergedChild[];
+  /**
+   * Bản build mang từng task con, theo mã: ghi chú "What to Test" gọi tên bug
+   * (vd. `VT-6469`) thì bug đó có bản build của riêng nó, khác bản build của
+   * card. Mỗi môi trường một bản, mới thay cũ — như `builds` của card.
+   */
+  childBuilds: Record<string, Array<{ branch: string; build: string; at: number }>>;
+}
+
+export function parseChildBuilds(raw: string): TaskNoteRow["childBuilds"] {
+  try {
+    const v = JSON.parse(raw || "{}");
+    if (!v || typeof v !== "object" || Array.isArray(v)) return {};
+    const out: TaskNoteRow["childBuilds"] = {};
+    for (const [k, list] of Object.entries(v))
+      if (Array.isArray(list))
+        out[k] = list.flatMap((b) =>
+          b && typeof b.build === "string" && b.build
+            ? [{ branch: String(b.branch ?? ""), build: b.build, at: typeof b.at === "number" ? b.at : 0 }]
+            : [],
+        );
+    return out;
+  } catch {
+    return {};
+  }
+}
+
+export function serializeChildBuilds(map: TaskNoteRow["childBuilds"]): string {
+  const keys = Object.keys(map).filter((k) => map[k]?.length).sort();
+  return keys.length ? JSON.stringify(Object.fromEntries(keys.map((k) => [k, map[k]]))) : "";
 }
 
 /**

@@ -20,6 +20,7 @@ import { extractIssueKeys } from "@/lib/jira/branch-keys";
 import {
   type EnvBuild,
   type CardBuild,
+  buildCarries,
   cardsInBuild,
   mergeCardBuild,
   newBuilds,
@@ -69,6 +70,7 @@ import {
   listTaskNotes,
   moveTaskNote,
   setCardBuilds,
+  setCardChildBuilds,
   setCardMergedInto,
   setCardPrs,
   saveTaskNote,
@@ -778,6 +780,25 @@ export async function checkBuildsAction(
         }
       }
     }
+    /* Task con có bản build riêng: ghi chú gọi tên bug (`VT-6469`) thì gắn bản
+       đó vào đúng dòng bug trong "Đã gộp" của card nhánh cha. Không đụng tới
+       bản build của card — bản này nói bug đã ra build, không nói FR đã ra. */
+    const childNext = new Map<number, TaskNoteRow["childBuilds"]>();
+    for (const list of current.values())
+      for (const b of [...list].sort((x, y) => x.at - y.at)) {
+        const named = new Set(buildCarries(b, cfg.projectKeys));
+        if (!named.size) continue;
+        for (const c of cards) {
+          for (const k of new Set(c.mergedInto.flatMap((m) => m.keys))) {
+            if (!named.has(k)) continue;
+            const map = childNext.get(c.id) ?? { ...c.childBuilds };
+            const next = mergeCardBuild(map[k] ?? [], b);
+            if (next) childNext.set(c.id, { ...map, [k]: next });
+          }
+        }
+      }
+    const childTagged = setCardChildBuilds([...childNext].map(([id, childBuilds]) => ({ id, childBuilds })));
+
     // The card goes with the builds: recording one has to be able to move the
     // column, and that needs the sides and the column it is in now.
     const byId = new Map(cards.map((c) => [c.id, c]));
@@ -807,11 +828,13 @@ export async function checkBuildsAction(
           ...skipped.map((s) => `${s.env}: ${s.why}`),
           news.length && `${news.length} bản build mới`,
           tagged && `${tagged} card được gắn bản build`,
+          childTagged && `${childTagged} card có bug được gắn bản build`,
         ]
           .filter(Boolean)
           .join(" · ") || "Chưa có bản build nào mới",
       news,
-      tagged,
+      // Gồm cả card chỉ có bug được gắn — bảng cũng phải làm mới cho họ.
+      tagged: tagged + childTagged,
       /**
        * A build is uploaded but not yet handed to testers.
        *

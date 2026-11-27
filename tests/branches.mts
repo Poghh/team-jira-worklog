@@ -73,7 +73,9 @@ import {
   stageDrift,
   withLocalState,
   mergedChildren,
+  parseChildBuilds,
   parseMergedChildren,
+  serializeChildBuilds,
   serializeMergedChildren,
 } from '@/lib/modules/branches/model'
 import {
@@ -1992,6 +1994,9 @@ eq(baseFreshness(roundTrip, NOW).upToDate, true, 'và đọc ra đúng kết lu�
      'chỉ giữ PR mang mã khác mã card; bỏ PR từ môi trường, PR không mã')
   eq(parseMergedChildren(serializeMergedChildren(got)), got, 'lưu rồi đọc lại y nguyên')
   eq(parseMergedChildren(''), [], 'cột trống là danh sách rỗng')
+  const cb = { 'VT-6469': [{ branch: 'ctalk/develop', build: '20261126101010', at: 1 }], 'VT-1': [] }
+  eq(parseChildBuilds(serializeChildBuilds(cb)), { 'VT-6469': cb['VT-6469'] }, 'bản build task con: lưu rồi đọc lại, bỏ mã rỗng')
+  eq(parseChildBuilds('hỏng'), {}, 'cột hỏng thì rỗng')
 }
 
 console.log(bad ? `\n${bad}/${n} FAILED` : `\nall ${n} ok`)

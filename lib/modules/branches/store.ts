@@ -31,8 +31,10 @@ import {
   type TaskNoteRow,
   type TaskNoteShape,
   parseIssueKeys,
+  parseChildBuilds,
   parseJiraUrls,
   parseMergedChildren,
+  serializeChildBuilds,
   serializeJiraUrls,
   serializeMergedChildren,
 } from "./model";
@@ -73,6 +75,7 @@ function toRow(r: typeof taskNotes.$inferSelect): TaskNoteRow {
     buildAt: r.buildAt,
     builds: parseCardBuilds(r.builds, r),
     mergedInto: parseMergedChildren(r.mergedInto),
+    childBuilds: parseChildBuilds(r.childBuilds),
     syncedAt: r.syncedAt,
     updatedAt: r.updatedAt,
   };
@@ -527,6 +530,18 @@ export function setCardMergedInto(rows: Array<{ id: number; mergedInto: MergedCh
     n += db
       .update(taskNotes)
       .set({ mergedInto: serializeMergedChildren(r.mergedInto) })
+      .where(eq(taskNotes.id, r.id))
+      .run().changes;
+  return n;
+}
+
+/** Ghi bản build của task con; trả số card đổi. */
+export function setCardChildBuilds(rows: Array<{ id: number; childBuilds: TaskNoteRow["childBuilds"] }>): number {
+  let n = 0;
+  for (const r of rows)
+    n += db
+      .update(taskNotes)
+      .set({ childBuilds: serializeChildBuilds(r.childBuilds) })
       .where(eq(taskNotes.id, r.id))
       .run().changes;
   return n;

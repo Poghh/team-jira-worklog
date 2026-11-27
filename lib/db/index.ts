@@ -166,6 +166,7 @@ CREATE TABLE IF NOT EXISTS task_notes (
   build_at           INTEGER NOT NULL DEFAULT 0,
   builds             TEXT NOT NULL DEFAULT '',
   merged_into        TEXT NOT NULL DEFAULT '',
+  child_builds       TEXT NOT NULL DEFAULT '',
   synced_at          INTEGER,
   created_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
   updated_at INTEGER NOT NULL DEFAULT (strftime('%s','now'))
@@ -396,6 +397,7 @@ function migrate(sqlite: Database.Database) {
   // PR task con (bug QC, task) đã merge vào nhánh của card — card chỉ biết mã
   // trong tên nhánh của chính nó, nên không có cột này thì bug đó lọt mất.
   ensureColumn(sqlite, "task_notes", "merged_into", "merged_into TEXT NOT NULL DEFAULT ''");
+  ensureColumn(sqlite, "task_notes", "child_builds", "child_builds TEXT NOT NULL DEFAULT ''");
   ensureColumn(sqlite, "task_notes", "sides", "sides TEXT NOT NULL DEFAULT ''");
   // Bug-fix codes raised after a feature built, each with its own status and
   // the build it went public in; and the build the feature itself went out in.

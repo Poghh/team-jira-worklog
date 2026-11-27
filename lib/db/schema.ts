@@ -374,6 +374,8 @@ export const taskNotes = sqliteTable(
     builds: text("builds").notNull().default(""),
     /** JSON `MergedChild[]`: PR task con đã merge vào nhánh của card. */
     mergedInto: text("merged_into").notNull().default(""),
+    /** JSON `{ [mã task con]: CardBuild[] }`: bản build mang từng task con. */
+    childBuilds: text("child_builds").notNull().default(""),
     /** When a GitHub scan last wrote to this card. Null for hand-made cards. */
     syncedAt: integer("synced_at"),
     createdAt: integer("created_at").notNull().default(now),
