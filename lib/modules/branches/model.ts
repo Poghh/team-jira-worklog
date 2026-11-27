@@ -1116,6 +1116,101 @@ export interface GitHubLink {
 export interface TaskNoteRow extends TaskNoteShape, GitHubLink {
   id: number;
   updatedAt: number;
+  /** PR task con đã merge vào nhánh của card — xem {@link MergedChild}. */
+  mergedInto: MergedChild[];
+  /**
+   * Bản build mang từng task con, theo mã: ghi chú "What to Test" gọi tên bug
+   * (vd. `VT-6469`) thì bug đó có bản build của riêng nó, khác bản build của
+   * card. Mỗi môi trường một bản, mới thay cũ — như `builds` của card.
+   */
+  childBuilds: Record<string, Array<{ branch: string; build: string; at: number }>>;
+}
+
+export function parseChildBuilds(raw: string): TaskNoteRow["childBuilds"] {
+  try {
+    const v = JSON.parse(raw || "{}");
+    if (!v || typeof v !== "object" || Array.isArray(v)) return {};
+    const out: TaskNoteRow["childBuilds"] = {};
+    for (const [k, list] of Object.entries(v))
+      if (Array.isArray(list))
+        out[k] = list.flatMap((b) =>
+          b && typeof b.build === "string" && b.build
+            ? [{ branch: String(b.branch ?? ""), build: b.build, at: typeof b.at === "number" ? b.at : 0 }]
+            : [],
+        );
+    return out;
+  } catch {
+    return {};
+  }
+}
+
+export function serializeChildBuilds(map: TaskNoteRow["childBuilds"]): string {
+  const keys = Object.keys(map).filter((k) => map[k]?.length).sort();
+  return keys.length ? JSON.stringify(Object.fromEntries(keys.map((k) => [k, map[k]]))) : "";
+}
+
+/**
+ * Một PR đã merge **vào** nhánh của card (task con, bug QC báo trong FR).
+ *
+ * Card chỉ biết mã task từ tên nhánh của chính nó, nên bug sửa trên nhánh task
+ * con rồi PR vào nhánh feature thì card feature không hề biết — QC test FR mà
+ * không ai nhắc bug nào đã nằm trong đó. Đọc từ GitHub mỗi lần bảng làm mới
+ * PR; tách khỏi `issueKeys` vì đây không phải việc của card mà là việc đã gộp
+ * vào nó.
+ */
+export interface MergedChild {
+  repo: string;
+  number: number;
+  /** Nhánh nguồn của PR. */
+  head: string;
+  title: string;
+  /** Mã task trong tên nhánh và tiêu đề PR, trừ mã của chính card. */
+  keys: string[];
+}
+
+export function parseMergedChildren(raw: string): MergedChild[] {
+  try {
+    const v = JSON.parse(raw || "[]");
+    return Array.isArray(v)
+      ? v.flatMap((x) =>
+          x && typeof x.repo === "string" && typeof x.number === "number" && Array.isArray(x.keys)
+            ? [{ repo: x.repo, number: x.number, head: String(x.head ?? ""), title: String(x.title ?? ""), keys: x.keys.map(String) }]
+            : [],
+        )
+      : [];
+  } catch {
+    return [];
+  }
+}
+
+export function serializeMergedChildren(list: MergedChild[]): string {
+  return list.length ? JSON.stringify(list) : "";
+}
+
+/**
+ * PR nào đã gộp vào card, từ các PR đã merge vào từng nhánh của card.
+ *
+ * Bỏ PR không mang mã task nào ngoài mã của card (sync nhánh, PR resolve của
+ * chính nó), và PR từ nhánh môi trường (`ctalk/develop → feature` là kéo code
+ * về, không phải việc gộp vào).
+ */
+export function mergedChildren(
+  card: { issueKeys: string[]; sides: Array<{ repo: string; branch: string }> },
+  mergedByBranch: ReadonlyMap<string, Array<{ number: number; head: string; title: string }>>,
+  envBranches: readonly string[],
+  keysOf: (text: string) => string[],
+): MergedChild[] {
+  const own = new Set(card.issueKeys);
+  const out: MergedChild[] = [];
+  for (const side of card.sides) {
+    const prs = mergedByBranch.get(`${side.repo}#${side.branch.trim()}`) ?? [];
+    for (const pr of prs) {
+      if (envBranches.includes(pr.head) || pr.head === "master" || pr.head === side.branch.trim()) continue;
+      const keys = [...new Set(keysOf(`${pr.head} ${pr.title}`))].filter((k) => !own.has(k));
+      if (keys.length) out.push({ repo: side.repo, number: pr.number, head: pr.head, title: pr.title, keys });
+    }
+  }
+  return out;
 }
 
 

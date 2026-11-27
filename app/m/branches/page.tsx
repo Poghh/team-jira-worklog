@@ -64,7 +64,8 @@ export default async function BranchesPage() {
    * one for those keys returns "does not exist", which is true and useless.
    */
   const lookups = jiraLookups(
-    [...new Set(notes.flatMap((n) => n.issueKeys))],
+    // Cả mã của task con đã gộp vào nhánh — card hiện loại và trạng thái của chúng.
+    [...new Set(notes.flatMap((n) => [...n.issueKeys, ...n.mergedInto.flatMap((m) => m.keys)]))],
     Object.fromEntries(notes.flatMap((n) => Object.entries(n.jiraUrls))),
     baseUrl,
   );
