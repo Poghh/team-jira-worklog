@@ -27,7 +27,6 @@ import {
   parseGitHubLink,
   prBadge,
   repoChip,
-  repoEdgeVar,
   repoLabel,
 } from "@/lib/modules/branches/github-model";
 import {
@@ -284,201 +283,197 @@ function TabBtn({
  * "chưa có bản build" costs nothing; losing them off a build number costs the
  * number.
  */
-function Ladder({
-  rows,
-  repo,
-  prs = true,
-  builds = true,
+/**
+ * Số build rút gọn: `20261117073517` → `17/11 07:35`. Số không theo mẫu thì giữ
+ * nguyên. Số đầy đủ luôn nằm trong tooltip.
+ */
+function shortBuild(build: string): string {
+  const m = build.trim().match(/^\d{4}(\d{2})(\d{2})(\d{2})(\d{2})\d{2}$/);
+  return m ? `${m[2]}/${m[1]} ${m[3]}:${m[4]}` : build;
+}
+
+/** Ô trống của ma trận: một chấm rỗng, không phải cả dòng chữ "chưa tạo PR". */
+const EMPTY_CELL =
+  "flex min-w-0 justify-center rounded-[3px] border border-dashed border-line px-1 py-px font-mono text-[9.5px] text-ink-3";
+
+/**
+ * Thang môi trường của cả card, dạng bảng: môi trường là hàng; mỗi repo một
+ * cột PR, thêm một cột Build. Thay cho mỗi repo một thang riêng, vốn tốn bốn
+ * hàng mỗi repo và ba hàng cho build — phần lớn là ô "chưa tạo PR".
+ *
+ * Ô trống vẫn bấm được như trước: sang checklist của "Git & PR", hoặc sang
+ * trang tạo PR trên GitHub ở đúng môi trường kế tiếp. Chữ chỉ hiện khi rê chuột.
+ */
+function EnvMatrix({
+  sides,
+  builds,
+  stages,
+  chips,
   owners,
   onGoTo,
-  suggest = null,
-  prGuide,
+  prGuideFor,
+  suggestFor,
 }: {
-  rows: LadderRow[];
-  repo: string;
-  /**
-   * Link sang checklist của module "Git & PR" cho một bậc. Vắng
-   * (module chưa bật) thì ô trống chỉ mời tạo PR ở môi trường kế tiếp, thẳng
-   * sang GitHub như trước.
-   */
-  prGuide?: (base: string) => string;
-  /** `repo#branch` → card giữ nhánh đó. Xem {@link ownersByBranch}. */
-  owners?: Map<string, { id: number; issueKey: string; title: string }>;
-  onGoTo?: (id: number) => void;
-  /** False on the build-only pass of a multi-repository card. */
-  prs?: boolean;
-  /** False on the per-repository passes, where builds would be duplicated. */
-  builds?: boolean;
-  /**
-   * Môi trường kế tiếp đáng mở PR vào — xem {@link nextEnvToRequest}.
-   *
-   * Chỉ một, và chỉ khi hàng ấy còn trống: hai lời mời cùng lúc thì không lời
-   * nào còn là lời mời.
-   */
-  suggest?: { base: string; head: string; url: string; why: string } | null;
+  sides: CardSide[];
+  /** `null` khi team không ra bản build — không có cột Build. */
+  builds: CardBuild[] | null;
+  stages: StageConfig[];
+  chips: Record<string, { text: string; solid: string }>;
+  owners: Map<string, { id: number; issueKey: string; title: string }>;
+  onGoTo: (id: number) => void;
+  prGuideFor: (side: CardSide) => ((base: string) => string) | undefined;
+  suggestFor: (side: CardSide) => { base: string; head: string; url: string; why: string } | null;
 }) {
+  const ladders = sides.map((side) => cardLadder(side.prs, [], stages));
+  const buildRows = builds ? cardLadder([], builds, stages) : [];
+  // Hàng không phải môi trường (task con → nhánh cha) đứng trước, như thang cũ.
+  const rows: LadderRow[] = [];
+  const keyOf = (r: LadderRow) => r.branch || r.name;
+  for (const r of [...ladders.flat().filter((x) => !x.isEnv), ...cardLadder([], builds ?? [], stages)])
+    if (!rows.some((x) => keyOf(x) === keyOf(r))) rows.push(r);
+  const cols = sides.length + (builds ? 1 : 0);
+  const grid = { gridTemplateColumns: `62px repeat(${cols}, minmax(0, 1fr))` };
+
+  const prCell = (side: CardSide, i: number, row: LadderRow) => {
+    const r = ladders[i]?.find((x) => keyOf(x) === keyOf(row));
+    const b = r?.pr ? prBadge(asPullRequest(r.pr)) : null;
+    if (b && r?.pr)
+      return (
+        <a
+          href={r.pr.url}
+          target="_blank"
+          rel="noreferrer"
+          onClick={(e) => e.stopPropagation()}
+          title={`${b.label} · ${side.repo}\n${r.pr.url}`}
+          className={
+            "flex min-w-0 justify-center truncate rounded-[3px] border px-1 py-px font-mono text-[9.5px] font-semibold hover:underline " +
+            PR_CLS[b.tone]
+          }
+        >
+          #{r.pr.number}
+        </a>
+      );
+    if (!row.isEnv) return <span />;
+    const guide = prGuideFor(side);
+    const sug = suggestFor(side);
+    if (guide)
+      return (
+        <Link
+          href={guide(row.branch)}
+          onClick={(e) => e.stopPropagation()}
+          title={
+            (sug && sug.base === row.branch ? `${sug.why}\n\n` : "") +
+            `${side.repo}: chưa có PR vào ${row.branch}.\nBấm để mở checklist PR — soát từng mục trước khi tự tạo PR trên GitHub.`
+          }
+          className={EMPTY_CELL + " hover:border-solid hover:border-accent hover:bg-accent-soft hover:text-accent-ink"}
+        >
+          {sug && sug.base === row.branch ? "+" : "·"}
+        </Link>
+      );
+    if (sug && sug.base === row.branch)
+      return (
+        <a
+          href={sug.url}
+          target="_blank"
+          rel="noreferrer"
+          onClick={(e) => e.stopPropagation()}
+          title={`${sug.why}\n\nMở trang tạo PR trên GitHub: ${row.branch} ← ${sug.head}\nApp không tự tạo PR — bạn vẫn xem lại rồi bấm Create.`}
+          className={EMPTY_CELL + " hover:border-solid hover:border-accent hover:bg-accent-soft hover:text-accent-ink"}
+        >
+          +
+        </a>
+      );
+    return (
+      <span title={`${side.repo}: chưa có PR nào của nhánh này vào ${row.branch}.`} className={EMPTY_CELL}>
+        ·
+      </span>
+    );
+  };
+
+  const buildCell = (row: LadderRow) => {
+    if (!row.isEnv) return <span />;
+    const b = buildRows.find((x) => keyOf(x) === keyOf(row))?.build;
+    return b?.build ? (
+      <span
+        title={`Bản build ${b.build} của ${row.branch}\n\nLấy từ ghi chú "What to Test" của chính bản build — hoặc do bạn tự điền khi bản build thiếu ghi chú.`}
+        className="flex min-w-0 justify-center truncate rounded-[3px] border border-good bg-good-soft px-1 py-px font-mono text-[9.5px] font-semibold text-good"
+      >
+        ⚙ {shortBuild(b.build)}
+      </span>
+    ) : (
+      <span
+        title={`Chưa có bản build nào của ${row.branch} nhắc tới ticket này.\n\nBản build đã ra mà thiếu ghi chú "What to Test" thì bấm ✎ và điền số vào ô ${row.name}.`}
+        className={EMPTY_CELL}
+      >
+        ·
+      </span>
+    );
+  };
+
   return (
-    <>
-      {rows.map((r) => {
-        const b = r.pr ? prBadge(asPullRequest(r.pr)) : null;
-        /**
-         * Nhánh này có phải nhánh của một card khác không.
-         *
-         * Chỉ xét hàng không phải môi trường: `ctalk/develop` cũng là "nhánh
-         * của ai đó" theo nghĩa kỹ thuật, nhưng nó là môi trường và đã có
-         * hàng riêng, tên riêng.
-         */
-        const host =
-          !r.isEnv && r.branch ? owners?.get(`${repo}#${r.branch}`) : undefined;
+    <div className="mt-0.5 grid items-center gap-x-1 gap-y-1 border-t border-line pt-1" style={grid}>
+      {/* Đầu cột chỉ khi có hơn một cột: một repo không build thì đầu cột chỉ
+          nhắc lại cái chip đã có trên tiêu đề card. */}
+      {cols > 1 && (
+        <>
+          <span />
+          {sides.map((side) => (
+            <span
+              key={side.repo}
+              title={side.repo}
+              className={
+                "truncate rounded-[3px] text-center font-mono text-[8.5px] font-bold uppercase leading-[1.5] tracking-[0.06em] " +
+                (chips[side.repo]?.solid ?? "text-ink-3")
+              }
+            >
+              {chips[side.repo]?.text ?? side.repo}
+            </span>
+          ))}
+          {builds && (
+            <span
+              title="Bản build là của app iOS và mang theo bản SDK đã pin — một bản build cho cả card."
+              className="text-center font-mono text-[8.5px] font-bold uppercase tracking-[0.06em] text-ink-3"
+            >
+              Build
+            </span>
+          )}
+        </>
+      )}
+      {rows.map((row) => {
+        const host = !row.isEnv && row.branch ? sides.map((sd) => owners.get(`${sd.repo}#${row.branch}`)).find(Boolean) : undefined;
         return (
-          <CardRow
-            key={r.branch || r.name}
-            label={
-              host ? (
-                // Tên nhánh feature dài hơn cột nhãn 62px nhiều lần, nên nó
-                // xuống ba dòng và không đọc được — mà thứ người ta cần biết
-                // không phải chuỗi ký tự ấy, mà là *card nào*.
+          <Fragment key={keyOf(row)}>
+            <span className="truncate font-mono text-[8.5px] uppercase leading-[1.2] tracking-[0.06em] text-ink-3">
+              {host ? (
                 <button
                   type="button"
                   onClick={(e) => {
                     e.stopPropagation();
-                    onGoTo?.(host.id);
+                    onGoTo(host.id);
                   }}
-                  title={`PR này nhắm vào nhánh của ${host.issueKey || "card"}: ${host.title}\n⑂ ${r.branch}\n\nBấm để nhảy tới card đó.`}
+                  title={`PR này nhắm vào nhánh của ${host.issueKey || "card"}: ${host.title}\n⑂ ${row.branch}\n\nBấm để nhảy tới card đó.`}
                   className="max-w-full truncate text-left text-accent-ink underline decoration-dotted underline-offset-2 hover:decoration-solid"
                 >
-                  ↳ {host.issueKey || shortBase(r.branch)}
+                  ↳ {host.issueKey || shortBase(row.branch)}
                 </button>
-              ) : !r.isEnv && r.branch ? (
-                // Không card nào giữ nhánh đích — vẫn phải rút gọn. `r.name`
-                // ở hàng này là nguyên `p.base`, đo được cần 151px trong cột
-                // nhãn rộng 62px, nên nó xuống hai dòng và đè sang hàng dưới.
-                // Lấy đoạn cuối vì đó là phần phân biệt được; tiền tố
-                // `ctalk/feature/` giống nhau ở mọi nhánh. Tên đầy đủ nằm
-                // trong tooltip.
-                <span title={r.branch}>{shortBase(r.branch)}</span>
+              ) : !row.isEnv && row.branch ? (
+                <span title={row.branch}>{shortBase(row.branch)}</span>
               ) : (
-                r.name
-              )
-            }
-          >
-            {/* Its own non-wrapping track. CardRow wraps by design — the
-                warnings row is a bag of badges — but a ladder row that wraps
-                is two lines tall next to neighbours that are one, which reads
-                as breakage rather than as overflow. Here the placeholder
-                shortens instead. */}
-            <span className="flex w-full min-w-0 items-center gap-1">
-              {prs &&
-                (b && r.pr ? (
-                  <a
-                    href={r.pr.url}
-                    target="_blank"
-                    rel="noreferrer"
-                    onClick={(e) => e.stopPropagation()}
-                    title={`Mở PR #${r.pr.number}${repo ? ` trong ${repo}` : ""}\n${r.pr.url}`}
-                    className={
-                      "flex shrink-0 justify-center rounded-[3px] border px-1 py-px font-mono text-[9.5px] font-semibold hover:underline " +
-                      PR_CLS[b.tone]
-                    }
-                  >
-                    {b.label}
-                  </a>
-                ) : prGuide && r.branch ? (
-                  /* Ô trống dẫn sang checklist của module "Git & PR": tạo PR khi
-                     chưa sync master, sai phiên bản SDK hay sai tiêu đề là lỗi
-                     chỉ thấy sau khi đã tạo. App không tạo PR — người dùng tự
-                     làm trên GitHub, checklist để soát.
-
-                     Đứng yên trông như mọi ô trống khác; rê chuột mới hiện ra
-                     là bấm được. Ô của môi trường kế tiếp (`suggest`) nói thêm
-                     vì sao nên tạo. */
-                  <Link
-                    href={prGuide(r.branch)}
-                    onClick={(e) => e.stopPropagation()}
-                    title={
-                      (suggest && suggest.base === r.branch ? `${suggest.why}\n\n` : "") +
-                      `Mở checklist PR vào ${r.branch} — soát từng mục trước khi tự tạo PR trên GitHub.`
-                    }
-                    className="group/pr flex min-w-0 flex-auto justify-center truncate rounded-[3px] border border-dashed border-line-strong px-1 py-px font-mono text-[9.5px] text-ink-3 hover:border-solid hover:border-accent hover:bg-accent-soft hover:text-accent-ink"
-                  >
-                    <span className="group-hover/pr:hidden">chưa tạo PR</span>
-                    <span className="hidden group-hover/pr:inline">☑ checklist PR</span>
-                  </Link>
-                ) : suggest && suggest.base === r.branch ? (
-                  /* Ô trống của **đúng** môi trường kế tiếp: đứng yên trông y
-                     như mọi ô trống khác, rê chuột vào mới hiện ra là bấm
-                     được. Không hét lên ở trạng thái nghỉ — phần lớn ô trống
-                     trên bảng là chuyện bình thường, và một ô tự sáng lên sẽ
-                     đọc thành cảnh báo chứ không phải lời mời.
-
-                     Là link sang GitHub chứ không phải nút gọi API: app này
-                     chưa bao giờ ghi vào repo của ai, và mở PR là một cú ghi. */
-                  <a
-                    href={suggest.url}
-                    target="_blank"
-                    rel="noreferrer"
-                    onClick={(e) => e.stopPropagation()}
-                    title={`${suggest.why}\n\nMở trang tạo PR trên GitHub: ${r.branch} ← ${suggest.head}\nApp không tự tạo PR — bạn vẫn xem lại rồi bấm Create.`}
-                    className="group/pr flex min-w-0 flex-auto justify-center truncate rounded-[3px] border border-dashed border-line-strong px-1 py-px font-mono text-[9.5px] text-ink-3 hover:border-solid hover:border-accent hover:bg-accent-soft hover:text-accent-ink"
-                  >
-                    <span className="group-hover/pr:hidden">chưa tạo PR</span>
-                    <span className="hidden group-hover/pr:inline">
-                      + tạo PR ↗
-                    </span>
-                  </a>
-                ) : (
-                  <span
-                    title={`Chưa có pull request nào của nhánh này nhắm vào ${r.branch}.\n\nPhần lớn task chỉ có một request vào môi trường đầu; các môi trường sau thường đi bằng merge ở mức nhánh chứ không phải theo từng task, nên ô trống ở đây là chuyện bình thường.`}
-                    className="flex min-w-0 flex-auto justify-center truncate rounded-[3px] border border-dashed border-line-strong px-1 py-px font-mono text-[9.5px] text-ink-3"
-                  >
-                    chưa tạo PR
-                  </span>
-                ))}
-
-              {/* A feature branch never gets a build of its own, so its row is
-                  left without a build box rather than shown as missing one. */}
-              {builds &&
-                r.isEnv &&
-                (r.build?.build ? (
-                  <span
-                    title={`Bản build ${r.build.build} của ${r.branch}\n\nLấy từ ghi chú "What to Test" của chính bản build, nơi người publish liệt kê ticket có trong đó — hoặc do bạn tự điền khi bản build đi ra mà thiếu ghi chú.`}
-                    className="flex shrink-0 justify-center rounded-[3px] border border-good bg-good-soft px-1 py-px font-mono text-[9.5px] font-semibold text-good"
-                  >
-                    ⚙ {r.build.build}
-                  </span>
-                ) : (
-                  <span
-                    title={`Chưa có bản build nào của ${r.branch} nhắc tới ticket này.\n\nCó thể là chưa build, cũng có thể bản build đã ra mà quên ghi chú "What to Test" — nếu vậy bấm ✎ và điền số vào ô ${r.name}.`}
-                    className="flex min-w-0 flex-auto justify-center truncate rounded-[3px] border border-dashed border-line-strong px-1 py-px font-mono text-[9.5px] text-ink-3"
-                  >
-                    chưa có bản build
-                  </span>
-                ))}
+                row.name
+              )}
             </span>
-          </CardRow>
+            {sides.map((side, i) => (
+              <Fragment key={side.repo}>{prCell(side, i, row)}</Fragment>
+            ))}
+            {builds && buildCell(row)}
+          </Fragment>
         );
       })}
-    </>
+    </div>
   );
 }
 
-/**
- * Where a block's colour spine sits: the gap between a row's label column and
- * its values.
- *
- * Derived from `CardRow`'s own geometry — a 62px label and a 6px gap — so the
- * two have to move together. Kept beside them for that reason.
- */
-const SPINE_X = "left-[64px] w-[2px] rounded-full";
 
-/**
- * The heading of one block on a card that has more than one repository.
- *
- * A rule above it, because two ladders running together show "DEVELOP" twice
- * with nothing saying the second belongs to a different codebase. The repo
- * label is filled solid, the same chip the header uses, so the block and the
- * header can be paired by colour rather than by reading.
- */
 /**
  * Nhánh đang dựng trên bản môi trường của bao giờ.
  *
@@ -492,7 +487,10 @@ const SPINE_X = "left-[64px] w-[2px] rounded-full";
 function BaseAge({
   side,
   advice,
+  label,
 }: {
+  /** Tên repo cho ô nhãn — card nhiều repo cần biết dòng này của repo nào. */
+  label?: string;
   side: CardSide;
   /**
    * Rebase hay merge, theo quy tắc Git của team — xem {@link syncAdvice}.
@@ -501,7 +499,8 @@ function BaseAge({
   advice: SyncAdvice | null;
 }) {
   const f = baseFreshness(side);
-  if (f.upToDate === null) return null;
+  // Đã cập nhật thì im lặng — card chỉ nói những gì cần làm.
+  if (f.upToDate === null || f.upToDate) return null;
   const base = side.baseBranch;
   const waiting = advice ? !advice.commands : false;
 
@@ -520,7 +519,9 @@ function BaseAge({
       {/* Cùng hình học với `SideHead`: ô nhãn 62px rồi gap-1.5, nên chữ bắt
           đầu ở 68px — vừa qua gân dọc ở 64px. Đặt `padding` bằng tay thì chữ
           cắt ngang gân, và sẽ lệch lại mỗi lần ai đổi bề rộng ô nhãn. */}
-      <span aria-hidden className="w-[62px] shrink-0" />
+      <span className="w-[62px] shrink-0 truncate pt-[3px] font-mono text-[8.5px] uppercase leading-[1.2] tracking-[0.06em] text-ink-3">
+        {label}
+      </span>
       {f.upToDate ? (
         // Tin tốt thì nói khẽ: chữ thường, màu mờ. Card này đã dày đặc, và một
         // thứ "không có việc gì phải làm" mà cũng hét lên thì chỉ làm loãng
@@ -552,44 +553,6 @@ function BaseAge({
           )}
         </span>
       )}
-    </span>
-  );
-}
-
-function SideHead({
-  label,
-  solid,
-  title,
-  text,
-  gone = false,
-}: {
-  label: string;
-  /** The repo chip's fill; absent for the build block, which is no repo. */
-  solid?: string;
-  title: string;
-  text: string;
-  /** Nhánh không còn trên GitHub — gạch ngang tên cho khớp với lời cảnh báo. */
-  gone?: boolean;
-}) {
-  return (
-    <span className="mt-0.5 flex min-w-0 items-center gap-1.5 border-t border-line pt-1">
-      <span
-        className={
-          "w-[62px] shrink-0 truncate rounded-[3px] text-center font-mono text-[8.5px] font-bold uppercase leading-[1.5] tracking-[0.06em] " +
-          (solid ?? "text-ink-3")
-        }
-      >
-        {label}
-      </span>
-      <span
-        title={title}
-        className={
-          "min-w-0 truncate font-mono text-[10px] " +
-          (gone ? "text-ink-3 line-through decoration-warn" : "text-ink-3")
-        }
-      >
-        {text}
-      </span>
     </span>
   );
 }
@@ -1832,151 +1795,86 @@ function NoteCard({
         )}
       </CardRow>
 
-      {/* Only when there is one repository. With sections each names its
-          own branch, and this row would repeat the first of them. */}
-      {card.branch && sides.length <= 1 && (
-        <CardRow label="Nhánh">
-          <button
-            type="button"
-            onClick={copyBranch}
-            title={
-              "Copy nhánh: " +
-              card.branch +
-              (card.repo ? `\nRepo: ${card.repo}` : "") +
-              (sides[0]?.branchUpdatedAt
-                ? `\nCommit cuối: ${new Date(sides[0]!.branchUpdatedAt! * 1000).toLocaleDateString("vi-VN")}`
-                : "")
-            }
-            className="flex min-w-0 items-start gap-1 text-left font-mono text-[10.5px] text-ink-3 hover:text-accent-ink"
-          >
-            <span className="shrink-0">{copied ? "✓" : "⑂"}</span>
-            {card.githubPinned && (
-              <span
-                title="Link GitHub do bạn tự đặt — quét không đổi nhánh này"
-                className="shrink-0 text-accent-ink"
-              >
-                📌
-              </span>
-            )}
-            <span className="break-all">{card.branch}</span>
-          </button>
-        </CardRow>
+      {/* Tên nhánh một lần: iOS và SDK thường cùng tên, và mỗi repo một dòng
+          tên dài y hệt nhau chỉ tốn chỗ. Khác tên thì mỗi repo một dòng. */}
+      {sides.length > 1 && new Set(sides.map((sd) => sd.branch.trim())).size > 1 ? (
+        sides.map((side) => (
+          <CardRow key={side.repo} label={repoLabel(side.repo, repoLabels, repos)}>
+            <span
+              title={`${side.repo} · ${side.branch}`}
+              className={
+                "min-w-0 truncate font-mono text-[10.5px] " +
+                (side.branchGone ? "text-ink-3 line-through decoration-warn" : "text-ink-3")
+              }
+            >
+              ⑂ {side.branch}
+            </span>
+          </CardRow>
+        ))
+      ) : (
+        card.branch && (
+          <CardRow label="Nhánh">
+            <button
+              type="button"
+              onClick={copyBranch}
+              title={
+                "Copy nhánh: " +
+                card.branch +
+                (sides.length > 1 ? `\nRepo: ${sides.map((sd) => sd.repo).join(", ")}` : card.repo ? `\nRepo: ${card.repo}` : "") +
+                (sides[0]?.branchUpdatedAt
+                  ? `\nCommit cuối: ${new Date(sides[0]!.branchUpdatedAt! * 1000).toLocaleDateString("vi-VN")}`
+                  : "")
+              }
+              className="flex min-w-0 items-start gap-1 text-left font-mono text-[10.5px] text-ink-3 hover:text-accent-ink"
+            >
+              <span className="shrink-0">{copied ? "✓" : "⑂"}</span>
+              {card.githubPinned && (
+                <span title="Link GitHub do bạn tự đặt — quét không đổi nhánh này" className="shrink-0 text-accent-ink">
+                  📌
+                </span>
+              )}
+              <span className="break-all">{card.branch}</span>
+            </button>
+          </CardRow>
+        )
       )}
 
-      {/* One row per environment, its request and its build side by side.
-          The environment used to be written twice — once after the build and
-          again after the request — which spent most of the card's width on
-          repetition and left the branch names truncated. Naming it once, on
-          the left where every other row is labelled, buys back the space.
-
-          A fix spanning two repositories gets a section each, because a card
-          cannot say "merged" about a ticket whose other half is still being
-          written. Builds stay outside the sections: a build is of the iOS app,
-          which carries whatever SDK revision it pinned, so there is one per
-          environment however many repositories the work touched. */}
-      {/* Chiều ngược lại của cùng một quan hệ.
-          Card task nói "↳ VT-2583" ở hàng PR; ở đây card VT-2583 nói ai đang
-          nhắm vào nhánh mình. Một chiều thôi thì người đang ở card feature
-          không có cách nào biết có task đang chờ mình — mà đó mới là phía cần
-          biết, vì merge nhánh feature lúc còn task chưa vào là làm hỏng việc
-          của người khác. */}
+      {/* Chiều ngược lại của "↳ VT-2583": card nào đang mở PR vào nhánh này. */}
       <Inbound card={card} cards={cards} sides={sides} onGoTo={onGoTo} />
 
-      {sides.length <= 1 ? (
-        <>
-          {/* Cùng chỗ, cùng thứ tự như ở nhánh hai repo bên dưới: ngay trên
-              thang môi trường.
-
-              Thiếu đúng dòng này là cả tính năng "chưa rebase" vô hình với
-              **card một repo** — tức gần hết bảng. Dữ liệu vẫn được đo và vẫn
-              nằm trong card (`base=master behind=29`), chỉ là không ai vẽ nó
-              ra, nên bảng im lặng y như lúc chưa đo được gì. Ô nhãn 62px của
-              `BaseAge` khớp sẵn với `CardRow`, không phải căn lại. */}
-          {sides[0] && <BaseAge side={sides[0]} advice={adviceFor(sides[0])} />}
-          <Ladder
-            rows={cardLadder(sides[0]?.prs ?? [], card.builds, stages)}
-            repo={card.repo}
-            builds={buildsOn}
-            suggest={suggestFor(sides[0])}
-            owners={owners}
-            onGoTo={onGoTo}
-            prGuide={prGuideFor(sides[0])}
-          />
-        </>
-      ) : (
-        <>
-          {sides.map((side) => (
-            <Fragment key={side.repo}>
-              {/* A spine down the block, in that repository's colour. It runs
-                  exactly as far as the block it belongs to, which is what the
-                  card's own edge could never do — a gradient split at the
-                  halfway mark lines up with nothing and reads as decoration.
-                  Sits in the gap between the label column and the values, so
-                  nothing moves to make room for it. */}
-              {/* A rule above each repository. Without it the two ladders run
-                  together and "DEVELOP" appears twice with nothing saying the
-                  second one belongs to a different codebase. */}
-              <span className="relative flex min-w-0 flex-col gap-1">
-                <span
-                  aria-hidden
-                  style={{ background: repoEdgeVar(repoColors[side.repo]) }}
-                  className={"absolute top-[3px] bottom-0 " + SPINE_X}
-                />
-                <SideHead
-                  label={repoLabel(side.repo, repoLabels, repos)}
-                  solid={
-                    repoChip(side.repo, repoLabels, repoColors, repos).solid
-                  }
-                  title={
-                    side.branchGone
-                      ? `${side.repo} · ${side.branch}\n\nGitHub không còn nhánh này. Thường là đã merge rồi xoá; cũng có thể nó chưa bao giờ tồn tại ở repo này.`
-                      : `${side.repo} · ${side.branch}`
-                  }
-                  text={`⑂ ${side.branch}`}
-                  gone={side.branchGone}
-                />
-                {/* Nửa chết của một card nửa sống.
-                 *
-                 * Card chỉ vẽ "nhánh đã xoá" khi **mọi** nửa đều mất — kiểu card
-                 * rách. Nửa này thì không, nên nếu không nói ra, ba dòng "chưa
-                 * tạo PR" bên dưới đọc thành "việc chưa bắt đầu", trong khi sự
-                 * thật là không còn nhánh nào để bắt đầu. */}
-                {side.branchGone && (
-                  <span className="flex items-center gap-1 rounded-[4px] border border-warn bg-warn-soft px-1.5 py-px text-[11px] text-warn">
-                    <b className="font-semibold">GitHub không còn nhánh này</b>
-                  </span>
-                )}
-                <BaseAge side={side} advice={adviceFor(side)} />
-                <Ladder
-                  rows={cardLadder(side.prs, [], stages)}
-                  repo={side.repo}
-                  builds={false}
-                  owners={owners}
-                  onGoTo={onGoTo}
-                  prGuide={prGuideFor(side)}
-                />
-              </span>
-            </Fragment>
-          ))}
-          {/* Headed, or three more environment rows after two repositories
-              read as a third repository. */}
-          {buildsOn && (
-            <>
-              <SideHead
-                label="Build"
-                title="Bản build là của app iOS, và nó mang theo bản SDK đã pin — nên một bản build cho cả card, không phải cho từng repo."
-                text="của cả card"
-              />
-              <Ladder
-                rows={cardLadder([], card.builds, stages)}
-                repo={card.repo}
-                prs={false}
-              />
-            </>
+      {/* Chỉ những gì cần làm: nhánh mất trên GitHub, nhánh tụt master. Nhánh
+          đã cập nhật thì không nói gì — trước đây mỗi repo một dòng "✓ đã có
+          bản mới nhất của master". */}
+      {sides.map((side) => (
+        <Fragment key={side.repo}>
+          {side.branchGone && sides.length > 1 && (
+            <span className="flex items-center gap-1 rounded-[4px] border border-warn bg-warn-soft px-1.5 py-px text-[11px] text-warn">
+              <b className="font-semibold">{repoLabel(side.repo, repoLabels, repos)}: GitHub không còn nhánh này</b>
+            </span>
           )}
-        </>
+          <BaseAge
+            side={side}
+            advice={adviceFor(side)}
+            label={sides.length > 1 ? repoLabel(side.repo, repoLabels, repos) : undefined}
+          />
+        </Fragment>
+      ))}
+
+      {(sides.length > 0 || buildsOn) && (
+        <EnvMatrix
+          sides={sides}
+          builds={buildsOn ? card.builds : null}
+          stages={stages}
+          chips={Object.fromEntries(sides.map((sd) => [sd.repo, repoChip(sd.repo, repoLabels, repoColors, repos)]))}
+          owners={owners}
+          onGoTo={onGoTo}
+          prGuideFor={(side) => prGuideFor(side)}
+          suggestFor={(side) => suggestFor(side)}
+        />
       )}
 
+      {/* Task con đã gộp vào nhánh này — bug QC sửa trên nhánh task rồi PR vào
+          feature thì card feature mới biết mà nhắc test. Bug lên đầu. */}
       {/* Rendered only when it has something in it: an empty flex child still
           consumes the card's row gap, which showed up as a stray blank line. */}
       {(card.localOnly ||
