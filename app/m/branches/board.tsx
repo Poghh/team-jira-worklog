@@ -800,7 +800,27 @@ function Board({
   }
   // Status is kept apart from the row so a transition made here updates the
   // badge immediately without inventing a stored value that Jira never saw.
-  const [live, setLive] = useState<Record<string, string>>({});
+  /*
+   * Trạng thái vừa chuyển ngay trên bảng, kèm trạng thái server lúc chuyển.
+   *
+   * Chỉ đè lên dữ liệu server khi server **vẫn còn** nói giá trị cũ — tức là
+   * lần làm mới chưa kịp thấy cú chuyển. Server đã nói khác (QC chuyển tiếp
+   * trên Jira, hay chính cú chuyển đã về tới) thì server thắng. Trước đây giá
+   * trị chuyển ở đây đè mãi cho tới khi tải lại trang: VT-6469 chuyển sang
+   * READY TO TEST trên bảng, QC verify trên Jira, bảng vẫn READY TO TEST.
+   */
+  const [moved, setMoved] = useState<Record<string, { name: string; from: string | null }>>({});
+  const live = useMemo(
+    () =>
+      Object.fromEntries(
+        Object.entries(moved).flatMap(([k, m]) =>
+          (statuses[k]?.statusName ?? null) === m.from ? [[k, m.name]] : [],
+        ),
+      ) as Record<string, string>,
+    [moved, statuses],
+  );
+  const setLiveStatus = (key: string, name: string) =>
+    setMoved((m) => ({ ...m, [key]: { name, from: statuses[key]?.statusName ?? null } }));
   const [search, setSearch] = useState("");
   /** '' = plain workflow order. Otherwise the status pushed to the top. */
   const [pinned, setPinned] = useState("");
@@ -1340,9 +1360,7 @@ function Board({
                     cards={cards}
                     onGoTo={goTo}
                     lit={litId === c.id}
-                    onStatusChanged={(key, name) =>
-                      setLive((m) => ({ ...m, [key]: name }))
-                    }
+                    onStatusChanged={setLiveStatus}
                   />
                 ))}
                 {col.length === 0 && (
